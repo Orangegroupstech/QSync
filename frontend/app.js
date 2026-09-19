@@ -226,7 +226,7 @@ async function logout(reason){
 }
 
 /* ---------------- Background polling (read-only pages only, paused while a modal is open) ---------------- */
-const POLL_INTERVAL_MS = 25 * 1000;
+const POLL_INTERVAL_MS = 60 * 1000;
 const POLL_ROUTES = ['/requests', '/reports', '/audit', '/team'];
 let pollTimer = null;
 async function pollTick(){
