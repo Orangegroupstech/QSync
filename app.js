@@ -1026,48 +1026,65 @@ function stagesForProduct(p){
   return stages;
 }
 function viewProducts(){
-  const q = queryParams();
   const products = S.products;
-  const p = products.find(x => String(x.id) === String(q.id)) || products[0];
-  const stages = p ? stagesForProduct(p) : [];
-  const stage = (q.stage && stages.includes(q.stage)) ? q.stage : stages[0];
-  const specs = p ? (p.specs||[]).filter(s => s.stage === stage) : [];
-  const requestsRaised = p ? S.requests.filter(r => r.productName === p.name).length : 0;
+  const rows = products.map(x => {
+    const stages = stagesForProduct(x);
+    const requestsRaised = S.requests.filter(r => r.productName === x.name).length;
+    return `<div class="mail-row" onclick="go('/products/${x.id}')">
+      <div style="flex:1;min-width:0">
+        <div class="ms">${esc(x.name)} <span class="badge b-brand" style="margin-left:6px">${esc(x.type)}</span></div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+          <span class="chip">Prefix ${esc(x.prefix)}</span>
+          <span class="chip">${esc((UNIT_OPTIONS[x.type]||[]).join(', '))}</span>
+          <span class="chip">${stages.length} stage${stages.length===1?'':'s'}</span>
+          <span class="chip">${requestsRaised} request${requestsRaised===1?'':'s'} raised</span>
+        </div>
+      </div>
+      <span class="muted">${I.chevR}</span>
+    </div>`;
+  }).join('');
   return {
     title:'Products and specifications', crumb:'Administration',
     html: `
     ${pageHead('Products and specifications',
       'Acceptance criteria imported from the Spec Lookup sheet. Editing a limit here updates this console only - it does not change the live Google Sheet IPQA tests against.')}
-    <div class="grid g-1-2">
+    <div class="card">
+      <div class="card-h"><div><h3>Product catalogue</h3><div class="sub">${products.length} products</div></div></div>
+      ${products.length ? rows : `<div class="card-b">${emptyState('box','No products yet','Run the spec import to populate this page.')}</div>`}
+    </div>`
+  };
+}
+function viewProductDetail(id){
+  const p = S.products.find(x => String(x.id) === String(id));
+  if (!p) return { title:'Not found', crumb:'Administration', html: notFound() };
+  const stages = stagesForProduct(p);
+  const requestsRaised = S.requests.filter(r => r.productName === p.name).length;
+  return {
+    title:p.name, crumb:'Administration',
+    html: `
+    ${pageHead(p.name, 'Shelf life and acceptance criteria for this product.',
+      `<a class="btn btn-ghost" href="#/products">${I.chevL} Back to products</a>`)}
+    <div class="stack">
       <div class="card">
-        <div class="card-h"><div><h3>Product catalogue</h3><div class="sub">${products.length} products</div></div></div>
-        <div style="max-height:600px;overflow-y:auto">
-          ${products.map(x => `<div class="mail-row" style="${p && x.id===p.id?'border-left:3px solid var(--brand);background:var(--brand-50)':'border-left:3px solid transparent'}"
-            onclick="go('/products?id=${x.id}')">
-            <div style="flex:1;min-width:0"><div class="ms">${esc(x.name)}</div>
-              <div class="mp">Prefix ${esc(x.prefix)} &middot; ${x.shelfLifeMonths} months shelf life</div></div>
-            <span class="chip">${stagesForProduct(x).length} stages</span></div>`).join('')}
+        <div class="card-h"><div><h3>${esc(p.name)}</h3>
+          <div class="sub">Prefix <b>${esc(p.prefix)}</b></div></div>
+          <span class="badge b-brand">${esc(p.type)} line</span></div>
+        <div class="card-b">
+          <div class="kv-grid">
+            <div class="kv-item"><div class="k">Batch units</div><div class="v">${esc((UNIT_OPTIONS[p.type]||[]).join(', '))}</div></div>
+            <div class="kv-item"><div class="k">Stages tested</div><div class="v">${esc(stages.join(', '))}</div></div>
+            <div class="kv-item"><div class="k">Requests raised</div><div class="v">${requestsRaised}</div></div>
+          </div>
+          <div class="row" style="margin-top:16px;align-items:center;gap:12px;padding-top:14px;border-top:1px solid var(--line-2)">
+            <div class="kv-item" style="flex:1"><div class="k">Shelf life</div><div class="v">${p.shelfLifeMonths} months</div></div>
+            <button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Edit</button>
+          </div>
         </div>
       </div>
-      ${p ? `<div class="stack">
-        <div class="card">
-          <div class="card-h"><div><h3>${esc(p.name)}</h3>
-            <div class="sub">Prefix <b>${esc(p.prefix)}</b> &middot; shelf life ${p.shelfLifeMonths} months
-              <button class="btn btn-ghost btn-sm" style="margin-left:6px" onclick="editShelfLife(${p.id})">${I.edit} Edit</button></div></div>
-            <span class="badge b-brand">${esc(p.type)} line</span></div>
-          <div class="card-b">
-            <div class="kv-grid">
-              <div class="kv-item"><div class="k">Batch units</div><div class="v">${(UNIT_OPTIONS[p.type]||[]).join(', ')}</div></div>
-              <div class="kv-item"><div class="k">Stages tested</div><div class="v">${stages.join(', ')}</div></div>
-              <div class="kv-item"><div class="k">Requests raised</div><div class="v">${requestsRaised}</div></div>
-            </div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-h">
-            <div><h3>Stage specification</h3><div class="sub">Applied automatically on the IPQA form</div></div>
-            <div class="seg">${stages.map(s => `<button class="${s===stage?'on':''}" onclick="go('/products?id=${p.id}&stage=${encodeURIComponent(s)}')">${esc(s)}</button>`).join('')}</div>
-          </div>
+      ${stages.map(stage => {
+        const specs = (p.specs||[]).filter(s => s.stage === stage);
+        return `<div class="card">
+          <div class="card-h"><div><h3>${esc(stage)}</h3><div class="sub">Applied automatically on the IPQA form</div></div></div>
           <div class="tbl-wrap"><table class="tbl">
             <thead><tr><th>Parameter</th><th>Acceptance criteria</th><th>Type</th><th></th></tr></thead>
             <tbody>${specs.length ? specs.map(s => `<tr>
@@ -1078,8 +1095,8 @@ function viewProducts(){
                 `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Edit limits</button>`}</td>
             </tr>`).join('') : `<tr><td colspan="4" class="muted" style="padding:16px">No parameters imported for this stage.</td></tr>`}</tbody>
           </table></div>
-        </div>
-      </div>` : `<div class="card"><div class="card-b">${emptyState('box','No products yet','Run the spec import to populate this page.')}</div></div>`}
+        </div>`;
+      }).join('')}
     </div>`
   };
 }
@@ -1239,6 +1256,7 @@ route('/sheets', () => viewSheets());
 route('/reports', () => viewReports());
 route('/team', () => viewTeam());
 route('/products', () => viewProducts());
+route('/products/:id', p => viewProductDetail(p.id));
 route('/audit', () => viewAudit());
 route('/settings', () => viewSettings());
 
