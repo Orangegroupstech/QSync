@@ -660,16 +660,16 @@ function viewRequests(){
   const rows = filterRequests();
   const productOptions = Object.keys(PRODUCTS_META).map(p => `<option value="${esc(p)}" ${listState.product===p?'selected':''}>${esc(p)}</option>`).join('');
   const statusOptions = Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${listState.status===k?'selected':''}>${esc(v.label)}</option>`).join('');
-  const body = rows.length ? `<div class="tbl-wrap"><table class="tbl no-stack">
+  const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Status</th><th>Result</th><th>Updated</th><th></th></tr></thead>
       <tbody>${rows.map(r => `
         <tr class="clickable" onclick="go('/sheet/${r.id}')">
-          <td><div class="req-no">${esc(r.requestNo)}</div></td>
-          <td><div class="strong">${esc(r.productName)}</div><div class="tiny muted mono">${esc(r.batchNo)}</div></td>
-          <td><span class="chip">${esc(r.stage)}</span></td>
-          <td>${statusBadge(r.status)}</td>
-          <td>${resultBadge(r)}</td>
-          <td class="small muted">${relTime(r.updatedAt)}</td>
+          <td data-label="Request"><div class="req-no">${esc(r.requestNo)}</div></td>
+          <td data-label="Product / Batch"><div class="strong">${esc(r.productName)}</div><div class="tiny muted mono">${esc(r.batchNo)}</div></td>
+          <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
+          <td data-label="Status">${statusBadge(r.status)}</td>
+          <td data-label="Result">${resultBadge(r)}</td>
+          <td class="small muted" data-label="Updated">${relTime(r.updatedAt)}</td>
           <td style="text-align:right">${I.chevR}</td>
         </tr>`).join('')}</tbody></table></div>`
     : `<div class="card-b">${emptyState('inbox','Nothing here','No requests match the current filters.')}</div>`;
@@ -680,10 +680,10 @@ function viewRequests(){
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
         <div class="row" style="gap:10px">
-          <div class="search" style="max-width:280px;flex:1"><span class="ic">${I.search}</span>
+          <div class="search filter-search"><span class="ic">${I.search}</span>
             <input class="inp" id="listQ" style="padding-left:34px;border-radius:20px" placeholder="Search request, batch or product" value="${esc(listState.q)}"></div>
-          <select class="inp" id="listStatus" style="width:auto;min-width:150px"><option value="">All statuses</option>${statusOptions}</select>
-          <select class="inp" id="listProduct" style="width:auto;min-width:140px"><option value="">All products</option>${productOptions}</select>
+          <select class="inp filter-sel-status" id="listStatus"><option value="">All statuses</option>${statusOptions}</select>
+          <select class="inp filter-sel-product" id="listProduct"><option value="">All products</option>${productOptions}</select>
           <div class="spacer"></div>
           <button class="btn btn-ghost btn-sm" onclick="exportRequestList()">${I.download} Export CSV</button>
         </div>
@@ -793,11 +793,11 @@ function viewSheets(){
   const body = list.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Verdict</th><th>Status</th><th></th></tr></thead>
       <tbody>${list.map(r => `<tr class="clickable" onclick="go('/sheet/${r.id}')">
-        <td class="req-no">${esc(r.requestNo)}</td>
-        <td><div class="strong">${esc(r.productName)}</div><div class="tiny muted mono">${esc(r.batchNo)}</div></td>
-        <td><span class="chip">${esc(r.stage)}</span></td>
-        <td>${resultBadge(r)}</td>
-        <td>${statusBadge(r.status)}</td>
+        <td class="req-no" data-label="Request">${esc(r.requestNo)}</td>
+        <td data-label="Product / Batch"><div class="strong">${esc(r.productName)}</div><div class="tiny muted mono">${esc(r.batchNo)}</div></td>
+        <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
+        <td data-label="Verdict">${resultBadge(r)}</td>
+        <td data-label="Status">${statusBadge(r.status)}</td>
         <td style="text-align:right">${I.chevR}</td></tr>`).join('')}</tbody></table></div>`
     : `<div class="card-b">${emptyState('doc','No sheets yet','A QSync sheet is generated once IPQA records results.')}</div>`;
   return {
@@ -866,8 +866,8 @@ function viewReports(){
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Product</th><th>Requests</th><th>Analysed</th><th>First pass</th></tr></thead>
         <tbody>${(d.byProduct||[]).map(p => `<tr>
-          <td class="strong">${esc(p.name)}</td><td class="tnum">${p.total}</td><td class="tnum">${p.tested}</td>
-          <td>${p.rate==null?'<span class="muted">--</span>':`
+          <td class="strong" data-label="Product">${esc(p.name)}</td><td class="tnum" data-label="Requests">${p.total}</td><td class="tnum" data-label="Analysed">${p.tested}</td>
+          <td data-label="First pass">${p.rate==null?'<span class="muted">--</span>':`
             <div class="row" style="gap:8px"><div class="bar ${p.rate>=95?'ok':(p.rate>=80?'warn':'danger')}" style="width:66px"><i style="width:${p.rate}%"></i></div>
             <span class="tnum small strong">${p.rate}%</span></div>`}</td></tr>`).join('')}
         </tbody></table></div>
@@ -905,12 +905,12 @@ function viewTeam(){
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Person</th><th>Role</th><th>Phone</th><th>Email</th><th>Status</th><th></th></tr></thead>
         <tbody>${users.map(u => `<tr>
-          <td><div class="row" style="gap:10px">${avatarEl(u.name)}
+          <td data-label="Person"><div class="row" style="gap:10px">${avatarEl(u.name)}
             <div style="min-width:0"><div class="strong">${esc(u.name)}</div></div></div></td>
-          <td><span class="badge b-slate">${esc(ROLE_LABELS[u.role]||u.role)}</span></td>
-          <td class="small mono">${esc(u.phone_number||'--')}</td>
-          <td class="small">${esc(u.email||'--')}</td>
-          <td>${u.active?'<span class="badge b-ok"><span class="dot"></span>Active</span>':'<span class="badge b-slate"><span class="dot"></span>Inactive</span>'}</td>
+          <td data-label="Role"><span class="badge b-slate">${esc(ROLE_LABELS[u.role]||u.role)}</span></td>
+          <td class="small mono" data-label="Phone">${esc(u.phone_number||'--')}</td>
+          <td class="small" data-label="Email">${esc(u.email||'--')}</td>
+          <td data-label="Status">${u.active?'<span class="badge b-ok"><span class="dot"></span>Active</span>':'<span class="badge b-slate"><span class="dot"></span>Inactive</span>'}</td>
           <td style="text-align:right;white-space:nowrap">
             <button class="btn btn-ghost btn-sm" onclick="openEditUser(${u.id})">${I.edit} Edit</button>
             <button class="btn btn-ghost btn-sm" onclick="toggleUserActive(${u.id})">
@@ -1052,7 +1052,8 @@ function viewProducts(){
       ${p ? `<div class="stack">
         <div class="card">
           <div class="card-h"><div><h3>${esc(p.name)}</h3>
-            <div class="sub">Prefix <b>${esc(p.prefix)}</b> &middot; shelf life ${p.shelfLifeMonths} months</div></div>
+            <div class="sub">Prefix <b>${esc(p.prefix)}</b> &middot; shelf life ${p.shelfLifeMonths} months
+              <button class="btn btn-ghost btn-sm" style="margin-left:6px" onclick="editShelfLife(${p.id})">${I.edit} Edit</button></div></div>
             <span class="badge b-brand">${esc(p.type)} line</span></div>
           <div class="card-b">
             <div class="kv-grid">
@@ -1070,9 +1071,9 @@ function viewProducts(){
           <div class="tbl-wrap"><table class="tbl">
             <thead><tr><th>Parameter</th><th>Acceptance criteria</th><th>Type</th><th></th></tr></thead>
             <tbody>${specs.length ? specs.map(s => `<tr>
-              <td><div class="strong">${esc(s.parameterName)}</div></td>
-              <td class="small">${esc(s.specText || (s.specMin!=null && s.specMax!=null ? `${s.specMin} - ${s.specMax}${s.unit?' '+s.unit:''}` : '--'))}</td>
-              <td><span class="chip">${s.specText ? 'Complies / Does not' : 'Numeric'}</span></td>
+              <td data-label="Parameter"><div class="strong">${esc(s.parameterName)}</div></td>
+              <td class="small" data-label="Acceptance criteria">${esc(s.specText || (s.specMin!=null && s.specMax!=null ? `${s.specMin} - ${s.specMax}${s.unit?' '+s.unit:''}` : '--'))}</td>
+              <td data-label="Type"><span class="chip">${s.specText ? 'Complies / Does not' : 'Numeric'}</span></td>
               <td style="text-align:right">${s.specText ? '<span class="tiny muted">Fixed</span>' :
                 `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Edit limits</button>`}</td>
             </tr>`).join('') : `<tr><td colspan="4" class="muted" style="padding:16px">No parameters imported for this stage.</td></tr>`}</tbody>
@@ -1117,6 +1118,31 @@ function editSpec(specId){
     }
   });
 }
+function editShelfLife(productId){
+  const p = S.products.find(x => x.id === productId);
+  if (!p) return;
+  openModal({
+    title:`Edit shelf life - ${esc(p.name)}`, sub:'Used to calculate Exp Date on new test requests for this product',
+    body:`<form id="shelfForm" novalidate>
+      <div class="field"><label for="slMonths">Shelf life (months)</label>
+        <input class="inp" id="slMonths" value="${p.shelfLifeMonths}" inputmode="numeric">
+        <div class="err-msg hide" data-err="slMonths"></div></div>
+    </form>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save</button>`,
+    onMount:(w,close) => {
+      $('[data-save]',w).onclick = async () => {
+        clearErrors(w);
+        const months = parseInt($('#slMonths',w).value, 10);
+        if (!Number.isFinite(months) || months <= 0) return setErr('slMonths','Enter a whole number of months greater than zero.',w);
+        try {
+          await api('/webhook/admin/api/products/edit', { method:'POST', body:{ product_id:productId, shelf_life_months:months } });
+          p.shelfLifeMonths = months;
+          close(); render(); toast('Shelf life updated', esc(p.name)+' is now '+months+' months', 'ok');
+        } catch (err){ setErr('slMonths', err.message, w); }
+      };
+    }
+  });
+}
 
 
 /* ============================================================
@@ -1140,11 +1166,11 @@ function viewAudit(){
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th><th>Reference</th></tr></thead>
         <tbody>${rows.length ? rows.map(e => `<tr>
-          <td class="small" style="white-space:nowrap">${fmtDateTime(e.at)}<div class="tiny muted">${relTime(e.at)}</div></td>
-          <td><div class="row" style="gap:8px">${avatarEl(e.actor_name,'sm')}<span class="small strong">${esc(e.actor_name)}</span></div></td>
-          <td class="small strong">${esc(e.action)}</td>
-          <td class="small muted" style="max-width:380px">${esc(e.detail||'--')}</td>
-          <td>${e.ref?`<span class="mono small">${esc(e.ref)}</span>`:'<span class="muted">--</span>'}</td>
+          <td class="small" style="white-space:nowrap" data-label="When">${fmtDateTime(e.at)}<div class="tiny muted">${relTime(e.at)}</div></td>
+          <td data-label="Who"><div class="row" style="gap:8px">${avatarEl(e.actor_name,'sm')}<span class="small strong">${esc(e.actor_name)}</span></div></td>
+          <td class="small strong" data-label="Action">${esc(e.action)}</td>
+          <td class="small muted" style="max-width:380px" data-label="Detail">${esc(e.detail||'--')}</td>
+          <td data-label="Reference">${e.ref?`<span class="mono small">${esc(e.ref)}</span>`:'<span class="muted">--</span>'}</td>
         </tr>`).join('') : `<tr><td colspan="5" class="muted" style="padding:16px">No matching entries.</td></tr>`}</tbody>
       </table></div>
     </div>`,
