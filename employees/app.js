@@ -52,16 +52,30 @@ function download(filename, text, type){
 }
 
 /* ---------------- API layer ----------------
-   TEMPORARY PHASE: this module has no login yet (see project README) - the
-   backend endpoints below are the open/no-auth workflow variant, not the
-   session-gated one. No token is sent or expected. The fully auth-capable
-   version of both this file and the n8n workflow is kept as-is in the
-   original "Employee Database" project folder for a quick re-enable later:
-   this is a deliberately reduced copy, not the source of truth. */
+   Session-gated, same pattern as QSync's own app.js: a bearer token from
+   /webhook/employees/api/login, sent as a plain Authorization header (no
+   "Bearer " prefix, matching what the backend's session-check expects). */
+// sessionStorage throws in some sandboxed/embedded viewing contexts (SecurityError:
+// "document is sandboxed and lacks the allow-same-origin flag"). Fall back to an
+// in-memory token so the app still works there - it just won't survive a reload.
+const TOKEN_KEY = 'okl.employees.token';
+let memoryToken = '';
+function getToken(){
+  try { return sessionStorage.getItem(TOKEN_KEY) || memoryToken || ''; }
+  catch (e) { return memoryToken || ''; }
+}
+function setToken(t){
+  memoryToken = t || '';
+  try { if (t) sessionStorage.setItem(TOKEN_KEY, t); else sessionStorage.removeItem(TOKEN_KEY); }
+  catch (e) { /* sandboxed - memory fallback above already covers this */ }
+}
+
 const API_BASE = 'https://orangegroupsai.online';
 async function api(path, opts){
   opts = opts || {};
   const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  const token = getToken();
+  if (token) headers['Authorization'] = token;
   let res;
   try {
     res = await fetch(API_BASE + path, {
@@ -72,13 +86,22 @@ async function api(path, opts){
   } catch (e) {
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
+  if (res.status === 401 && path !== '/webhook/employees/api/login'){
+    setToken(''); S = null;
+    render();
+    throw new Error('Your session has expired. Please log in again.');
+  }
   let json = {};
   try { json = await res.json(); } catch (e) { /* empty body */ }
   if (!res.ok) throw new Error(json.error || 'Something went wrong.');
   return json;
 }
 async function exportEmployeesCSV(){
-  const res = await fetch(API_BASE + '/webhook/employees/api/export');
+  const token = getToken();
+  const res = await fetch(API_BASE + '/webhook/employees/api/export', {
+    headers: token ? { Authorization: token } : {},
+  });
+  if (res.status === 401){ setToken(''); S = null; render(); throw new Error('Your session has expired. Please log in again.'); }
   if (!res.ok) throw new Error('Could not export employees right now.');
   const text = await res.text();
   download('okl_employees.csv', text, 'text/csv;charset=utf-8');
@@ -137,6 +160,25 @@ function setErr(id, msg, scope){
   return false;
 }
 
+/* ---------------- Idle timeout + logout (server-enforced too - session TTL matches QSync's 10 min) ---------------- */
+const IDLE_LIMIT_MS = 10 * 60 * 1000;
+let idleTimer = null;
+function resetIdleTimer(){
+  if (!S) return;
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { logout('Signed out after 10 minutes of inactivity.'); }, IDLE_LIMIT_MS);
+}
+['click','keydown','mousemove','touchstart'].forEach(evt =>
+  document.addEventListener(evt, () => resetIdleTimer(), { passive:true }));
+
+async function logout(reason){
+  try { await api('/webhook/employees/api/logout', { method:'POST' }); } catch(e) { /* best effort */ }
+  setToken(''); S = null;
+  if (idleTimer) clearTimeout(idleTimer);
+  render();
+  if (reason) toast('Signed out', reason, 'err', 6000);
+}
+
 /* ---------------- Routing (ported from QSync's app.js) ---------------- */
 const ROUTES = [];
 function route(pattern, handler){ ROUTES.push({ pattern, handler }); }
@@ -161,6 +203,7 @@ function matchRoute(path){
 function navModel(){
   return [
     { title:'Modules', items:[ { path:'/employees', label:'Employees', icon:'users' } ] },
+    { title:'Account', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },
   ];
 }
 
@@ -192,7 +235,13 @@ function renderShell(inner, meta){
       <div class="sidebar-scroll">${navHtml}</div>
       <div class="sidebar-foot">
         <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to OKL Console</a>
-        <div class="notice info" style="margin:0;font-size:11.5px">${I.info}<div>No login yet - this module is temporarily open.</div></div>
+        <div class="user-chip" onclick="go('/settings')">
+          ${avatarEl(S.me.name)}
+          <div style="min-width:0;flex:1"><div class="nm">${esc(S.me.name)}</div><div class="rl">${S.me.permission==='editor'?'Editor':'Viewer'}</div></div>
+          <span style="color:var(--nav-text-dim)">${I.chevR}</span>
+        </div>
+        <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)"
+          onclick="logout()">${I.logout} Sign out</button>
       </div>
     </aside>
     <div class="main">
@@ -238,13 +287,66 @@ function fatalErrorHtml(err){
     </div></div>`;
 }
 
+/* ---------------- Login ---------------- */
+function viewLogin(){
+  document.body.classList.remove('nav-open');
+  return `
+  <div class="auth">
+    <div class="auth-art">
+      <div>
+        <span class="logo lg"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span>
+        <h1 style="margin-top:26px">Employee Database</h1>
+        <p>Sign in with your email and PIN to view and manage staff records.</p>
+      </div>
+      <div class="af"><div class="afi">${I.lock}</div><div><div class="aft">Session security</div>
+        <div class="afd">You'll be signed out automatically after 10 minutes of inactivity.</div></div></div>
+    </div>
+    <div class="auth-form">
+      <div class="auth-box">
+        <h2>Sign in</h2>
+        <form id="loginForm" novalidate style="margin-top:18px">
+          <div class="field"><label for="lgEmail">Email address</label>
+            <input class="inp" id="lgEmail" type="email" placeholder="you@orangegroupsai.online" autocomplete="username">
+            <div class="err-msg hide" data-err="lgEmail"></div></div>
+          <div class="field"><label for="lgPin">PIN</label>
+            <input class="inp" id="lgPin" type="password" inputmode="numeric" autocomplete="current-password">
+            <div class="err-msg hide" data-err="lgPin"></div></div>
+          <button class="btn btn-primary btn-block btn-lg" type="submit">Sign in</button>
+        </form>
+      </div>
+    </div>
+  </div>`;
+}
+function bindLogin(){
+  const f = $('#loginForm'); if (!f) return;
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    clearErrors(f);
+    const email = $('#lgEmail').value.trim();
+    const pin = $('#lgPin').value.trim();
+    if (!email) return setErr('lgEmail', 'Enter your email address.');
+    if (!pin) return setErr('lgPin', 'Enter your PIN.');
+    const btn = f.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      const res = await api('/webhook/employees/api/login', { method:'POST', body:{ email, pin } });
+      setToken(res.token);
+      await bootstrap();
+      go('/');
+      render();
+    } catch (err) {
+      setErr('lgPin', err.message || 'Invalid email or PIN.');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
 /* ---------------- Boot / bootstrap / render ---------------- */
-// No login in this temporary phase - "me" is a stand-in, not a real account.
-// Every viewer is treated as an editor (matches the original "editable for
-// all fields, I'm the only owner for now" instruction).
 async function bootstrap(){
   const data = await api('/webhook/employees/api/list');
-  S = { me: { name: 'Employee Database', permission: 'editor' }, employees: data.employees };
+  S = { me: data.me, employees: data.employees };
+  resetIdleTimer();
 }
 function loadError(err){
   return `<div style="max-width:480px;margin:80px auto;padding:0 16px;text-align:center;font-family:var(--font,system-ui,sans-serif)">
@@ -257,7 +359,8 @@ function render(){
   const app = document.getElementById('app');
   try {
     if (!S){
-      app.innerHTML = loadError(new Error('Still loading...'));
+      app.innerHTML = viewLogin();
+      bindLogin();
       return;
     }
     const path = currentPath();
@@ -286,14 +389,18 @@ function render(){
 window.addEventListener('hashchange', render);
 
 (async function boot(){
-  const app = document.getElementById('app');
   try {
-    await bootstrap();
+    const token = getToken();
+    if (token){
+      try { await bootstrap(); }
+      catch (e) { setToken(''); S = null; }
+    }
     if (!location.hash) location.hash = '#/';
     render();
   } catch (err) {
     console.error(err);
-    if (app) app.innerHTML = loadError(err);
+    const app = document.getElementById('app');
+    if (app) app.innerHTML = fatalErrorHtml(err);
   }
 })();
 
@@ -307,6 +414,64 @@ function matchesEmployeeQuery(e, q){
   if (!q) return true;
   const haystack = [e.enroll_id, e.name, e.role, e.workstation].map(v => String(v||'').toLowerCase()).join(' ');
   return haystack.includes(q);
+}
+
+// Which row (if any) is expanded in place, and whether it's showing the
+// read-only card or the edit form. Resets to view mode whenever a
+// *different* row is opened, but survives re-renders of the same one (e.g.
+// after a failed save) so the form doesn't collapse under the user.
+let expandedEnrollId = null;
+let expandedMode = 'view';
+
+function toggleEmployeeRow(enrollId){
+  expandedEnrollId = (expandedEnrollId === enrollId) ? null : enrollId;
+  expandedMode = 'view';
+  render();
+}
+function startEditingEmployee(enrollId){
+  expandedEnrollId = enrollId;
+  expandedMode = 'edit';
+  render();
+}
+function cancelEditingEmployee(enrollId){
+  expandedMode = 'view';
+  render();
+}
+
+function renderEmployeeExpanded(e, canEdit){
+  const editing = canEdit && expandedMode === 'edit';
+  const readonlyRow = (label, value) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${esc(value||'--')}</div></div>`;
+  const tagRow = (label, values) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${
+    (values&&values.length) ? values.map(v=>`<span class="chip" style="margin:2px 4px 2px 0">${esc(v)}</span>`).join('') : '--'
+  }</div></div>`;
+
+  if (editing) {
+    return `
+      <form id="editEmployeeForm" novalidate>${employeeFormFields(e, 'ee')}
+        <div class="row end" style="margin-top:6px">
+          <button class="btn btn-ghost" type="button" onclick="cancelEditingEmployee('${esc(e.enroll_id)}')">Cancel</button>
+          <button class="btn btn-primary" type="submit">${I.check} Save changes</button>
+        </div>
+      </form>`;
+  }
+
+  return `
+    <div class="row between" style="margin-bottom:12px">
+      <div class="small muted">Full details</div>
+      ${canEdit ? `<button class="btn btn-primary btn-sm" onclick="startEditingEmployee('${esc(e.enroll_id)}')">${I.edit} Edit</button>` : ''}
+    </div>
+    ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access - editing employee records requires an editor account.</div></div>` : ''}
+    <div class="kv-grid">
+      ${readonlyRow('Enroll ID', e.enroll_id)}
+      ${readonlyRow('Gender', e.gender)}
+      ${readonlyRow('Employment type', e.employment_type)}
+      ${readonlyRow('Role', e.role)}
+      ${readonlyRow('Phone number', e.phone_number)}
+      ${readonlyRow('Work email', e.work_email)}
+      ${readonlyRow('Workstation', e.workstation)}
+      ${tagRow('Current competencies', e.current_competencies)}
+      ${tagRow('Skill gaps', e.skill_gaps)}
+    </div>`;
 }
 
 function viewEmployees(){
@@ -336,15 +501,23 @@ function viewEmployees(){
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Enroll ID</th><th>Name</th><th>Gender</th><th>Type</th><th>Role</th><th>Workstation</th></tr></thead>
-        <tbody>${rows.length ? rows.map(e => `
-          <tr class="clickable" onclick="go('/employees/${encodeURIComponent(e.enroll_id)}')">
+        <tbody>${rows.length ? rows.map(e => {
+          const isExpanded = e.enroll_id === expandedEnrollId;
+          const row = `
+          <tr class="clickable" onclick="toggleEmployeeRow('${esc(e.enroll_id)}')">
             <td class="mono" data-label="Enroll ID">${esc(e.enroll_id)}</td>
             <td data-label="Name"><div class="row" style="gap:10px">${avatarEl(e.name)}<div class="strong">${esc(e.name)}</div></div></td>
             <td data-label="Gender">${esc(e.gender||'--')}</td>
             <td data-label="Type"><span class="badge ${e.employment_type==='staff'?'b-brand':'b-slate'}">${esc(e.employment_type)}</span></td>
             <td data-label="Role">${esc(e.role||'--')}</td>
             <td data-label="Workstation">${esc(e.workstation||'--')}</td>
-          </tr>`).join('') : `<tr><td colspan="6">${emptyState('users','No employees match', 'Try a different search or filter.')}</td></tr>`}
+          </tr>`;
+          const expansion = isExpanded ? `
+          <tr><td colspan="6" style="padding:0;background:var(--surface-2);border-bottom:1px solid var(--line)">
+            <div style="padding:16px">${renderEmployeeExpanded(e, canEdit)}</div>
+          </td></tr>` : '';
+          return row + expansion;
+        }).join('') : `<tr><td colspan="6">${emptyState('users','No employees match', 'Try a different search or filter.')}</td></tr>`}
         </tbody>
       </table></div>
     </div>`,
@@ -353,6 +526,26 @@ function viewEmployees(){
       $('#empSearch').focus();
       $('#empSearch').setSelectionRange(employeeQuery.length, employeeQuery.length);
       $('#empTypeFilter').onchange = (e) => { employeeTypeFilter = e.target.value; render(); };
+
+      const editForm = $('#editEmployeeForm');
+      if (editForm) {
+        editForm.onsubmit = async (ev) => {
+          ev.preventDefault();
+          clearErrors(editForm);
+          const payload = readEmployeeForm('ee', editForm);
+          if (!payload.name) return setErr('eeName', 'Enter a name.', editForm);
+          const btn = editForm.querySelector('button[type=submit]');
+          btn.disabled = true;
+          try {
+            await api('/webhook/employees/api/update', { method:'POST', body: payload });
+            const emp = S.employees.find(x => x.enroll_id === payload.enroll_id);
+            Object.assign(emp, payload);
+            expandedMode = 'view';
+            render(); toast('Changes saved', esc(payload.name) + ' has been updated.', 'ok');
+          } catch (err) { setErr('eeName', err.message, editForm); }
+          finally { btn.disabled = false; }
+        };
+      }
     },
   };
 }
@@ -451,91 +644,58 @@ function openAddEmployee(){
   });
 }
 
-// Tracks whether the detail page for a given employee is showing the
-// read-only card or the edit form. Resets to the card whenever a *different*
-// employee is opened, but survives re-renders of the same one (e.g. after a
-// failed save) so the form doesn't collapse under the user.
-let detailView = { enrollId: null, mode: 'view' };
-
-function viewEmployeeDetail(enrollId){
-  const e = S.employees.find(x => String(x.enroll_id) === String(enrollId));
-  if (!e) return { title:'Not found', crumb:'Modules', html: notFound() };
-  const canEdit = S.me.permission === 'editor';
-
-  if (detailView.enrollId !== enrollId) {
-    detailView = { enrollId, mode: 'view' };
-  }
-  const editing = canEdit && detailView.mode === 'edit';
-
-  const readonlyRow = (label, value) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${esc(value||'--')}</div></div>`;
-  const tagRow = (label, values) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${
-    (values&&values.length) ? values.map(v=>`<span class="chip" style="margin:2px 4px 2px 0">${esc(v)}</span>`).join('') : '--'
-  }</div></div>`;
-
+/* ============================================================
+   Settings (change PIN, sign out)
+   ============================================================ */
+function viewSettings(){
   return {
-    title:e.name, crumb:'Employees',
+    title:'Settings', crumb:'Account',
     html: `
-    ${pageHead(e.name, `Enroll ID ${esc(e.enroll_id)}`,
-      `<a class="btn btn-ghost" href="#/employees">${I.chevL} Back to employees</a>`)}
-    <div class="card">
-      <div class="card-h"><div><h3>${esc(e.name)}</h3><div class="sub">${esc(e.role||'No role on record')}</div></div>
-        <div class="row" style="gap:8px">
-          <span class="badge ${e.employment_type==='staff'?'b-brand':'b-slate'}">${esc(e.employment_type)}</span>
-          ${canEdit && !editing ? `<button class="btn btn-primary btn-sm" onclick="startEditingEmployee('${esc(e.enroll_id)}')">${I.edit} Edit</button>` : ''}
+    ${pageHead('Settings', 'Manage your own account.')}
+    <div class="grid g2">
+      <div class="card">
+        <div class="card-h"><h3>${esc(S.me.name)}</h3></div>
+        <div class="card-b">
+          <div class="kv-grid">
+            <div class="kv-item"><div class="k">Role</div><div class="v">${esc(S.me.role||'--')}</div></div>
+            <div class="kv-item"><div class="k">Access level</div><div class="v">${S.me.permission==='editor'?'Editor (full edit)':'Viewer (read-only)'}</div></div>
+          </div>
+          <div class="divider"></div>
+          <button class="btn btn-ghost" onclick="logout()">${I.logout} Sign out</button>
         </div>
       </div>
-      <div class="card-b">
-        ${editing ? `
-          <form id="editEmployeeForm" novalidate>${employeeFormFields(e, 'ee')}
-            <div class="row end" style="margin-top:6px">
-              <button class="btn btn-ghost" type="button" onclick="cancelEditingEmployee('${esc(e.enroll_id)}')">Cancel</button>
-              <button class="btn btn-primary" type="submit">${I.check} Save changes</button>
-            </div>
+      <div class="card">
+        <div class="card-h"><h3>Change PIN</h3></div>
+        <div class="card-b">
+          <form id="changePinForm" novalidate>
+            <div class="field"><label for="cpNewPin">New PIN</label>
+              <input class="inp" id="cpNewPin" type="password" inputmode="numeric" maxlength="8">
+              <div class="hint">${I.info}<span>4-8 digits.</span></div>
+              <div class="err-msg hide" data-err="cpNewPin"></div></div>
+            <button class="btn btn-primary" type="submit">${I.key} Update PIN</button>
           </form>
-        ` : `
-          ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access - editing employee records requires an editor account.</div></div>` : ''}
-          <div class="kv-grid">
-            ${readonlyRow('Enroll ID', e.enroll_id)}
-            ${readonlyRow('Gender', e.gender)}
-            ${readonlyRow('Employment type', e.employment_type)}
-            ${readonlyRow('Role', e.role)}
-            ${readonlyRow('Phone number', e.phone_number)}
-            ${readonlyRow('Work email', e.work_email)}
-            ${readonlyRow('Workstation', e.workstation)}
-            ${tagRow('Current competencies', e.current_competencies)}
-            ${tagRow('Skill gaps', e.skill_gaps)}
-          </div>
-        `}
+        </div>
       </div>
     </div>`,
     bind(){
-      const f = $('#editEmployeeForm'); if (!f) return;
+      const f = $('#changePinForm');
       f.onsubmit = async (ev) => {
         ev.preventDefault();
         clearErrors(f);
-        const payload = readEmployeeForm('ee', f);
-        if (!payload.name) return setErr('eeName', 'Enter a name.', f);
+        const newPin = $('#cpNewPin').value.trim();
+        if (!/^[0-9]{4,8}$/.test(newPin)) return setErr('cpNewPin', 'PIN must be 4-8 digits.', f);
         const btn = f.querySelector('button[type=submit]');
         btn.disabled = true;
         try {
-          await api('/webhook/employees/api/update', { method:'POST', body: payload });
-          Object.assign(e, payload);
-          detailView = { enrollId: e.enroll_id, mode: 'view' };
-          render(); toast('Changes saved', esc(payload.name) + ' has been updated.', 'ok');
-        } catch (err) { setErr('eeName', err.message, f); }
+          await api('/webhook/employees/api/change-pin', { method:'POST', body:{ new_pin: newPin } });
+          f.reset();
+          toast('PIN updated', 'Use your new PIN next time you sign in.', 'ok');
+        } catch (err) { setErr('cpNewPin', err.message, f); }
         finally { btn.disabled = false; }
       };
     },
   };
 }
-route('/employees/:enrollId', p => viewEmployeeDetail(p.enrollId));
+route('/settings', () => viewSettings());
 
-function startEditingEmployee(enrollId){
-  detailView = { enrollId, mode: 'edit' };
-  render();
-}
-function cancelEditingEmployee(enrollId){
-  detailView = { enrollId, mode: 'view' };
-  render();
-}
 
