@@ -3,13 +3,57 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QSync Admin Console</title>
-<link rel="stylesheet" href="style.css">
+<title>OKL Console</title>
+<style>
+  :root{
+    --brand:#ED6B1F; --brand-600:#D75E15;
+    --bg:#F5F6F7; --surface:#FFFFFF; --line:#E4E7EA;
+    --text:#16191D; --text-2:#565E6B; --text-3:#8A93A0;
+    --r:12px; --r-lg:16px;
+    --font:"Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  }
+  *,*::before,*::after{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font);
+    display:flex;align-items:center;justify-content:center;padding:24px}
+  .wrap{max-width:760px;width:100%;text-align:center}
+  .logo{display:inline-flex;align-items:center;gap:0;background:var(--brand);border:2px solid #fff;
+    box-shadow:0 0 0 2px var(--brand);padding:8px 18px;border-radius:3px;line-height:1;margin-bottom:22px}
+  .logo .berry{display:inline-block;width:16px;height:12px;margin-right:7px;position:relative;flex:0 0 auto}
+  .logo .berry i{position:absolute;top:0;width:7px;height:7px;border-radius:50%;background:#fff}
+  .logo .berry i:first-child{left:0} .logo .berry i:nth-child(2){left:8px}
+  .logo .berry b{position:absolute;bottom:0;left:0;width:15px;height:3px;border-radius:2px;background:#fff}
+  .logo span{font-family:Georgia,"Times New Roman",serif;font-weight:700;color:#fff;font-size:18px;letter-spacing:.14em;white-space:nowrap}
+  h1{font-size:26px;margin:0 0 8px;letter-spacing:-.02em}
+  p.sub{color:var(--text-2);font-size:14.5px;margin:0 0 34px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+  a.tile{display:block;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+    padding:26px 22px;text-decoration:none;color:var(--text);transition:.16s ease;text-align:left}
+  a.tile:hover{border-color:var(--brand);box-shadow:0 8px 24px rgba(16,25,20,.08);transform:translateY(-2px)}
+  .tile h3{margin:0 0 6px;font-size:16.5px}
+  .tile p{margin:0;font-size:13px;color:var(--text-3);line-height:1.5}
+  .badge{display:inline-block;margin-top:12px;font-size:11px;font-weight:700;letter-spacing:.04em;
+    text-transform:uppercase;color:var(--brand-600)}
+  footer{margin-top:34px;font-size:11.5px;color:var(--text-3)}
+</style>
 </head>
 <body>
-<div id="app"></div>
-<div id="layers"></div>
-<div class="toasts" id="toasts"></div>
-<script src="app.js"></script>
+<div class="wrap">
+  <span class="logo"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span>
+  <h1>OKL Console</h1>
+  <p class="sub">Pick a system to continue.</p>
+  <div class="grid">
+    <a class="tile" href="employees/">
+      <h3>Employee Database</h3>
+      <p>Staff and casuals directory - view, add and edit records.</p>
+      <span class="badge">Open for now</span>
+    </a>
+    <a class="tile" href="qsync/">
+      <h3>QSync</h3>
+      <p>Production tracking, QA sign-offs, and reports.</p>
+      <span class="badge">Sign-in required</span>
+    </a>
+  </div>
+  <footer>More OKL systems will appear here as they come online.</footer>
+</div>
 </body>
 </html>
