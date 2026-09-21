@@ -51,17 +51,6 @@ function download(filename, text, type){
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 
-/* ---------------- Modules shown on the console home (this app owns Employees only) ---------------- */
-// Fill in real URLs as they exist. A blank url renders the tile as "coming soon".
-const EXTERNAL_MODULES = [
-  { key:'qsync', label:'QSync', desc:'Production tracking, QA sign-offs and the production tracker.',
-    url:'https://okl.orangegroupsai.online', icon:'layers' },
-  { key:'factory', label:'Factory Dashboard', desc:'Live factory metrics.',
-    url:'', icon:'activity' }, // TODO: paste the real Factory Dashboard URL here
-  { key:'procurement', label:'Procurement', desc:'In progress.',
-    url:'', icon:'box' },
-];
-
 /* ---------------- API layer ----------------
    TEMPORARY PHASE: this module has no login yet (see project README) - the
    backend endpoints below are the open/no-auth workflow variant, not the
@@ -202,7 +191,8 @@ function renderShell(inner, meta){
       </div>
       <div class="sidebar-scroll">${navHtml}</div>
       <div class="sidebar-foot">
-        <div class="notice info" style="margin:0;font-size:11.5px">${I.info}<div>No login yet - this module is temporarily open. See the console home for other systems.</div></div>
+        <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to OKL Console</a>
+        <div class="notice info" style="margin:0;font-size:11.5px">${I.info}<div>No login yet - this module is temporarily open.</div></div>
       </div>
     </aside>
     <div class="main">
@@ -308,40 +298,6 @@ window.addEventListener('hashchange', render);
 })();
 
 /* ============================================================
-   Console home
-   ============================================================ */
-function viewHome(){
-  const employees = S.employees;
-  const staffCount = employees.filter(e => e.employment_type === 'staff').length;
-  const casualCount = employees.filter(e => e.employment_type === 'casual').length;
-  return {
-    title:'OKL Console', crumb:'',
-    html: `
-    ${pageHead('OKL Console', 'One login for the OKL systems you have access to.')}
-    <div class="grid g3">
-      <a class="stat link acc-brand" href="#/employees" style="text-decoration:none;color:inherit">
-        <div class="ic-wrap">${I.users}</div>
-        <div class="lbl">Employees</div>
-        <div class="val">${employees.length}</div>
-        <div class="meta">${staffCount} staff, ${casualCount} casual</div>
-      </a>
-      ${EXTERNAL_MODULES.map(mod => mod.url ? `
-        <a class="stat link" href="${esc(mod.url)}" target="_blank" rel="noopener">
-          <div class="ic-wrap">${I[mod.icon]||I.box}</div>
-          <div class="lbl">${esc(mod.label)} ${I.externalLink}</div>
-          <div class="val" style="font-size:14px;font-weight:600;color:var(--text-2)">${esc(mod.desc)}</div>
-        </a>` : `
-        <div class="stat" style="opacity:.6">
-          <div class="ic-wrap">${I[mod.icon]||I.box}</div>
-          <div class="lbl">${esc(mod.label)}</div>
-          <div class="val" style="font-size:14px;font-weight:600;color:var(--text-3)">Coming soon</div>
-        </div>`).join('')}
-    </div>`
-  };
-}
-route('/', () => viewHome());
-
-/* ============================================================
    Employees
    ============================================================ */
 let employeeQuery = '';
@@ -400,6 +356,7 @@ function viewEmployees(){
     },
   };
 }
+route('/', () => viewEmployees());
 route('/employees', () => viewEmployees());
 
 async function handleExportClick(btn){
