@@ -451,10 +451,21 @@ function openAddEmployee(){
   });
 }
 
+// Tracks whether the detail page for a given employee is showing the
+// read-only card or the edit form. Resets to the card whenever a *different*
+// employee is opened, but survives re-renders of the same one (e.g. after a
+// failed save) so the form doesn't collapse under the user.
+let detailView = { enrollId: null, mode: 'view' };
+
 function viewEmployeeDetail(enrollId){
   const e = S.employees.find(x => String(x.enroll_id) === String(enrollId));
   if (!e) return { title:'Not found', crumb:'Modules', html: notFound() };
   const canEdit = S.me.permission === 'editor';
+
+  if (detailView.enrollId !== enrollId) {
+    detailView = { enrollId, mode: 'view' };
+  }
+  const editing = canEdit && detailView.mode === 'edit';
 
   const readonlyRow = (label, value) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${esc(value||'--')}</div></div>`;
   const tagRow = (label, values) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${
@@ -468,18 +479,26 @@ function viewEmployeeDetail(enrollId){
       `<a class="btn btn-ghost" href="#/employees">${I.chevL} Back to employees</a>`)}
     <div class="card">
       <div class="card-h"><div><h3>${esc(e.name)}</h3><div class="sub">${esc(e.role||'No role on record')}</div></div>
-        <span class="badge ${e.employment_type==='staff'?'b-brand':'b-slate'}">${esc(e.employment_type)}</span></div>
+        <div class="row" style="gap:8px">
+          <span class="badge ${e.employment_type==='staff'?'b-brand':'b-slate'}">${esc(e.employment_type)}</span>
+          ${canEdit && !editing ? `<button class="btn btn-primary btn-sm" onclick="startEditingEmployee('${esc(e.enroll_id)}')">${I.edit} Edit</button>` : ''}
+        </div>
+      </div>
       <div class="card-b">
-        ${canEdit ? `
+        ${editing ? `
           <form id="editEmployeeForm" novalidate>${employeeFormFields(e, 'ee')}
             <div class="row end" style="margin-top:6px">
+              <button class="btn btn-ghost" type="button" onclick="cancelEditingEmployee('${esc(e.enroll_id)}')">Cancel</button>
               <button class="btn btn-primary" type="submit">${I.check} Save changes</button>
             </div>
           </form>
         ` : `
-          <div class="notice info">${I.info}<div>You have viewer access - editing employee records requires an editor account.</div></div>
+          ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access - editing employee records requires an editor account.</div></div>` : ''}
           <div class="kv-grid">
+            ${readonlyRow('Enroll ID', e.enroll_id)}
             ${readonlyRow('Gender', e.gender)}
+            ${readonlyRow('Employment type', e.employment_type)}
+            ${readonlyRow('Role', e.role)}
             ${readonlyRow('Phone number', e.phone_number)}
             ${readonlyRow('Work email', e.work_email)}
             ${readonlyRow('Workstation', e.workstation)}
@@ -501,6 +520,7 @@ function viewEmployeeDetail(enrollId){
         try {
           await api('/webhook/employees/api/update', { method:'POST', body: payload });
           Object.assign(e, payload);
+          detailView = { enrollId: e.enroll_id, mode: 'view' };
           render(); toast('Changes saved', esc(payload.name) + ' has been updated.', 'ok');
         } catch (err) { setErr('eeName', err.message, f); }
         finally { btn.disabled = false; }
@@ -509,4 +529,13 @@ function viewEmployeeDetail(enrollId){
   };
 }
 route('/employees/:enrollId', p => viewEmployeeDetail(p.enrollId));
+
+function startEditingEmployee(enrollId){
+  detailView = { enrollId, mode: 'edit' };
+  render();
+}
+function cancelEditingEmployee(enrollId){
+  detailView = { enrollId, mode: 'view' };
+  render();
+}
 
