@@ -146,7 +146,10 @@ function matchRoute(path){
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   return [
-    { title:'Modules', items:[ { path:'/items', label:'Procurement Log', icon:'box' } ] },
+    { title:'Modules', items:[
+      { path:'/items', label:'Procurement Log', icon:'box' },
+      { path:'/new-request', label:'New Request', icon:'plus' },
+    ] },
     { title:'Account', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },
   ];
 }
@@ -465,8 +468,7 @@ function viewItems(){
     title:'Procurement Log', crumb:'Modules',
     html: `
     ${pageHead('Procurement Log', 'Every procured item across all departments, in one place.',
-      `<a class="btn btn-ghost" href="https://orangegroupsai.online/webhook/oklengineeringrequisition" target="_blank" rel="noopener">${I.externalLink} New Engineering request</a>` +
-      `<a class="btn btn-primary" href="https://orangegroupsai.online/webhook/okl-dept-requisition" target="_blank" rel="noopener">${I.plus} New request (other departments)</a>`)}
+      `<a class="btn btn-primary" href="#/new-request">${I.plus} New request</a>`)}
     <div class="row filter-bar" style="margin-bottom:14px">
       <div class="search filter-search">
         <span class="ic">${I.search}</span>
@@ -536,6 +538,40 @@ function viewItems(){
 }
 route('/', () => viewItems());
 route('/items', () => viewItems());
+
+/* ============================================================
+   New Request - a launcher, not a rebuilt form. The two hosted
+   requisition forms (Engineering's SKU-lookup form, and the shared
+   one for the other 6 departments) already work standalone; this
+   just gives them one place to be found from inside the console.
+   ============================================================ */
+function viewNewRequest(){
+  const optionCard = (title, desc, href) => `
+    <a class="card new-request-card" href="${esc(href)}" target="_blank" rel="noopener"
+       style="display:block;text-decoration:none;color:inherit">
+      <div class="card-h"><h3>${esc(title)}</h3></div>
+      <div class="card-b">
+        <p class="small muted">${desc}</p>
+        <div class="row" style="margin-top:14px;gap:6px;color:var(--brand-600);font-weight:600;font-size:13px">
+          Open form ${I.externalLink}
+        </div>
+      </div>
+    </a>`;
+
+  return {
+    title:'New Request', crumb:'Modules',
+    html: `
+    <style>.new-request-card{transition:.16s ease}
+      .new-request-card:hover{border-color:var(--brand);box-shadow:0 8px 24px rgba(16,25,20,.08);transform:translateY(-2px)}</style>
+    ${pageHead('New Request', 'Pick where this request belongs - each opens the existing hosted form in a new tab.')}
+    <div class="grid g2">
+      ${optionCard('Engineering', 'Spare parts and materials, with SKU lookup against the stock catalog.', 'https://orangegroupsai.online/webhook/oklengineeringrequisition')}
+      ${optionCard('Other Departments', 'Production, Quality Assurance, Quality Control, Warehouse, Safety/HSE, Business Support/HR.', 'https://orangegroupsai.online/webhook/okl-dept-requisition')}
+    </div>`,
+    bind(){},
+  };
+}
+route('/new-request', () => viewNewRequest());
 
 /* ============================================================
    Settings (account info, sign out)
