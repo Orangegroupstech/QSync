@@ -350,9 +350,11 @@ window.addEventListener('hashchange', render);
 let itemQuery = '';
 let itemDeptFilter = '';
 let itemStatusFilter = '';
+let itemDateFrom = '';
+let itemDateTo = '';
 
 // The 7 fields this workflow never fills in - the only ones the console can
-// edit. Kept as one list so the read-only card, the edit form, and the
+// edit. Kept as one list so the detail modal, the edit form, and the
 // PATCH payload builder can't drift out of sync with each other.
 const EDITABLE_FIELDS = [
   { key: 'vendor', label: 'Vendor' },
@@ -367,8 +369,7 @@ const EDITABLE_FIELDS = [
 function formatQty(item){
   if (item.quantity == null) return '--';
   const q = Number(item.quantity);
-  const qStr = Number.isInteger(q) ? String(q) : String(q);
-  return item.unit ? `${qStr} ${item.unit}` : qStr;
+  return item.unit ? `${q} ${item.unit}` : String(q);
 }
 function formatDate(v){
   if (!v) return '--';
@@ -383,93 +384,131 @@ function statusBadgeClass(status){
 }
 function matchesItemQuery(it, q){
   if (!q) return true;
-  const haystack = [it.item_id, it.requestor, it.material_name, it.department, it.purpose].map(v => String(v||'').toLowerCase()).join(' ');
+  const haystack = [it.item_id, it.requestor, it.material_name, it.material_type, it.department, it.purpose].map(v => String(v||'').toLowerCase()).join(' ');
   return haystack.includes(q);
 }
-
-let expandedItemId = null;
-let expandedMode = 'view';
-
-function toggleItemRow(id){
-  expandedItemId = (expandedItemId === id) ? null : id;
-  expandedMode = 'view';
-  render();
-}
-function startEditingItem(id){
-  expandedItemId = id;
-  expandedMode = 'edit';
-  render();
-}
-function cancelEditingItem(){
-  expandedMode = 'view';
-  render();
+function inDateRange(dateStr, from, to){
+  if (!dateStr) return !from && !to;
+  const d = new Date(dateStr);
+  if (from && d < new Date(from)) return false;
+  if (to){
+    const toEnd = new Date(to);
+    toEnd.setHours(23, 59, 59, 999);
+    if (d > toEnd) return false;
+  }
+  return true;
 }
 
-function renderItemExpanded(it, canEdit){
-  const editing = canEdit && expandedMode === 'edit';
+// Detail + edit lives in one wide modal (not an inline row expansion) - more
+// room for the full record, and the edit form is right there without
+// needing a narrow table row to carry it.
+function openItemDetail(id){
+  const it = S.items.find(x => x.id === id);
+  if (!it) return;
+  const canEdit = S.me.permission === 'editor';
   const readonlyRow = (label, value) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${esc(value||'--')}</div></div>`;
 
-  const workflowFields = `
+  const body = `
     <div class="kv-grid">
       ${readonlyRow('Item ID', it.item_id)}
       ${readonlyRow('Department', it.department)}
       ${readonlyRow('Requestor', it.requestor)}
+      ${readonlyRow('Requestor email', it.requestor_email)}
       ${readonlyRow('Material', it.material_name)}
+      ${readonlyRow('Material type', it.material_type)}
       ${readonlyRow('Item detail', it.item_detail)}
       ${readonlyRow('Purchase category', it.purchase_category)}
       ${readonlyRow('Purpose', it.purpose)}
       ${readonlyRow('Quantity', formatQty(it))}
+      ${readonlyRow('Request date', formatDate(it.request_date))}
       ${readonlyRow('Requirement date', formatDate(it.requirement_date))}
       ${readonlyRow('Management review (OKL)', it.management_review_okl)}
       ${readonlyRow('Remarks', it.remarks)}
       ${readonlyRow('Request status', it.request_status)}
-    </div>`;
-
-  if (editing) {
-    return workflowFields + `
-      <div class="divider"></div>
-      <div class="small muted" style="margin-bottom:10px">Procurement details (not set by the requisition flow)</div>
-      <form id="editItemForm" novalidate>
-        <div class="grid g2">
-          ${EDITABLE_FIELDS.map(f => `
-            <div class="field"><label for="ei_${f.key}">${esc(f.label)}</label>
-              <input class="inp" id="ei_${f.key}" value="${esc(it[f.key]||'')}"></div>`).join('')}
-        </div>
-        <div class="row end" style="margin-top:6px">
-          <button class="btn btn-ghost" type="button" onclick="cancelEditingItem()">Cancel</button>
-          <button class="btn btn-primary" type="submit">${I.check} Save changes</button>
-        </div>
-      </form>`;
-  }
-
-  return workflowFields + `
+    </div>
     <div class="divider"></div>
-    <div class="row between" style="margin-bottom:12px">
+    <div class="row between" id="procDetailsHead" style="margin-bottom:12px">
       <div class="small muted">Procurement details (not set by the requisition flow)</div>
-      ${canEdit ? `<button class="btn btn-primary btn-sm" onclick="startEditingItem(${it.id})">${I.edit} Edit</button>` : ''}
+      ${canEdit ? `<button class="btn btn-primary btn-sm" id="startEditBtn">${I.edit} Edit</button>` : ''}
     </div>
     ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access - filling in vendor/PO details requires an editor account.</div></div>` : ''}
-    <div class="kv-grid">
+    <div class="kv-grid" id="procDetailsView">
       ${EDITABLE_FIELDS.map(f => readonlyRow(f.label, it[f.key])).join('')}
-    </div>`;
+    </div>
+    <form id="editItemForm" novalidate style="display:none">
+      <div class="grid g2">
+        ${EDITABLE_FIELDS.map(f => `
+          <div class="field"><label for="ei_${f.key}">${esc(f.label)}</label>
+            <input class="inp" id="ei_${f.key}" value="${esc(it[f.key]||'')}"></div>`).join('')}
+      </div>
+      <div class="row end" style="margin-top:6px">
+        <button class="btn btn-ghost" type="button" id="cancelEditBtn">Cancel</button>
+        <button class="btn btn-primary" type="submit">${I.check} Save changes</button>
+      </div>
+    </form>`;
+
+  openModal({
+    title: it.material_name || 'Item detail',
+    sub: [it.item_id, it.department].filter(Boolean).join(' · '),
+    size: 'wide',
+    body,
+    onMount(wrap){
+      const startEditBtn = $('#startEditBtn', wrap);
+      const viewGrid = $('#procDetailsView', wrap);
+      const form = $('#editItemForm', wrap);
+      if (startEditBtn){
+        startEditBtn.onclick = () => {
+          viewGrid.hidden = true;
+          startEditBtn.hidden = true;
+          form.style.display = 'block';
+        };
+      }
+      if (form){
+        $('#cancelEditBtn', form).onclick = () => {
+          form.style.display = 'none';
+          viewGrid.hidden = false;
+          if (startEditBtn) startEditBtn.hidden = false;
+        };
+        form.onsubmit = async (ev) => {
+          ev.preventDefault();
+          const payload = {};
+          EDITABLE_FIELDS.forEach(f => { payload[f.key] = $('#ei_' + f.key, form).value.trim(); });
+          const btn = form.querySelector('button[type=submit]');
+          btn.disabled = true;
+          try {
+            await api('/webhook/procurement/api/items/' + id, { method:'PATCH', body: payload });
+            Object.assign(it, payload);
+            render();
+            toast('Changes saved', 'Procurement details updated.', 'ok');
+            openItemDetail(id);
+          } catch (err) {
+            toast('Could not save', err.message, 'err');
+            btn.disabled = false;
+          }
+        };
+      }
+    },
+  });
 }
 
 function viewItems(){
   const q = itemQuery.trim().toLowerCase();
+  // Server already returns items ordered by request_date desc - filtering
+  // preserves that order, no client-side re-sort needed.
   const rows = S.items.filter(it =>
     (!itemDeptFilter || it.department === itemDeptFilter) &&
     (!itemStatusFilter || it.request_status === itemStatusFilter) &&
+    inDateRange(it.request_date, itemDateFrom, itemDateTo) &&
     matchesItemQuery(it, q));
-  const canEdit = S.me.permission === 'editor';
   const departments = [...new Set(S.items.map(it => it.department).filter(Boolean))].sort();
   const statuses = [...new Set(S.items.map(it => it.request_status).filter(Boolean))].sort();
 
   return {
     title:'Procurement Log', crumb:'Modules',
     html: `
-    ${pageHead('Procurement Log', 'Every procured item across all departments, in one place.',
+    ${pageHead('Procurement Log', 'Every procured item across all departments, sorted by request date.',
       `<a class="btn btn-primary" href="#/new-request">${I.plus} New request</a>`)}
-    <div class="row filter-bar" style="margin-bottom:14px">
+    <div class="row filter-bar" style="margin-bottom:14px;flex-wrap:wrap;row-gap:10px">
       <div class="search filter-search">
         <span class="ic">${I.search}</span>
         <input class="inp" id="itemSearch" placeholder="Search item ID, requestor, material, purpose..." value="${esc(itemQuery)}">
@@ -482,28 +521,26 @@ function viewItems(){
         <option value="">All statuses</option>
         ${statuses.map(s => `<option value="${esc(s)}" ${itemStatusFilter===s?'selected':''}>${esc(s)}</option>`).join('')}
       </select>
+      <input type="date" class="inp" id="itemDateFrom" value="${esc(itemDateFrom)}" title="From date" style="max-width:150px">
+      <input type="date" class="inp" id="itemDateTo" value="${esc(itemDateTo)}" title="To date" style="max-width:150px">
       <div class="spacer"></div>
     </div>
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>Item ID</th><th>Department</th><th>Requestor</th><th>Material</th><th>Qty</th><th>Status</th></tr></thead>
-        <tbody>${rows.length ? rows.map(it => {
-          const isExpanded = it.id === expandedItemId;
-          const row = `
-          <tr class="clickable" onclick="toggleItemRow(${it.id})">
+        <thead><tr>
+          <th>Request Date</th><th>Item ID</th><th>Requestor</th><th>Material</th>
+          <th>Material Type</th><th>Qty &amp; Unit</th><th>Status</th>
+        </tr></thead>
+        <tbody>${rows.length ? rows.map(it => `
+          <tr class="clickable" onclick="openItemDetail(${it.id})">
+            <td data-label="Request Date">${esc(formatDate(it.request_date))}</td>
             <td class="mono" data-label="Item ID">${esc(it.item_id||'--')}</td>
-            <td data-label="Department">${esc(it.department)}</td>
             <td data-label="Requestor"><div class="row" style="gap:10px">${avatarEl(it.requestor)}<div class="strong">${esc(it.requestor)}</div></div></td>
             <td data-label="Material">${esc(it.material_name||'--')}</td>
-            <td data-label="Qty">${esc(formatQty(it))}</td>
+            <td data-label="Material Type">${esc(it.material_type||'--')}</td>
+            <td data-label="Qty & Unit">${esc(formatQty(it))}</td>
             <td data-label="Status">${it.request_status ? `<span class="badge ${statusBadgeClass(it.request_status)}">${esc(it.request_status)}</span>` : '--'}</td>
-          </tr>`;
-          const expansion = isExpanded ? `
-          <tr><td colspan="6" style="padding:0;background:var(--surface-2);border-bottom:1px solid var(--line)">
-            <div style="padding:16px">${renderItemExpanded(it, canEdit)}</div>
-          </td></tr>` : '';
-          return row + expansion;
-        }).join('') : `<tr><td colspan="6">${emptyState('box','No items match', 'Try a different search or filter.')}</td></tr>`}
+          </tr>`).join('') : `<tr><td colspan="7">${emptyState('box','No items match', 'Try a different search or filter.')}</td></tr>`}
         </tbody>
       </table></div>
     </div>`,
@@ -513,26 +550,8 @@ function viewItems(){
       $('#itemSearch').setSelectionRange(itemQuery.length, itemQuery.length);
       $('#itemDeptFilter').onchange = (e) => { itemDeptFilter = e.target.value; render(); };
       $('#itemStatusFilter').onchange = (e) => { itemStatusFilter = e.target.value; render(); };
-
-      const editForm = $('#editItemForm');
-      if (editForm) {
-        editForm.onsubmit = async (ev) => {
-          ev.preventDefault();
-          clearErrors(editForm);
-          const payload = {};
-          EDITABLE_FIELDS.forEach(f => { payload[f.key] = $('#ei_' + f.key, editForm).value.trim(); });
-          const btn = editForm.querySelector('button[type=submit]');
-          btn.disabled = true;
-          try {
-            await api('/webhook/procurement/api/items/' + expandedItemId, { method:'PATCH', body: payload });
-            const it = S.items.find(x => x.id === expandedItemId);
-            Object.assign(it, payload);
-            expandedMode = 'view';
-            render(); toast('Changes saved', 'Procurement details updated.', 'ok');
-          } catch (err) { toast('Could not save', err.message, 'err'); }
-          finally { btn.disabled = false; }
-        };
-      }
+      $('#itemDateFrom').onchange = (e) => { itemDateFrom = e.target.value; render(); };
+      $('#itemDateTo').onchange = (e) => { itemDateTo = e.target.value; render(); };
     },
   };
 }
