@@ -20,6 +20,8 @@ const I = (() => {
     edit: w('<path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/>', 'width="15" height="15"'),
     lock: w('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
     externalLink: w('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14L21 3"/>'),
+    arrowDown: w('<path d="M12 5v14M5 12l7 7 7-7"/>'),
+    arrowUp: w('<path d="M12 19V5M5 12l7-7 7 7"/>'),
   };
 })();
 
@@ -150,6 +152,11 @@ function navModel(){
       { path:'/items', label:'Procurement Log', icon:'box' },
       { path:'/new-request', label:'New Request', icon:'plus' },
     ] },
+    { title:'Engineering Spares', items:[
+      { path:'/spares/inventory', label:'Inventory', icon:'box' },
+      { path:'/spares/inbound', label:'Inbound', icon:'arrowDown' },
+      { path:'/spares/outbound', label:'Outbound', icon:'arrowUp' },
+    ] },
     { title:'Account', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },
   ];
 }
@@ -241,6 +248,7 @@ function viewLogin(){
   <div class="auth">
     <div class="auth-art">
       <div>
+        <a href="../" style="display:inline-flex;align-items:center;gap:6px;color:#B9D2C4;text-decoration:none;font-size:12.5px;font-weight:600;margin-bottom:20px">${I.chevL} Back to OKL Console</a>
         <span class="logo lg"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span>
         <h1 style="margin-top:26px">Procurement</h1>
         <p>Sign in with your email and PIN to view the procurement log and fill in vendor/PO details.</p>
@@ -593,6 +601,67 @@ function viewNewRequest(){
   };
 }
 route('/new-request', () => viewNewRequest());
+
+/* ============================================================
+   Engineering Spares - simple read-only views straight off the same
+   .xlsx workbook the requisition form's SKU catalog already reads
+   (Plantilla stock/Inbound/Outbond tabs). Not part of the bootstrap
+   fetch since they're heavier and not needed on every visit - loaded
+   on demand, once per session, the first time each page is opened.
+   ============================================================ */
+const sparesCache = { inventory: null, inbound: null, outbound: null };
+const sparesLoading = { inventory: false, inbound: false, outbound: false };
+const sparesError = { inventory: '', inbound: '', outbound: '' };
+
+async function loadSpares(kind, path){
+  if (sparesCache[kind] || sparesLoading[kind]) return;
+  sparesLoading[kind] = true;
+  sparesError[kind] = '';
+  render();
+  try {
+    const data = await api('/webhook/procurement/api/spares/' + path);
+    sparesCache[kind] = Array.isArray(data.rows) ? data.rows : [];
+  } catch (err) {
+    sparesError[kind] = err.message;
+  } finally {
+    sparesLoading[kind] = false;
+    render();
+  }
+}
+function retrySpares(kind, path){
+  sparesError[kind] = '';
+  loadSpares(kind, path);
+}
+
+function viewSpares(kind, path, title, desc){
+  if (!sparesCache[kind] && !sparesLoading[kind] && !sparesError[kind]) loadSpares(kind, path);
+  const rows = sparesCache[kind] || [];
+  const columns = [...new Set(rows.flatMap(r => Object.keys(r)))];
+
+  let bodyHtml;
+  if (sparesLoading[kind]) {
+    bodyHtml = `<div class="card"><div class="card-b">${emptyState('box', 'Loading...', 'Fetching the latest data from the sheet.')}</div></div>`;
+  } else if (sparesError[kind]) {
+    bodyHtml = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(sparesError[kind]),
+      `<button class="btn btn-primary" onclick="retrySpares('${kind}','${path}')">Retry</button>`)}</div></div>`;
+  } else if (!rows.length) {
+    bodyHtml = `<div class="card"><div class="card-b">${emptyState('box', 'No rows found', '')}</div></div>`;
+  } else {
+    bodyHtml = `<div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr>${columns.map(col => `<th>${esc(col)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `<tr>${columns.map(col => `<td data-label="${esc(col)}">${esc(r[col] ?? '--')}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table></div></div>`;
+  }
+
+  return {
+    title, crumb:'Engineering Spares',
+    html: `${pageHead(title, desc)}${bodyHtml}`,
+    bind(){},
+  };
+}
+route('/spares/inventory', () => viewSpares('inventory', 'inventory', 'Spares Inventory', 'Engineering spare parts stock, from the same sheet the requisition form looks SKUs up against.'));
+route('/spares/inbound', () => viewSpares('inbound', 'inbound', 'Spares Inbound', 'Engineering spare parts received.'));
+route('/spares/outbound', () => viewSpares('outbound', 'outbound', 'Spares Outbound', 'Engineering spare parts issued.'));
 
 /* ============================================================
    Settings (account info, sign out)

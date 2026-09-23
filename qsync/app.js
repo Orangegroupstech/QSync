@@ -376,6 +376,7 @@ function viewLogin(){
   <div class="auth">
     <div class="auth-art">
       <div>
+        <a href="../" style="display:inline-flex;align-items:center;gap:6px;color:#B9D2C4;text-decoration:none;font-size:12.5px;font-weight:600;margin-bottom:20px">${I.chevL} Back to OKL Console</a>
         <span class="logo lg"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span>
         <h1 style="margin-top:26px">QSync admin console</h1>
         <p>Sign in with your phone number and PIN to manage users, review requests, and edit product specifications.</p>
