@@ -403,7 +403,10 @@ function inDateRange(dateStr, from, to){
 // room for the full record, and the edit form is right there without
 // needing a narrow table row to carry it.
 function openItemDetail(id){
-  const it = S.items.find(x => x.id === id);
+  // Postgres bigserial ids come back as strings (node-postgres avoids precision
+  // loss on int8 by not coercing to number), but the onclick="...(${it.id})"
+  // that got us here embeds a bare numeric literal - compare as strings.
+  const it = S.items.find(x => String(x.id) === String(id));
   if (!it) return;
   const canEdit = S.me.permission === 'editor';
   const readonlyRow = (label, value) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${esc(value||'--')}</div></div>`;
@@ -506,8 +509,7 @@ function viewItems(){
   return {
     title:'Procurement Log', crumb:'Modules',
     html: `
-    ${pageHead('Procurement Log', 'Every procured item across all departments, sorted by request date.',
-      `<a class="btn btn-primary" href="#/new-request">${I.plus} New request</a>`)}
+    ${pageHead('Procurement Log', 'Every procured item across all departments, sorted by request date.')}
     <div class="row filter-bar" style="margin-bottom:14px;flex-wrap:wrap;row-gap:10px">
       <div class="search filter-search">
         <span class="ic">${I.search}</span>
