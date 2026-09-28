@@ -416,6 +416,8 @@ html[data-theme="dark"] .fieldset > legend,html[data-theme="dark"] .sec-title{co
 .sheet{background:#fff;color:#111;border:1px solid var(--line);border-radius:var(--r);padding:30px;
   max-width:900px;margin:0 auto;box-shadow:var(--sh-1)}
 .sheet *{color:#111}
+.sheet .letterhead{font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--brand);margin-bottom:10px}
 .sheet-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;
   border-bottom:2.5px solid var(--brand);padding-bottom:14px;margin-bottom:18px;flex-wrap:wrap}
 .sheet-head h2{font-size:17px;letter-spacing:-.01em;color:#111}
@@ -432,10 +434,6 @@ html[data-theme="dark"] .fieldset > legend,html[data-theme="dark"] .sec-title{co
 .sign-box .ss{font-size:10.5px;color:#666;margin-top:2px;font-family:var(--mono)}
 .sign-box .esig{margin-top:7px;font-family:Georgia,serif;font-style:italic;font-size:15px;color:var(--ink);
   border-bottom:1px solid #D6DAD8;padding-bottom:4px}
-.stamp{display:inline-block;border:2.5px solid var(--ok);color:var(--ok);padding:5px 14px;border-radius:6px;
-  font-weight:800;letter-spacing:.13em;font-size:13px;transform:rotate(-3deg)}
-.stamp.rej{border-color:var(--danger);color:var(--danger)}
-
 /* ---------- Responsive ---------- */
 .hide-lg{display:none}
 .hide-lg-up{display:none}

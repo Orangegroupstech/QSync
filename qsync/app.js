@@ -85,7 +85,7 @@ function toCSV(rows){
 const STATUS = {
   pending_ipqa:      { label:'Pending IPQA',       badge:'b-warn' },
   pending_qa_review: { label:'Pending QA Review',  badge:'b-info' },
-  pending_qc_notify: { label:'Approved / With QC', badge:'b-ok' },
+  sent_to_qc:        { label:'With QC',            badge:'b-ok' },
   rejected:          { label:'Rejected',           badge:'b-danger' },
 };
 const PRODUCTS_META = {
@@ -104,6 +104,18 @@ const STAGE_OPTIONS = {
   OSD: ['Granulation', 'Compression', 'Sacheting/Blistering/Stripping', 'Finished Product'],
   OLD: ['Mixing', 'Filling/Sacheting', 'Finished Product']
 };
+const ALL_STAGES = Array.from(new Set([...STAGE_OPTIONS.OSD, ...STAGE_OPTIONS.OLD]));
+function yearsFromDates(items, field){
+  const years = new Set();
+  items.forEach(it => { const v = it[field]; if (v){ const y = new Date(v).getFullYear(); if (!isNaN(y)) years.add(y); } });
+  return Array.from(years).sort((a,b) => b-a);
+}
+function yearMonthSelectHtml(idPrefix, years, state){
+  const yearOpts = years.map(y => `<option value="${y}" ${String(state.year)===String(y)?'selected':''}>${y}</option>`).join('');
+  const monthOpts = MONTHS.map((m,i) => `<option value="${i+1}" ${String(state.month)===String(i+1)?'selected':''}>${m}</option>`).join('');
+  return `<select class="inp" id="${idPrefix}Year" style="width:auto;min-width:100px"><option value="">All years</option>${yearOpts}</select>
+    <select class="inp" id="${idPrefix}Month" style="width:auto;min-width:110px"><option value="">All months</option>${monthOpts}</select>`;
+}
 
 
 /* ---------------- API layer ---------------- */
@@ -285,7 +297,6 @@ function navModel(){
     { title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] },
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
-      { path:'/sheets', label:'QSync Sheets', icon:'doc' },
       { path:'/reports', label:'Reports and Trends', icon:'chart' },
     ]},
     { title:'Administration', items:[
@@ -635,13 +646,17 @@ function bindNewRequest(){
 /* ============================================================
    All Requests
    ============================================================ */
-let listState = { q:'', status:'', product:'', sort:'updated' };
+let listState = { q:'', status:'', product:'', stage:'', result:'', year:'', month:'', sort:'updated' };
 function filterRequests(){
   let out = S.requests.slice();
   const q = listState.q.trim().toLowerCase();
   if (q) out = out.filter(r => [r.requestNo, r.batchNo, r.productName].join(' ').toLowerCase().includes(q));
   if (listState.status) out = out.filter(r => r.status === listState.status);
   if (listState.product) out = out.filter(r => r.productName === listState.product);
+  if (listState.stage) out = out.filter(r => r.stage === listState.stage);
+  if (listState.result) out = out.filter(r => (overallResult(r) ?? 'untested') === listState.result);
+  if (listState.year) out = out.filter(r => r.createdAt && new Date(r.createdAt).getFullYear() === Number(listState.year));
+  if (listState.month) out = out.filter(r => r.createdAt && new Date(r.createdAt).getMonth()+1 === Number(listState.month));
   const sorters = {
     updated:(a,b)=> new Date(b.updatedAt) - new Date(a.updatedAt),
     created:(a,b)=> new Date(b.createdAt) - new Date(a.createdAt),
@@ -662,6 +677,12 @@ function viewRequests(){
   const rows = filterRequests();
   const productOptions = Object.keys(PRODUCTS_META).map(p => `<option value="${esc(p)}" ${listState.product===p?'selected':''}>${esc(p)}</option>`).join('');
   const statusOptions = Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${listState.status===k?'selected':''}>${esc(v.label)}</option>`).join('');
+  const stageOptions = ALL_STAGES.map(s => `<option value="${esc(s)}" ${listState.stage===s?'selected':''}>${esc(s)}</option>`).join('');
+  const resultOptions = [['pass','Pass'],['fail','Out of spec'],['untested','Not tested']]
+    .map(([k,label]) => `<option value="${k}" ${listState.result===k?'selected':''}>${label}</option>`).join('');
+  const years = yearsFromDates(S.requests, 'createdAt');
+  const sortOptions = [['updated','Recently updated'],['created','Newest first'],['oldest','Oldest first']]
+    .map(([k,label]) => `<option value="${k}" ${listState.sort===k?'selected':''}>${label}</option>`).join('');
   const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Status</th><th>Result</th><th>Updated</th><th></th></tr></thead>
       <tbody>${rows.map(r => `
@@ -689,6 +710,13 @@ function viewRequests(){
           <div class="spacer"></div>
           <button class="btn btn-ghost btn-sm" onclick="exportRequestList()">${I.download} Export CSV</button>
         </div>
+        <div class="row" style="gap:10px;margin-top:10px">
+          <select class="inp" id="listStage" style="width:auto;min-width:150px"><option value="">All stages</option>${stageOptions}</select>
+          <select class="inp" id="listResult" style="width:auto;min-width:130px"><option value="">All results</option>${resultOptions}</select>
+          ${yearMonthSelectHtml('list', years, listState)}
+          <div class="spacer"></div>
+          <select class="inp" id="listSort" style="width:auto;min-width:150px">${sortOptions}</select>
+        </div>
       </div>
       ${body}
     </div>`,
@@ -701,6 +729,11 @@ function bindRequestFilters(){
     const el = $('#listQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 260));
   const st = $('#listStatus'); if (st) st.onchange = e => { listState.status = e.target.value; render(); };
   const pr = $('#listProduct'); if (pr) pr.onchange = e => { listState.product = e.target.value; render(); };
+  const sg = $('#listStage'); if (sg) sg.onchange = e => { listState.stage = e.target.value; render(); };
+  const rs = $('#listResult'); if (rs) rs.onchange = e => { listState.result = e.target.value; render(); };
+  const yr = $('#listYear'); if (yr) yr.onchange = e => { listState.year = e.target.value; render(); };
+  const mo = $('#listMonth'); if (mo) mo.onchange = e => { listState.month = e.target.value; render(); };
+  const so = $('#listSort'); if (so) so.onchange = e => { listState.sort = e.target.value; render(); };
 }
 function exportRequestList(){
   const rows = [['Request No','Product','Batch No','Stage','Status','Result','Updated']];
@@ -728,20 +761,14 @@ function qsyncSheetHtml(r){
       <td><b>${verdict}</b></td>
     </tr>`;
   }).join('');
-  const decided = r.qaDecision === 'approved';
-  const stampHtml = r.qaDecision
-    ? `<span class="stamp ${decided?'':'rej'}">${decided?'APPROVED':'REJECTED'}</span>`
-    : `<span class="tiny muted">Awaiting QA Supervisor decision</span>`;
-
   return `<div class="sheet">
+    <div class="letterhead">Orange Kalbe Limited</div>
     <div class="sheet-head">
       <div>
         <h2>QSync Test Request Sheet</h2>
-        <div class="small muted">Consolidated analysis record - replaces the paper batch analysis sheet.</div>
       </div>
       <div class="doc">
-        Request No: ${esc(r.requestNo)}<br>
-        Generated: ${fmtDateTime(Date.now())}
+        Request No: ${esc(r.requestNo)}
       </div>
     </div>
 
@@ -774,8 +801,6 @@ function qsyncSheetHtml(r){
     </div>
 
     ${r.qaComments ? `<h4>QA comments</h4><p>${esc(r.qaComments)}</p>` : ''}
-
-    <div style="margin-top:22px;text-align:center">${stampHtml}</div>
   </div>`;
 }
 
@@ -786,26 +811,8 @@ function viewSheet(id){
     title:`QSync sheet - ${r.requestNo}`, crumb:'Records',
     html: `${pageHead(`QSync sheet - ${esc(r.requestNo)}`, '',
       `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
-       <a class="btn btn-ghost" href="#/sheets">${I.chevL} Back to sheets</a>`)}
+       <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`)}
       ${qsyncSheetHtml(r)}`
-  };
-}
-function viewSheets(){
-  const list = S.requests.filter(r => r.parameters && r.parameters.length);
-  const body = list.length ? `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Verdict</th><th>Status</th><th></th></tr></thead>
-      <tbody>${list.map(r => `<tr class="clickable" onclick="go('/sheet/${r.id}')">
-        <td class="req-no" data-label="Request">${esc(r.requestNo)}</td>
-        <td data-label="Product / Batch"><div class="strong">${esc(r.productName)}</div><div class="tiny muted mono">${esc(r.batchNo)}</div></td>
-        <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
-        <td data-label="Verdict">${resultBadge(r)}</td>
-        <td data-label="Status">${statusBadge(r.status)}</td>
-        <td style="text-align:right">${I.chevR}</td></tr>`).join('')}</tbody></table></div>`
-    : `<div class="card-b">${emptyState('doc','No sheets yet','A QSync sheet is generated once IPQA records results.')}</div>`;
-  return {
-    title:'QSync sheets', crumb:'Records',
-    html: `${pageHead('QSync sheets', 'Every batch with a completed analysis has a QSync sheet. Open one to print it or save it as a PDF.')}
-      <div class="card">${body}</div>`
   };
 }
 
@@ -815,11 +822,34 @@ function viewSheets(){
    ============================================================ */
 let reportsCache = null;
 let reportsLoading = false;
+let reportsState = { year:'', month:'', product:'' };
+function reportsQueryString(){
+  const params = [];
+  if (reportsState.year) params.push('year=' + encodeURIComponent(reportsState.year));
+  if (reportsState.month) params.push('month=' + encodeURIComponent(reportsState.month));
+  if (reportsState.product) params.push('product=' + encodeURIComponent(reportsState.product));
+  return params.length ? '?' + params.join('&') : '';
+}
+function bindReportsFilters(){
+  const yr = $('#reportsYear'); if (yr) yr.onchange = e => { reportsState.year = e.target.value; reportsCache = null; render(); };
+  const mo = $('#reportsMonth'); if (mo) mo.onchange = e => { reportsState.month = e.target.value; reportsCache = null; render(); };
+  const pr = $('#reportsProduct'); if (pr) pr.onchange = e => { reportsState.product = e.target.value; reportsCache = null; render(); };
+}
+function reportsFilterBarHtml(){
+  const years = yearsFromDates(S.requests, 'createdAt');
+  const productOptions = Object.keys(PRODUCTS_META).map(p => `<option value="${esc(p)}" ${reportsState.product===p?'selected':''}>${esc(p)}</option>`).join('');
+  return `<div class="card" style="margin-bottom:16px"><div class="card-b filter-bar" style="padding:14px 18px">
+    <div class="row" style="gap:10px">
+      ${yearMonthSelectHtml('reports', years, reportsState)}
+      <select class="inp" id="reportsProduct" style="width:auto;min-width:150px"><option value="">All products</option>${productOptions}</select>
+    </div>
+  </div></div>`;
+}
 
 function viewReports(){
   if (!reportsCache && !reportsLoading){
     reportsLoading = true;
-    api('/webhook/admin/api/reports').then(data => {
+    api('/webhook/admin/api/reports' + reportsQueryString()).then(data => {
       reportsCache = data; reportsLoading = false; render();
     }).catch(err => {
       reportsLoading = false;
@@ -830,7 +860,9 @@ function viewReports(){
     return {
       title:'Reports and trends', crumb:'Records',
       html: `${pageHead('Reports and trends', 'Performance of the digital workflow.')}
-        <div class="card"><div class="card-b">${emptyState('chart','Loading...','Fetching the latest numbers.')}</div></div>`
+        ${reportsFilterBarHtml()}
+        <div class="card"><div class="card-b">${emptyState('chart','Loading...','Fetching the latest numbers.')}</div></div>`,
+      bind: bindReportsFilters
     };
   }
   const d = reportsCache;
@@ -840,6 +872,8 @@ function viewReports(){
     html: `
     ${pageHead('Reports and trends', 'Performance of the digital workflow: turnaround, first pass rate, and where time is being spent.',
       `<button class="btn btn-ghost" onclick="reportsCache=null;render()">${I.play} Refresh</button>`)}
+
+    ${reportsFilterBarHtml()}
 
     <div class="grid g4" style="margin-bottom:16px">
       <div class="stat acc-brand"><div class="ic-wrap">${I.layers}</div><div class="lbl">Total requests</div>
@@ -873,7 +907,8 @@ function viewReports(){
             <div class="row" style="gap:8px"><div class="bar ${p.rate>=95?'ok':(p.rate>=80?'warn':'danger')}" style="width:66px"><i style="width:${p.rate}%"></i></div>
             <span class="tnum small strong">${p.rate}%</span></div>`}</td></tr>`).join('')}
         </tbody></table></div>
-    </div>`
+    </div>`,
+    bind: bindReportsFilters
   };
 }
 
@@ -889,9 +924,16 @@ function roleSelectHtml(id, val){
   return `<select class="inp" id="${id}">${Object.entries(ROLE_LABELS).map(([k,v]) =>
     `<option value="${k}" ${val===k?'selected':''}>${esc(v)}</option>`).join('')}</select>`;
 }
+let teamState = { q:'', role:'', active:'' };
 function viewTeam(){
   const users = S.users;
   const active = users.filter(u => u.active).length;
+  let rows = users.slice();
+  const q = teamState.q.trim().toLowerCase();
+  if (q) rows = rows.filter(u => u.name.toLowerCase().includes(q));
+  if (teamState.role) rows = rows.filter(u => u.role === teamState.role);
+  if (teamState.active) rows = rows.filter(u => (u.active ? 'active' : 'inactive') === teamState.active);
+  const roleOptions = Object.entries(ROLE_LABELS).map(([k,v]) => `<option value="${k}" ${teamState.role===k?'selected':''}>${esc(v)}</option>`).join('');
   return {
     title:'Team management', crumb:'Administration',
     html: `
@@ -903,10 +945,22 @@ function viewTeam(){
         <div class="val">${users.length}</div><div class="meta">${active} active, ${users.length-active} deactivated</div></div>
     </div>
     <div class="card">
+      <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
+        <div class="row" style="gap:10px">
+          <div class="search filter-search"><span class="ic">${I.search}</span>
+            <input class="inp" id="teamQ" style="padding-left:34px;border-radius:20px" placeholder="Search by name" value="${esc(teamState.q)}"></div>
+          <select class="inp" id="teamRole" style="width:auto;min-width:150px"><option value="">All roles</option>${roleOptions}</select>
+          <select class="inp" id="teamActive" style="width:auto;min-width:130px">
+            <option value="">All statuses</option>
+            <option value="active" ${teamState.active==='active'?'selected':''}>Active</option>
+            <option value="inactive" ${teamState.active==='inactive'?'selected':''}>Inactive</option>
+          </select>
+        </div>
+      </div>
       <div class="card-h"><h3>All accounts</h3></div>
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Person</th><th>Role</th><th>Phone</th><th>Email</th><th>Status</th><th></th></tr></thead>
-        <tbody>${users.map(u => `<tr>
+        <tbody>${rows.length ? rows.map(u => `<tr>
           <td data-label="Person"><div class="row" style="gap:10px">${avatarEl(u.name)}
             <div style="min-width:0"><div class="strong">${esc(u.name)}</div></div></div></td>
           <td data-label="Role"><span class="badge b-slate">${esc(ROLE_LABELS[u.role]||u.role)}</span></td>
@@ -918,8 +972,15 @@ function viewTeam(){
             <button class="btn btn-ghost btn-sm" onclick="toggleUserActive(${u.id})">
               ${u.active?I.pause+' Deactivate':I.play+' Activate'}</button>
           </td>
-        </tr>`).join('')}</tbody></table></div>
-    </div>`
+        </tr>`).join('') : `<tr><td colspan="6" class="muted" style="padding:16px">No matching accounts.</td></tr>`}</tbody></table></div>
+    </div>`,
+    bind: () => {
+      const q = $('#teamQ');
+      if (q) q.addEventListener('input', debounce(e => { teamState.q = e.target.value; render();
+        const el = $('#teamQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 260));
+      const r = $('#teamRole'); if (r) r.onchange = e => { teamState.role = e.target.value; render(); };
+      const a = $('#teamActive'); if (a) a.onchange = e => { teamState.active = e.target.value; render(); };
+    }
   };
 }
 function openAddUser(){
@@ -1027,8 +1088,12 @@ function stagesForProduct(p){
   (p.specs||[]).forEach(s => { if (!stages.includes(s.stage)) stages.push(s.stage); });
   return stages;
 }
+let productsState = { q:'', type:'' };
 function viewProducts(){
-  const products = S.products;
+  let products = S.products.slice();
+  const q = productsState.q.trim().toLowerCase();
+  if (q) products = products.filter(x => x.name.toLowerCase().includes(q));
+  if (productsState.type) products = products.filter(x => x.type === productsState.type);
   const rows = products.map(x => {
     const stages = stagesForProduct(x);
     const requestsRaised = S.requests.filter(r => r.productName === x.name).length;
@@ -1049,11 +1114,28 @@ function viewProducts(){
     title:'Products and specifications', crumb:'Administration',
     html: `
     ${pageHead('Products and specifications',
-      'Acceptance criteria imported from the Spec Lookup sheet. Editing a limit here updates this console only - it does not change the live Google Sheet IPQA tests against.')}
+      'Acceptance criteria used to build the live IPQA testing form. Editing a limit here takes effect on IPQA\'s next form load.')}
     <div class="card">
+      <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
+        <div class="row" style="gap:10px">
+          <div class="search filter-search"><span class="ic">${I.search}</span>
+            <input class="inp" id="prodQ" style="padding-left:34px;border-radius:20px" placeholder="Search products" value="${esc(productsState.q)}"></div>
+          <select class="inp" id="prodType" style="width:auto;min-width:130px">
+            <option value="">All types</option>
+            <option value="OSD" ${productsState.type==='OSD'?'selected':''}>OSD</option>
+            <option value="OLD" ${productsState.type==='OLD'?'selected':''}>OLD</option>
+          </select>
+        </div>
+      </div>
       <div class="card-h"><div><h3>Product catalogue</h3><div class="sub">${products.length} products</div></div></div>
-      ${products.length ? rows : `<div class="card-b">${emptyState('box','No products yet','Run the spec import to populate this page.')}</div>`}
-    </div>`
+      ${products.length ? rows : `<div class="card-b">${emptyState('box','No products match','Try a different search or type filter.')}</div>`}
+    </div>`,
+    bind: () => {
+      const q = $('#prodQ');
+      if (q) q.addEventListener('input', debounce(e => { productsState.q = e.target.value; render();
+        const el = $('#prodQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 260));
+      const t = $('#prodType'); if (t) t.onchange = e => { productsState.type = e.target.value; render(); };
+    }
   };
 }
 function viewProductDetail(id){
@@ -1167,10 +1249,21 @@ function editShelfLife(productId){
 /* ============================================================
    Audit Trail
    ============================================================ */
-let auditQuery = '';
+let auditState = { q:'', role:'', action:'', year:'', month:'' };
 function viewAudit(){
-  const q = auditQuery.trim().toLowerCase();
-  const rows = q ? S.audit.filter(e => [e.actor_name, e.action, e.detail, e.ref].join(' ').toLowerCase().includes(q)) : S.audit;
+  let rows = S.audit.slice();
+  const q = auditState.q.trim().toLowerCase();
+  if (q) rows = rows.filter(e => [e.actor_name, e.action, e.detail, e.ref].join(' ').toLowerCase().includes(q));
+  if (auditState.role) rows = rows.filter(e => e.actor_role === auditState.role);
+  if (auditState.action) rows = rows.filter(e => e.action === auditState.action);
+  if (auditState.year) rows = rows.filter(e => e.at && new Date(e.at).getFullYear() === Number(auditState.year));
+  if (auditState.month) rows = rows.filter(e => e.at && new Date(e.at).getMonth()+1 === Number(auditState.month));
+
+  const roleOptions = Object.entries(ROLE_LABELS).map(([k,v]) => `<option value="${k}" ${auditState.role===k?'selected':''}>${esc(v)}</option>`).join('');
+  const actionOptions = Array.from(new Set(S.audit.map(e => e.action))).sort()
+    .map(a => `<option value="${esc(a)}" ${auditState.action===a?'selected':''}>${esc(a)}</option>`).join('');
+  const years = yearsFromDates(S.audit, 'at');
+
   return {
     title:'Audit trail', crumb:'Administration',
     html: `
@@ -1178,9 +1271,14 @@ function viewAudit(){
       `<button class="btn btn-ghost" onclick="exportAudit()">${I.download} Export</button>`)}
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
-        <div class="search" style="max-width:340px"><span class="ic">${I.search}</span>
-          <input class="inp" id="auditQ" style="padding-left:34px;border-radius:20px" value="${esc(auditQuery)}"
-            placeholder="Search by person, action or reference"></div>
+        <div class="row" style="gap:10px">
+          <div class="search" style="max-width:340px"><span class="ic">${I.search}</span>
+            <input class="inp" id="auditQ" style="padding-left:34px;border-radius:20px" value="${esc(auditState.q)}"
+              placeholder="Search by person, action or reference"></div>
+          <select class="inp" id="auditRole" style="width:auto;min-width:150px"><option value="">All roles</option>${roleOptions}</select>
+          <select class="inp" id="auditAction" style="width:auto;min-width:180px"><option value="">All actions</option>${actionOptions}</select>
+          ${yearMonthSelectHtml('audit', years, auditState)}
+        </div>
       </div>
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th><th>Reference</th></tr></thead>
@@ -1194,9 +1292,13 @@ function viewAudit(){
       </table></div>
     </div>`,
     bind: () => {
-      const el = $('#auditQ'); if (!el) return;
-      el.addEventListener('input', debounce(e => { auditQuery = e.target.value; render();
+      const el = $('#auditQ');
+      if (el) el.addEventListener('input', debounce(e => { auditState.q = e.target.value; render();
         const q = $('#auditQ'); if (q){ q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }, 260));
+      const ro = $('#auditRole'); if (ro) ro.onchange = e => { auditState.role = e.target.value; render(); };
+      const ac = $('#auditAction'); if (ac) ac.onchange = e => { auditState.action = e.target.value; render(); };
+      const yr = $('#auditYear'); if (yr) yr.onchange = e => { auditState.year = e.target.value; render(); };
+      const mo = $('#auditMonth'); if (mo) mo.onchange = e => { auditState.month = e.target.value; render(); };
     }
   };
 }
@@ -1254,7 +1356,6 @@ function bindSettings(){
 route('/new', () => viewNewRequest());
 route('/requests', () => viewRequests());
 route('/sheet/:id', p => viewSheet(p.id));
-route('/sheets', () => viewSheets());
 route('/reports', () => viewReports());
 route('/team', () => viewTeam());
 route('/products', () => viewProducts());
