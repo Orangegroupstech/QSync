@@ -561,7 +561,7 @@ function viewNewRequest(){
         </div>
         <div class="card-f row end sticky-actions">
           <a class="btn btn-ghost" href="#/requests">Cancel</a>
-          <button class="btn btn-primary btn-lg" type="submit">${I.send} Submit request to IPQA</button>
+          <button class="btn btn-primary btn-lg" type="submit">${I.send} Submit request</button>
         </div>
       </form>
       <div class="stack">
@@ -632,7 +632,7 @@ function bindNewRequest(){
         mfg_date: mfg,
         stage,
       }});
-      toast('Request submitted', res.requestNo + ' has been raised and IPQA notified.', 'ok');
+      toast('Request submitted', res.requestNo + ' has been raised and IPQA/QC notified.', 'ok');
       await bootstrap();
       go('/requests');
     } catch (err){
