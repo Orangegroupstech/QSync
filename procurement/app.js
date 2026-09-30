@@ -605,34 +605,44 @@ route('/', () => viewItems());
 route('/items', () => viewItems());
 
 /* ============================================================
-   New Request - a launcher, not a rebuilt form. The two hosted
-   requisition forms (Engineering's SKU-lookup form, and the shared
-   one for the other 6 departments) already work standalone; this
-   just gives them one place to be found from inside the console.
+   New Request - a launcher, not a rebuilt form. Lists every
+   department (Engineering plus each department that has a
+   requester on file), mirroring the hosted requisition landing
+   page; each tile opens that department's hosted form in a new tab.
    ============================================================ */
+const REQUISITION_URL = 'https://orangegroupsai.online/webhook/procurement/requisition';
 function viewNewRequest(){
-  const optionCard = (title, desc, href) => `
-    <a class="card new-request-card" href="${esc(href)}" target="_blank" rel="noopener"
+  if (!rolesCache && !rolesLoading && !rolesError) loadRoles();
+  const deptNames = [...new Set((rolesCache || [])
+    .filter(r => r.flow === 'dept' && r.stage === 'requester' && r.department)
+    .map(r => r.department))].sort();
+  const departments = ['Engineering', ...deptNames];
+
+  const optionCard = (name) => `
+    <a class="card new-request-card" href="${esc(REQUISITION_URL + '?department=' + encodeURIComponent(name))}" target="_blank" rel="noopener"
        style="display:block;text-decoration:none;color:inherit">
-      <div class="card-h"><h3>${esc(title)}</h3></div>
+      <div class="card-h"><h3>${esc(name)}</h3></div>
       <div class="card-b">
-        <p class="small muted">${desc}</p>
+        <p class="small muted">Submit a material requisition for ${esc(name)}.</p>
         <div class="row" style="margin-top:14px;gap:6px;color:var(--brand-600);font-weight:600;font-size:13px">
           Open form ${I.externalLink}
         </div>
       </div>
     </a>`;
 
+  let note = '';
+  if (rolesLoading) note = `<div class="hint" style="margin-bottom:14px">${I.info}<span>Loading the other departments...</span></div>`;
+  else if (rolesError) note = `<div class="notice info" style="margin-bottom:14px">${I.info}<div>Could not load the other departments (${esc(rolesError)}).
+      <button class="btn btn-ghost btn-sm" onclick="retryRoles()">Retry</button></div></div>`;
+
   return {
     title:'New Request', crumb:'Modules',
     html: `
     <style>.new-request-card{transition:.16s ease}
       .new-request-card:hover{border-color:var(--brand);box-shadow:0 8px 24px rgba(16,25,20,.08);transform:translateY(-2px)}</style>
-    ${pageHead('New Request', 'Pick where this request belongs - each opens the existing hosted form in a new tab.')}
-    <div class="grid g2">
-      ${optionCard('Engineering', 'Spare parts and materials, with SKU lookup against the stock catalog.', 'https://orangegroupsai.online/webhook/oklengineeringrequisition')}
-      ${optionCard('Other Departments', 'Production, Quality Assurance, Quality Control, Warehouse, Safety/HSE, Business Support/HR.', 'https://orangegroupsai.online/webhook/okl-dept-requisition')}
-    </div>`,
+    ${pageHead('New Request', 'Pick the department this request is for - each opens that department\'s hosted form in a new tab.')}
+    ${note}
+    <div class="grid g3">${departments.map(optionCard).join('')}</div>`,
     bind(){},
   };
 }
