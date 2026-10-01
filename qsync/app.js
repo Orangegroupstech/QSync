@@ -122,7 +122,7 @@ function yearMonthSelectHtml(idPrefix, years, state){
 // sessionStorage throws in some sandboxed/embedded viewing contexts (SecurityError:
 // "document is sandboxed and lacks the allow-same-origin flag"). Fall back to an
 // in-memory token so the app still works there - it just won't survive a reload.
-const TOKEN_KEY = 'qsync.admin.token';
+const TOKEN_KEY = 'okl.token';
 let memoryToken = '';
 function getToken(){
   try { return sessionStorage.getItem(TOKEN_KEY) || memoryToken || ''; }
@@ -132,6 +132,16 @@ function setToken(t){
   memoryToken = t || '';
   try { if (t) sessionStorage.setItem(TOKEN_KEY, t); else sessionStorage.removeItem(TOKEN_KEY); }
   catch (e) { /* sandboxed - memory fallback above already covers this */ }
+}
+
+// One sign-in on the landing page serves every console; no token means go there.
+function toLanding(){ setToken(''); location.href = '../'; }
+function toLandingKeepToken(){ location.href = '../'; }
+function meFromAuth(auth, scope){
+  const u = (auth && auth.user) || {};
+  const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
+  return { id: u.id, name: u.name, role: u.is_admin ? 'admin' : '', is_admin: !!u.is_admin,
+           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change };
 }
 
 const API_BASE = 'https://orangegroupsai.online';
@@ -150,11 +160,8 @@ async function api(path, opts){
   } catch (e) {
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
-  if (res.status === 401 && path !== '/webhook/admin/api/login') {
-    setToken('');
-    S = null;
-    stopPolling();
-    render();
+  if (res.status === 401){
+    toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
   let json = {};
@@ -227,19 +234,10 @@ function resetIdleTimer(){
 ['click','keydown','mousemove','touchstart'].forEach(evt =>
   document.addEventListener(evt, () => resetIdleTimer(), { passive:true }));
 
-async function logout(reason){
-  try { await api('/webhook/admin/api/logout', { method:'POST' }); } catch(e) { /* best effort */ }
-  setToken(''); S = null;
-  if (idleTimer) clearTimeout(idleTimer);
-  stopPolling();
-  location.hash = '#/login';
-  render();
-  if (reason) toast('Signed out', reason, 'err', 6000);
-}
 
 /* ---------------- Background polling (read-only pages only, paused while a modal is open) ---------------- */
 const POLL_INTERVAL_MS = 60 * 1000;
-const POLL_ROUTES = ['/requests', '/reports', '/audit', '/team'];
+const POLL_ROUTES = ['/requests', '/reports', '/audit'];
 let pollTimer = null;
 async function pollTick(){
   if (!S) return;
@@ -264,6 +262,14 @@ function stopPolling(){
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
+
+async function logout(reason){
+  try { await api('/webhook/auth/api/logout', { method:'POST' }); } catch(e) { /* best effort */ }
+  if (idleTimer) clearTimeout(idleTimer);
+  if (typeof stopPolling === 'function') stopPolling();
+  if (reason) { try { sessionStorage.setItem('okl.notice', reason); } catch(e) { /* ignore */ } }
+  toLanding();
+}
 
 /* ---------------- Routing ---------------- */
 const ROUTES = [];
@@ -294,16 +300,14 @@ function queryParams(){
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   return [
-    { title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] },
+    ...(canEdit() ? [{ title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] }] : []),
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
       { path:'/reports', label:'Reports and Trends', icon:'chart' },
     ]},
     { title:'Administration', items:[
-      { path:'/team', label:'Team Management', icon:'users' },
       { path:'/products', label:'Products and Specs', icon:'box' },
       { path:'/audit', label:'Audit Trail', icon:'activity' },
-      { path:'/settings', label:'Settings', icon:'settings' },
     ]},
   ];
 }
@@ -337,9 +341,9 @@ function renderShell(inner, meta){
       <div class="sidebar-scroll">${navHtml}</div>
       <div class="sidebar-foot">
         <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to OKL Console</a>
-        <div class="user-chip" onclick="go('/settings')">
+        <div class="user-chip">
           ${avatarEl(me.name)}
-          <div style="min-width:0;flex:1"><div class="nm">${esc(me.name)}</div><div class="rl">Administrator</div></div>
+          <div style="min-width:0;flex:1"><div class="nm">${esc(me.name)}</div><div class="rl">${me.is_admin ? 'Administrator' : (me.permission==='editor' ? 'Editor' : 'Viewer')}</div></div>
           <span style="color:var(--nav-text-dim)">${I.chevR}</span>
         </div>
         <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)"
@@ -380,65 +384,14 @@ function statusBadge(status){
   return `<span class="badge ${s.badge}"><span class="dot"></span>${esc(s.label)}</span>`;
 }
 
-/* ---------------- Login ---------------- */
-function viewLogin(){
-  document.body.classList.remove('nav-open');
-  return `
-  <div class="auth">
-    <div class="auth-art">
-      <div>
-        <a href="../" style="display:inline-flex;align-items:center;gap:6px;color:#B9D2C4;text-decoration:none;font-size:12.5px;font-weight:600;margin-bottom:20px">${I.chevL} Back to OKL Console</a>
-        <span class="logo lg"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span>
-        <h1 style="margin-top:26px">QSync admin console</h1>
-        <p>Sign in with your email and PIN to manage users, review requests, and edit product specifications.</p>
-      </div>
-      <div class="af"><div class="afi">${I.lock}</div><div><div class="aft">Session security</div>
-        <div class="afd">You'll be signed out automatically after 10 minutes of inactivity.</div></div></div>
-    </div>
-    <div class="auth-form">
-      <div class="auth-box">
-        <h2>Admin sign in</h2>
-        <form id="loginForm" novalidate style="margin-top:18px">
-          <div class="field"><label for="lgEmail">Email address</label>
-            <input class="inp" id="lgEmail" type="email" placeholder="you@orangegroupsai.online" autocomplete="username">
-            <div class="err-msg hide" data-err="lgEmail"></div></div>
-          <div class="field"><label for="lgPin">PIN</label>
-            <input class="inp" id="lgPin" type="password" inputmode="numeric" autocomplete="current-password">
-            <div class="err-msg hide" data-err="lgPin"></div></div>
-          <button class="btn btn-primary btn-lg btn-block" type="submit">${I.send} Log in</button>
-        </form>
-      </div>
-    </div>
-  </div>`;
-}
-function bindLogin(){
-  const f = $('#loginForm'); if (!f) return;
-  f.onsubmit = async (e) => {
-    e.preventDefault();
-    clearErrors(f);
-    const email = $('#lgEmail').value.trim();
-    const pin = $('#lgPin').value.trim();
-    if (!email) return setErr('lgEmail', 'Enter your email address.');
-    if (!pin) return setErr('lgPin', 'Enter your PIN.');
-    const btn = f.querySelector('button[type=submit]');
-    btn.disabled = true;
-    try {
-      const res = await api('/webhook/admin/api/login', { method:'POST', body:{ email, admin_pin: pin } });
-      setToken(res.token);
-      await bootstrap();
-      go('/requests');
-    } catch (err) {
-      setErr('lgPin', err.message || 'Invalid email or PIN.');
-    } finally {
-      btn.disabled = false;
-    }
-  };
-}
 
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
+  const auth = await api('/webhook/auth/api/me');
+  if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
   const data = await api('/webhook/admin/api/bootstrap');
   S = data;
+  S.me = meFromAuth(auth, 'qsync');
   resetIdleTimer();
   startPolling();
 }
@@ -458,13 +411,8 @@ function fatalErrorHtml(err){
 function render(){
   const app = document.getElementById('app');
   try {
-    if (!S){
-      app.innerHTML = viewLogin();
-      bindLogin();
-      return;
-    }
+    if (!S){ toLanding(); return; }
     const path = currentPath();
-    if (path.startsWith('/login')){ go('/requests'); return; }
     const m = matchRoute(path);
     if (!m){
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
@@ -491,12 +439,10 @@ window.addEventListener('hashchange', render);
 
 (async function boot(){
   try {
-    const token = getToken();
-    if (token){
-      try { await bootstrap(); }
-      catch (e) { setToken(''); S = null; }
-    }
-    if (!location.hash) location.hash = S ? '#/requests' : '#/login';
+    if (!getToken()){ toLanding(); return; }
+    try { await bootstrap(); }
+    catch (e) { if (!getToken()) return; toLandingKeepToken(); return; }
+    if (!location.hash) location.hash = '#/requests';
     render();
   } catch (err) {
     console.error(err);
@@ -509,7 +455,9 @@ window.addEventListener('hashchange', render);
 /* ============================================================
    New Test Request
    ============================================================ */
+function canEdit(){ return !!(S && S.me && S.me.permission === 'editor'); }
 function viewNewRequest(){
+  if (!canEdit()) return { title:'New test request', crumb:'Workspace', html:`<div class="card"><div class="card-b">${emptyState('lock','View-only access','Raising a test request needs edit access to QSync. Ask an admin to grant it in User Management.')}</div></div>` };
   const productOptions = Object.keys(PRODUCTS_META)
     .map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
   return {
@@ -914,170 +862,12 @@ function viewReports(){
 
 
 /* ============================================================
-   Team Management (our add/edit/deactivate logic, Dyan's UI)
+   Role labels (used by the Audit Trail filter; people are managed in User Management)
    ============================================================ */
 const ROLE_LABELS = {
   production:'Production', ipqa:'IPQA', qa_supervisor:'QA Supervisor',
   qc_supervisor:'QC Supervisor', admin:'Admin',
 };
-function roleSelectHtml(id, val){
-  return `<select class="inp" id="${id}">${Object.entries(ROLE_LABELS).map(([k,v]) =>
-    `<option value="${k}" ${val===k?'selected':''}>${esc(v)}</option>`).join('')}</select>`;
-}
-let teamState = { q:'', role:'', active:'' };
-function viewTeam(){
-  const users = S.users;
-  const active = users.filter(u => u.active).length;
-  let rows = users.slice();
-  const q = teamState.q.trim().toLowerCase();
-  if (q) rows = rows.filter(u => u.name.toLowerCase().includes(q));
-  if (teamState.role) rows = rows.filter(u => u.role === teamState.role);
-  if (teamState.active) rows = rows.filter(u => (u.active ? 'active' : 'inactive') === teamState.active);
-  const roleOptions = Object.entries(ROLE_LABELS).map(([k,v]) => `<option value="${k}" ${teamState.role===k?'selected':''}>${esc(v)}</option>`).join('');
-  return {
-    title:'Team management', crumb:'Administration',
-    html: `
-    ${pageHead('Team management',
-      'Add colleagues, keep their contact details current, and deactivate accounts when people move on.',
-      `<button class="btn btn-primary" onclick="openAddUser()">${I.plus} Add team member</button>`)}
-    <div class="grid g4" style="margin-bottom:16px">
-      <div class="stat acc-brand"><div class="ic-wrap">${I.users}</div><div class="lbl">Team members</div>
-        <div class="val">${users.length}</div><div class="meta">${active} active, ${users.length-active} deactivated</div></div>
-    </div>
-    <div class="card">
-      <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
-        <div class="row" style="gap:10px">
-          <div class="search filter-search"><span class="ic">${I.search}</span>
-            <input class="inp" id="teamQ" style="padding-left:34px;border-radius:20px" placeholder="Search by name" value="${esc(teamState.q)}"></div>
-          <select class="inp" id="teamRole" style="width:auto;min-width:150px"><option value="">All roles</option>${roleOptions}</select>
-          <select class="inp" id="teamActive" style="width:auto;min-width:130px">
-            <option value="">All statuses</option>
-            <option value="active" ${teamState.active==='active'?'selected':''}>Active</option>
-            <option value="inactive" ${teamState.active==='inactive'?'selected':''}>Inactive</option>
-          </select>
-        </div>
-      </div>
-      <div class="card-h"><h3>All accounts</h3></div>
-      <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>Person</th><th>Role</th><th>Phone</th><th>Email</th><th>Status</th><th></th></tr></thead>
-        <tbody>${rows.length ? rows.map(u => `<tr>
-          <td data-label="Person"><div class="row" style="gap:10px">${avatarEl(u.name)}
-            <div style="min-width:0"><div class="strong">${esc(u.name)}</div></div></div></td>
-          <td data-label="Role"><span class="badge b-slate">${esc(ROLE_LABELS[u.role]||u.role)}</span></td>
-          <td class="small mono" data-label="Phone">${esc(u.phone_number||'--')}</td>
-          <td class="small" data-label="Email">${esc(u.email||'--')}</td>
-          <td data-label="Status">${u.active?'<span class="badge b-ok"><span class="dot"></span>Active</span>':'<span class="badge b-slate"><span class="dot"></span>Inactive</span>'}</td>
-          <td style="text-align:right;white-space:nowrap">
-            <button class="btn btn-ghost btn-sm" onclick="openEditUser(${u.id})">${I.edit} Edit</button>
-            <button class="btn btn-ghost btn-sm" onclick="toggleUserActive(${u.id})">
-              ${u.active?I.pause+' Deactivate':I.play+' Activate'}</button>
-          </td>
-        </tr>`).join('') : `<tr><td colspan="6" class="muted" style="padding:16px">No matching accounts.</td></tr>`}</tbody></table></div>
-    </div>`,
-    bind: () => {
-      const q = $('#teamQ');
-      if (q) q.addEventListener('input', debounce(e => { teamState.q = e.target.value; render();
-        const el = $('#teamQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 260));
-      const r = $('#teamRole'); if (r) r.onchange = e => { teamState.role = e.target.value; render(); };
-      const a = $('#teamActive'); if (a) a.onchange = e => { teamState.active = e.target.value; render(); };
-    }
-  };
-}
-function openAddUser(){
-  openModal({
-    title:'Add team member', size:'wide',
-    body:`<form id="addUserForm" novalidate>
-      <div class="grid g2">
-        <div class="field"><label for="auName">Full Name<span class="req">*</span></label>
-          <input class="inp" id="auName" maxlength="60"><div class="err-msg hide" data-err="auName"></div></div>
-        <div class="field"><label for="auRole">Role<span class="req">*</span></label>${roleSelectHtml('auRole','ipqa')}</div>
-      </div>
-      <div class="grid g2">
-        <div class="field"><label for="auPhone">Phone Number<span class="req">*</span></label>
-          <input class="inp" id="auPhone" type="tel" placeholder="2348012345678" maxlength="13">
-          <div class="err-msg hide" data-err="auPhone"></div></div>
-        <div class="field"><label for="auEmail">Email Address<span class="req">*</span></label>
-          <input class="inp" id="auEmail" type="email"><div class="err-msg hide" data-err="auEmail"></div></div>
-      </div>
-      <div class="field"><label for="auPin">PIN<span class="req">*</span></label>
-        <input class="inp" id="auPin" type="password" inputmode="numeric" maxlength="6">
-        <div class="hint">${I.info}<span>4-6 digits recommended</span></div>
-        <div class="err-msg hide" data-err="auPin"></div></div>
-    </form>`,
-    footer:`<button class="btn btn-ghost" data-close>Cancel</button>
-            <button class="btn btn-primary" data-save>${I.plus} Add User</button>`,
-    onMount:(w,close) => {
-      $('[data-save]',w).onclick = async () => {
-        const f = $('#addUserForm',w); clearErrors(f);
-        const name = $('#auName',w).value.trim(), phone = $('#auPhone',w).value.trim(),
-              email = $('#auEmail',w).value.trim(), role = $('#auRole',w).value, pin = $('#auPin',w).value.trim();
-        if (!name) return setErr('auName','Enter the full name.',f);
-        if (!/^234[0-9]{10}$/.test(phone)) return setErr('auPhone','Must start with 234 and be 13 digits total.',f);
-        if (!email) return setErr('auEmail','Enter an email address.',f);
-        if (!pin) return setErr('auPin','Enter a PIN.',f);
-        try {
-          const res = await api('/webhook/admin/api/users/add', { method:'POST', body:{
-            new_user_name:name, new_user_phone:phone, new_user_email:email, new_user_role:role, new_user_pin:pin } });
-          S.users.push({ id:res.user.id, name:res.user.name, role:res.user.role, phone_number:phone, email:res.user.email, active:true });
-          close(); render(); toast('User added', esc(name)+' can now sign in.', 'ok');
-        } catch (err){ setErr('auPin', err.message, f); }
-      };
-    }
-  });
-}
-function openEditUser(id){
-  const u = S.users.find(x => x.id === id); if (!u) return;
-  openModal({
-    title:`Edit ${u.name}`, size:'wide',
-    body:`<form id="editUserForm" novalidate>
-      <div class="grid g2">
-        <div class="field"><label for="euName">Full Name<span class="req">*</span></label>
-          <input class="inp" id="euName" value="${esc(u.name)}" maxlength="60"><div class="err-msg hide" data-err="euName"></div></div>
-        <div class="field"><label for="euRole">Role</label>${roleSelectHtml('euRole',u.role)}</div>
-      </div>
-      <div class="grid g2">
-        <div class="field"><label for="euPhone">Phone Number<span class="req">*</span></label>
-          <input class="inp" id="euPhone" value="${esc(u.phone_number||'')}" maxlength="13"><div class="err-msg hide" data-err="euPhone"></div></div>
-        <div class="field"><label for="euEmail">Email Address<span class="req">*</span></label>
-          <input class="inp" id="euEmail" type="email" value="${esc(u.email||'')}"><div class="err-msg hide" data-err="euEmail"></div></div>
-      </div>
-      <div class="field"><label for="euPin">New PIN</label>
-        <input class="inp" id="euPin" type="password" inputmode="numeric" maxlength="6">
-        <div class="hint">${I.info}<span>Leave blank to keep the current PIN</span></div></div>
-    </form>`,
-    footer:`<button class="btn btn-ghost" data-close>Cancel</button>
-            <button class="btn btn-primary" data-save>${I.check} Save changes</button>`,
-    onMount:(w,close) => {
-      $('[data-save]',w).onclick = async () => {
-        const f = $('#editUserForm',w); clearErrors(f);
-        const name = $('#euName',w).value.trim(), phone = $('#euPhone',w).value.trim(),
-              email = $('#euEmail',w).value.trim(), role = $('#euRole',w).value, pin = $('#euPin',w).value.trim();
-        if (!name) return setErr('euName','Enter the full name.',f);
-        if (!/^234[0-9]{10}$/.test(phone)) return setErr('euPhone','Must start with 234 and be 13 digits total.',f);
-        if (!email) return setErr('euEmail','Enter an email address.',f);
-        try {
-          const res = await api('/webhook/admin/api/users/edit', { method:'POST', body:{
-            target_id:id, edit_name:name, edit_role:role, edit_phone:phone, edit_email:email, edit_pin:pin } });
-          Object.assign(u, { name:res.user.name, role:res.user.role, phone_number:res.user.phone_number, email:res.user.email });
-          close(); render(); toast('Changes saved', esc(name)+' has been updated.', 'ok');
-        } catch (err){ setErr('euEmail', err.message, f); }
-      };
-    }
-  });
-}
-async function toggleUserActive(id){
-  const u = S.users.find(x => x.id === id); if (!u) return;
-  const goingActive = !u.active;
-  const yes = await confirmDialog(goingActive?'Reactivate this account?':'Deactivate this account?',
-    `<b>${esc(u.name)}</b> will ${goingActive?'be able to sign in again.':'no longer be able to sign in. Their signed records are kept intact.'}`,
-    goingActive?'Reactivate':'Deactivate', goingActive?'':'danger');
-  if (!yes) return;
-  try {
-    const res = await api('/webhook/admin/api/users/toggle', { method:'POST', body:{ target_id:id } });
-    u.active = res.user.active;
-    render(); toast('Status updated', esc(u.name)+' is now '+(u.active?'active':'inactive')+'.', 'ok');
-  } catch (err){ toast('Could not update', err.message, 'err'); }
-}
 
 
 /* ============================================================
@@ -1161,7 +951,7 @@ function viewProductDetail(id){
           </div>
           <div class="row" style="margin-top:16px;align-items:center;gap:12px;padding-top:14px;border-top:1px solid var(--line-2)">
             <div class="kv-item" style="flex:1"><div class="k">Shelf life</div><div class="v">${p.shelfLifeMonths} months</div></div>
-            <button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Edit</button>
+            ${canEdit() ? `<button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Edit</button>` : ''}
           </div>
         </div>
       </div>
@@ -1176,7 +966,7 @@ function viewProductDetail(id){
               <td class="small" data-label="Acceptance criteria">${esc(s.specText || (s.specMin!=null && s.specMax!=null ? `${s.specMin} - ${s.specMax}${s.unit?' '+s.unit:''}` : '--'))}</td>
               <td data-label="Type"><span class="chip">${s.specText ? 'Complies / Does not' : 'Numeric'}</span></td>
               <td style="text-align:right">${s.specText ? '<span class="tiny muted">Fixed</span>' :
-                `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Edit limits</button>`}</td>
+                (canEdit() ? `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Edit limits</button>` : '<span class="tiny muted">View only</span>')}</td>
             </tr>`).join('') : `<tr><td colspan="4" class="muted" style="padding:16px">No parameters imported for this stage.</td></tr>`}</tbody>
           </table></div>
         </div>`;
@@ -1312,43 +1102,6 @@ function exportAudit(){
 /* ============================================================
    Settings (Signature PIN only)
    ============================================================ */
-function viewSettings(){
-  return {
-    title:'Settings', crumb:'Administration',
-    html: `
-    ${pageHead('Settings', 'Change the PIN used to sign in to this console.')}
-    <div class="grid g2">
-      <div class="card"><div class="card-h"><h3>Signature PIN</h3></div><div class="card-b">
-        <div class="notice warn">${I.lock}<div>Your PIN is your electronic signature. Anything signed with it is legally attributed to you.</div></div>
-        <form id="pinForm" novalidate>
-          <div class="grid g2">
-            <div class="field"><label for="stOld">Current PIN</label>
-              <input class="inp" id="stOld" type="password" inputmode="numeric" maxlength="6">
-              <div class="err-msg hide" data-err="stOld"></div></div>
-            <div class="field"><label for="stNew">New PIN</label>
-              <input class="inp" id="stNew" type="password" inputmode="numeric" maxlength="6">
-              <div class="err-msg hide" data-err="stNew"></div></div>
-          </div>
-          <button class="btn btn-primary" type="submit">${I.key} Change PIN</button>
-        </form>
-      </div></div>
-    </div>`,
-    bind: bindSettings
-  };
-}
-function bindSettings(){
-  const f = $('#pinForm'); if (!f) return;
-  f.onsubmit = async (e) => {
-    e.preventDefault(); clearErrors(f);
-    const oldPin = $('#stOld').value.trim(), newPin = $('#stNew').value.trim();
-    if (!oldPin) return setErr('stOld','Enter your current PIN.',f);
-    if (!/^[0-9]{4,6}$/.test(newPin)) return setErr('stNew','New PIN must be 4 to 6 digits.',f);
-    try {
-      await api('/webhook/admin/api/change-pin', { method:'POST', body:{ old_pin:oldPin, new_pin:newPin } });
-      f.reset(); toast('PIN changed','Your electronic signature PIN has been updated.','ok');
-    } catch (err){ setErr('stOld', err.message, f); }
-  };
-}
 
 /* ============================================================
    Routes
@@ -1357,10 +1110,8 @@ route('/new', () => viewNewRequest());
 route('/requests', () => viewRequests());
 route('/sheet/:id', p => viewSheet(p.id));
 route('/reports', () => viewReports());
-route('/team', () => viewTeam());
 route('/products', () => viewProducts());
 route('/products/:id', p => viewProductDetail(p.id));
 route('/audit', () => viewAudit());
-route('/settings', () => viewSettings());
 
 

@@ -8,7 +8,7 @@
   :root{
     --brand:#ED6B1F; --brand-600:#D75E15;
     --bg:#F5F6F7; --surface:#FFFFFF; --line:#E4E7EA;
-    --text:#16191D; --text-2:#565E6B; --text-3:#8A93A0;
+    --text:#16191D; --text-2:#565E6B; --text-3:#8A93A0; --danger:#B3261E;
     --r:12px; --r-lg:16px;
     --font:"Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
   }
@@ -16,16 +16,9 @@
   body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font);
     display:flex;align-items:center;justify-content:center;padding:24px}
   .wrap{max-width:760px;width:100%;text-align:center}
-  .logo{display:inline-flex;align-items:center;gap:0;background:var(--brand);border:2px solid #fff;
-    box-shadow:0 0 0 2px var(--brand);padding:8px 18px;border-radius:3px;line-height:1;margin-bottom:22px}
-  .logo .berry{display:inline-block;width:16px;height:12px;margin-right:7px;position:relative;flex:0 0 auto}
-  .logo .berry i{position:absolute;top:0;width:7px;height:7px;border-radius:50%;background:#fff}
-  .logo .berry i:first-child{left:0} .logo .berry i:nth-child(2){left:8px}
-  .logo .berry b{position:absolute;bottom:0;left:0;width:15px;height:3px;border-radius:2px;background:#fff}
-  .logo span{font-family:Georgia,"Times New Roman",serif;font-weight:700;color:#fff;font-size:18px;letter-spacing:.14em;white-space:nowrap}
   .brand-logo{display:block;margin:0 auto 18px;border-radius:8px;height:72px;width:auto}
   h1{font-size:26px;margin:0 0 8px;letter-spacing:-.02em}
-  p.sub{color:var(--text-2);font-size:14.5px;margin:0 0 34px}
+  p.sub{color:var(--text-2);font-size:14.5px;margin:0 0 28px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
   a.tile{display:block;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
     padding:26px 22px;text-decoration:none;color:var(--text);transition:.16s ease;text-align:left}
@@ -35,39 +28,202 @@
   .badge{display:inline-block;margin-top:12px;font-size:11px;font-weight:700;letter-spacing:.04em;
     text-transform:uppercase;color:var(--brand-600)}
   footer{margin-top:34px;font-size:11.5px;color:var(--text-3)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:26px 24px;text-align:left;
+    max-width:400px;margin:0 auto;box-shadow:0 10px 28px rgba(16,25,20,.06)}
+  .card h2{margin:0 0 4px;font-size:18px}
+  .card .hint{font-size:12.5px;color:var(--text-3);margin:0 0 16px;line-height:1.5}
+  label{display:block;font-size:12.5px;font-weight:600;margin:12px 0 5px;color:var(--text-2)}
+  input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:14.5px;background:#fff}
+  input:focus{outline:2px solid rgba(237,107,31,.35);border-color:var(--brand)}
+  button{font:inherit;cursor:pointer}
+  .btn{width:100%;margin-top:18px;padding:12px;border:0;border-radius:8px;background:var(--brand);color:#fff;font-weight:700;font-size:14.5px}
+  .btn:hover{background:var(--brand-600)} .btn:disabled{opacity:.6;cursor:default}
+  .linkbtn{background:none;border:0;color:var(--text-2);font-size:13px;text-decoration:underline;padding:4px 8px}
+  .err{color:var(--danger);font-size:13px;margin-top:12px;min-height:18px}
+  .notice{background:#FFF4EC;border:1px solid #F7D3BB;color:#8A3B0C;border-radius:8px;padding:10px 12px;font-size:13px;margin:0 auto 16px;max-width:400px;text-align:left}
+  .bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 22px;font-size:13px;color:var(--text-2);flex-wrap:wrap}
+  .bar .who strong{color:var(--text)}
+  .hidden{display:none}
 </style>
 </head>
 <body>
 <div class="wrap">
   <img class="brand-logo" src="Orange2ballslogo.jpg" alt="Orange Group" width="106" height="72">
   <h1>OKL Console</h1>
-  <p class="sub">Pick a system to continue.</p>
-  <div class="grid">
-    <a class="tile" href="employees/">
-      <h3>Employee Database</h3>
-      <p>Staff and casuals directory - view, add and edit records.</p>
-      <span class="badge">Sign-in required</span>
-    </a>
-    <a class="tile" href="qsync/">
-      <h3>QSync</h3>
-      <p>Production tracking, QA sign-offs, and reports.</p>
-      <span class="badge">Sign-in required</span>
-    </a>
-    <a class="tile" href="procurement/">
-      <h3>Procurement</h3>
-      <p>Requisition log across departments - review and fill in vendor/PO details.</p>
-      <span class="badge">Sign-in required</span>
-    </a>
-    <a class="tile" href="https://orange-group-okl-production-system.vercel.app" target="_blank" rel="noopener">
-      <h3>Live production system</h3>
-      <p>OKL production dashboard.</p>
-    </a>
-    <a class="tile" href="https://orangegroupsai.online/webhook/zaiki-mintacid-dashboard" target="_blank" rel="noopener">
-      <h3>Zaiki &amp; Mintacid</h3>
-      <p>Production activity dashboard.</p>
-    </a>
-  </div>
-  <footer>More OKL systems will appear here as they come online.</footer>
+  <div id="notice" class="notice hidden"></div>
+
+  <!-- not signed in -->
+  <section id="loginView" class="hidden">
+    <p class="sub">Sign in to continue.</p>
+    <form class="card" id="loginForm" novalidate>
+      <h2>Sign in</h2>
+      <p class="hint">Use your work email and password.</p>
+      <label for="email">Email address</label>
+      <input id="email" type="email" autocomplete="username" placeholder="you@orangegroups.ng">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password">
+      <div class="err" id="loginErr"></div>
+      <button class="btn" type="submit">Sign in</button>
+    </form>
+  </section>
+
+  <!-- must / may change password -->
+  <section id="pwView" class="hidden">
+    <p class="sub" id="pwSub"></p>
+    <form class="card" id="pwForm" novalidate>
+      <h2>Change password</h2>
+      <p class="hint">At least 8 characters. It cannot be the default password.</p>
+      <label for="oldPw">Current password</label>
+      <input id="oldPw" type="password" autocomplete="current-password">
+      <label for="newPw">New password</label>
+      <input id="newPw" type="password" autocomplete="new-password">
+      <label for="newPw2">Repeat new password</label>
+      <input id="newPw2" type="password" autocomplete="new-password">
+      <div class="err" id="pwErr"></div>
+      <button class="btn" type="submit">Save password</button>
+      <div style="text-align:center;margin-top:10px"><button type="button" class="linkbtn hidden" id="pwCancel">Cancel</button>
+        <button type="button" class="linkbtn" id="pwSignOut">Sign out</button></div>
+    </form>
+  </section>
+
+  <!-- signed in -->
+  <section id="homeView" class="hidden">
+    <div class="bar">
+      <div class="who">Signed in as <strong id="whoName"></strong></div>
+      <div><button class="linkbtn" id="changePw">Change password</button><button class="linkbtn" id="signOut">Sign out</button></div>
+    </div>
+    <p class="sub">Pick a system to continue.</p>
+    <div class="grid">
+      <a class="tile" href="employees/">
+        <h3>Employee Database</h3>
+        <p>Staff and casuals directory, department, overtime.</p>
+        <span class="badge" data-badge="employees"></span>
+      </a>
+      <a class="tile" href="qsync/">
+        <h3>QSync</h3>
+        <p>Production tracking, QA sign-offs, and reports.</p>
+        <span class="badge" data-badge="qsync"></span>
+      </a>
+      <a class="tile" href="procurement/">
+        <h3>Procurement</h3>
+        <p>Requisition log across departments - review and fill in vendor/PO details.</p>
+        <span class="badge" data-badge="procurement"></span>
+      </a>
+      <a class="tile hidden" id="usersTile" href="users/">
+        <h3>User Management</h3>
+        <p>Add people, give access, reset passwords.</p>
+        <span class="badge">Admins only</span>
+      </a>
+      <a class="tile" href="https://orange-group-okl-production-system.vercel.app" target="_blank" rel="noopener">
+        <h3>Live production system</h3>
+        <p>OKL production dashboard.</p>
+      </a>
+      <a class="tile" href="https://orangegroupsai.online/webhook/zaiki-mintacid-dashboard" target="_blank" rel="noopener">
+        <h3>Zaiki &amp; Mintacid</h3>
+        <p>Production activity dashboard.</p>
+      </a>
+    </div>
+    <footer>More OKL systems will appear here as they come online.</footer>
+  </section>
 </div>
+
+<script>
+(function(){
+  var API = 'https://orangegroupsai.online/webhook/auth/api/';
+  var KEY = 'okl.token';
+  var memToken = '';
+  var me = null, forced = false, idleTimer = null;
+  function $(id){ return document.getElementById(id); }
+  function getToken(){ try { return sessionStorage.getItem(KEY) || memToken; } catch(e){ return memToken; } }
+  function setToken(t){ memToken = t || ''; try { if (t) sessionStorage.setItem(KEY, t); else sessionStorage.removeItem(KEY); } catch(e){} }
+  function show(id){ ['loginView','pwView','homeView'].forEach(function(v){ $(v).classList.toggle('hidden', v !== id); }); }
+
+  async function call(path, method, body){
+    var headers = { 'Content-Type': 'application/json' };
+    var t = getToken(); if (t) headers['Authorization'] = t;
+    var res;
+    try { res = await fetch(API + path, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined }); }
+    catch(e){ throw new Error('Could not reach the server. Check your connection and try again.'); }
+    var json = {}; try { json = await res.json(); } catch(e){}
+    if (!res.ok){ var err = new Error(json.error || 'Something went wrong.'); err.status = res.status; throw err; }
+    return json;
+  }
+
+  function resetIdle(){
+    if (!me) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function(){ signOut('Signed out after 10 minutes of inactivity.'); }, 10 * 60 * 1000);
+  }
+  ['click','keydown','mousemove','touchstart'].forEach(function(e){ document.addEventListener(e, resetIdle, { passive: true }); });
+
+  function notice(msg){ var n = $('notice'); if (!msg){ n.classList.add('hidden'); return; } n.textContent = msg; n.classList.remove('hidden'); }
+
+  async function signOut(reason){
+    try { await call('logout', 'POST'); } catch(e){}
+    setToken(''); me = null; clearTimeout(idleTimer);
+    showLogin(reason);
+  }
+  function showLogin(msg){
+    notice(msg || '');
+    $('password').value = ''; $('loginErr').textContent = '';
+    show('loginView');
+  }
+  function showHome(){
+    notice('');
+    $('whoName').textContent = me.user.name;
+    var edit = me.edit || [];
+    ['employees','qsync','procurement'].forEach(function(s){
+      var b = document.querySelector('[data-badge="' + s + '"]');
+      b.textContent = (me.user.is_admin || edit.indexOf(s) >= 0) ? 'Edit access' : 'View only';
+    });
+    $('usersTile').classList.toggle('hidden', !me.user.is_admin);
+    show('homeView'); resetIdle();
+  }
+  function showPassword(force){
+    forced = force;
+    $('pwSub').textContent = force ? 'You need to choose a new password before you continue.' : 'Choose a new password.';
+    ['oldPw','newPw','newPw2'].forEach(function(i){ $(i).value = ''; }); $('pwErr').textContent = '';
+    $('pwCancel').classList.toggle('hidden', force);
+    show('pwView');
+  }
+  async function load(){
+    try { me = await call('me', 'GET'); }
+    catch(e){ setToken(''); me = null; showLogin(e.status === 401 ? '' : e.message); return; }
+    if (me.user.must_change) showPassword(true); else showHome();
+  }
+
+  $('loginForm').addEventListener('submit', async function(ev){
+    ev.preventDefault();
+    var email = $('email').value.trim(), password = $('password').value;
+    $('loginErr').textContent = '';
+    if (!email || !password){ $('loginErr').textContent = 'Enter your email and password.'; return; }
+    var btn = ev.target.querySelector('button[type=submit]'); btn.disabled = true;
+    try { var r = await call('login', 'POST', { email: email, password: password }); setToken(r.token); await load(); }
+    catch(e){ $('loginErr').textContent = e.message; }
+    finally { btn.disabled = false; }
+  });
+  $('pwForm').addEventListener('submit', async function(ev){
+    ev.preventDefault();
+    var o = $('oldPw').value, n = $('newPw').value, n2 = $('newPw2').value;
+    $('pwErr').textContent = '';
+    if (!o) { $('pwErr').textContent = 'Enter your current password.'; return; }
+    if (n.length < 8) { $('pwErr').textContent = 'The new password must be at least 8 characters.'; return; }
+    if (n !== n2) { $('pwErr').textContent = 'The two new passwords do not match.'; return; }
+    var btn = ev.target.querySelector('button[type=submit]'); btn.disabled = true;
+    try { await call('change-password', 'POST', { old_password: o, new_password: n }); await load(); notice('Password changed.'); }
+    catch(e){ $('pwErr').textContent = e.message; if (e.status === 401) { setToken(''); showLogin('Your session has expired. Please sign in again.'); } }
+    finally { btn.disabled = false; }
+  });
+  $('changePw').onclick = function(){ showPassword(false); };
+  $('pwCancel').onclick = function(){ showHome(); };
+  $('pwSignOut').onclick = function(){ signOut(); };
+  $('signOut').onclick = function(){ signOut(); };
+
+  var pending = null;
+  try { pending = sessionStorage.getItem('okl.notice'); sessionStorage.removeItem('okl.notice'); } catch(e){}
+  if (getToken()) { load().then(function(){ if (pending) notice(pending); }); }
+  else showLogin(pending || '');
+})();
+</script>
 </body>
 </html>

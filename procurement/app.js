@@ -43,10 +43,10 @@ function avatarEl(name, cls){
 
 /* ---------------- API layer ----------------
    Session-gated, same pattern as QSync/Employees' own app.js: a bearer
-   token from /webhook/procurement/api/login, sent as a plain Authorization
+   token from /webhook/auth/api/login (landing page), sent as a plain Authorization
    header (no "Bearer " prefix, matching what the backend's session-check
    expects). Same shared OKL_QCD_users / OKL_QCD_admin_sessions tables. */
-const TOKEN_KEY = 'okl.procurement.token';
+const TOKEN_KEY = 'okl.token';
 let memoryToken = '';
 function getToken(){
   try { return sessionStorage.getItem(TOKEN_KEY) || memoryToken || ''; }
@@ -56,6 +56,16 @@ function setToken(t){
   memoryToken = t || '';
   try { if (t) sessionStorage.setItem(TOKEN_KEY, t); else sessionStorage.removeItem(TOKEN_KEY); }
   catch (e) { /* sandboxed - memory fallback above already covers this */ }
+}
+
+// One sign-in on the landing page serves every console; no token means go there.
+function toLanding(){ setToken(''); location.href = '../'; }
+function toLandingKeepToken(){ location.href = '../'; }
+function meFromAuth(auth, scope){
+  const u = (auth && auth.user) || {};
+  const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
+  return { id: u.id, name: u.name, role: u.is_admin ? 'admin' : '', is_admin: !!u.is_admin,
+           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change };
 }
 
 const API_BASE = 'https://orangegroupsai.online';
@@ -74,9 +84,8 @@ async function api(path, opts){
   } catch (e) {
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
-  if (res.status === 401 && path !== '/webhook/procurement/api/login'){
-    setToken(''); S = null;
-    render();
+  if (res.status === 401){
+    toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
   let json = {};
@@ -149,12 +158,13 @@ function resetIdleTimer(){
 ['click','keydown','mousemove','touchstart'].forEach(evt =>
   document.addEventListener(evt, () => resetIdleTimer(), { passive:true }));
 
+
 async function logout(reason){
-  try { await api('/webhook/procurement/api/logout', { method:'POST' }); } catch(e) { /* best effort */ }
-  setToken(''); S = null;
+  try { await api('/webhook/auth/api/logout', { method:'POST' }); } catch(e) { /* best effort */ }
   if (idleTimer) clearTimeout(idleTimer);
-  render();
-  if (reason) toast('Signed out', reason, 'err', 6000);
+  if (typeof stopPolling === 'function') stopPolling();
+  if (reason) { try { sessionStorage.setItem('okl.notice', reason); } catch(e) { /* ignore */ } }
+  toLanding();
 }
 
 /* ---------------- Routing (ported from QSync's app.js) ---------------- */
@@ -193,7 +203,6 @@ function navModel(){
   if (S.me.permission === 'editor') {
     groups.push({ title:'Admin', items:[ { path:'/admin/roles', label:'Roles', icon:'users' } ] });
   }
-  groups.push({ title:'Account', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] });
   return groups;
 }
 
@@ -225,7 +234,7 @@ function renderShell(inner, meta){
       <div class="sidebar-scroll">${navHtml}</div>
       <div class="sidebar-foot">
         <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to OKL Console</a>
-        <div class="user-chip" onclick="go('/settings')">
+        <div class="user-chip">
           ${avatarEl(S.me.name)}
           <div style="min-width:0;flex:1"><div class="nm">${esc(S.me.name)}</div><div class="rl">${S.me.permission==='editor'?'Editor':'Viewer'}</div></div>
           <span style="color:var(--nav-text-dim)">${I.chevR}</span>
@@ -277,76 +286,19 @@ function fatalErrorHtml(err){
     </div></div>`;
 }
 
-/* ---------------- Login ---------------- */
-function viewLogin(){
-  document.body.classList.remove('nav-open');
-  return `
-  <div class="auth">
-    <div class="auth-art">
-      <div>
-        <a href="../" style="display:inline-flex;align-items:center;gap:6px;color:#B9D2C4;text-decoration:none;font-size:12.5px;font-weight:600;margin-bottom:20px">${I.chevL} Back to OKL Console</a>
-        <span class="logo lg"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span>
-        <h1 style="margin-top:26px">Procurement</h1>
-        <p>Sign in with your email and PIN to view the procurement log and fill in vendor/PO details.</p>
-      </div>
-      <div class="af"><div class="afi">${I.lock}</div><div><div class="aft">Session security</div>
-        <div class="afd">You'll be signed out automatically after 10 minutes of inactivity.</div></div></div>
-    </div>
-    <div class="auth-form">
-      <div class="auth-box">
-        <h2>Sign in</h2>
-        <form id="loginForm" novalidate style="margin-top:18px">
-          <div class="field"><label for="lgEmail">Email address</label>
-            <input class="inp" id="lgEmail" type="email" placeholder="you@orangegroupsai.online" autocomplete="username">
-            <div class="err-msg hide" data-err="lgEmail"></div></div>
-          <div class="field"><label for="lgPin">PIN</label>
-            <input class="inp" id="lgPin" type="password" inputmode="numeric" autocomplete="current-password">
-            <div class="err-msg hide" data-err="lgPin"></div></div>
-          <button class="btn btn-primary btn-block btn-lg" type="submit">Sign in</button>
-        </form>
-      </div>
-    </div>
-  </div>`;
-}
-function bindLogin(){
-  const f = $('#loginForm'); if (!f) return;
-  f.onsubmit = async (e) => {
-    e.preventDefault();
-    clearErrors(f);
-    const email = $('#lgEmail').value.trim();
-    const pin = $('#lgPin').value.trim();
-    if (!email) return setErr('lgEmail', 'Enter your email address.');
-    if (!pin) return setErr('lgPin', 'Enter your PIN.');
-    const btn = f.querySelector('button[type=submit]');
-    btn.disabled = true;
-    try {
-      const res = await api('/webhook/procurement/api/login', { method:'POST', body:{ email, pin } });
-      setToken(res.token);
-      await bootstrap();
-      go('/');
-      render();
-    } catch (err) {
-      setErr('lgPin', err.message || 'Invalid email or PIN.');
-    } finally {
-      btn.disabled = false;
-    }
-  };
-}
 
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
+  const auth = await api('/webhook/auth/api/me');
+  if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
   const data = await api('/webhook/procurement/api/items');
-  S = { me: data.me, items: data.items };
+  S = { me: meFromAuth(auth, 'procurement'), items: data.items };
   resetIdleTimer();
 }
 function render(){
   const app = document.getElementById('app');
   try {
-    if (!S){
-      app.innerHTML = viewLogin();
-      bindLogin();
-      return;
-    }
+    if (!S){ toLanding(); return; }
     const path = currentPath();
     const m = matchRoute(path);
     if (!m){
@@ -374,11 +326,9 @@ window.addEventListener('hashchange', render);
 
 (async function boot(){
   try {
-    const token = getToken();
-    if (token){
-      try { await bootstrap(); }
-      catch (e) { setToken(''); S = null; }
-    }
+    if (!getToken()){ toLanding(); return; }
+    try { await bootstrap(); }
+    catch (e) { if (!getToken()) return; toLandingKeepToken(); return; }
     if (!location.hash) location.hash = '#/';
     render();
   } catch (err) {
@@ -924,24 +874,3 @@ function viewRoles(){
 /* ============================================================
    Settings (account info, sign out)
    ============================================================ */
-function viewSettings(){
-  return {
-    title:'Settings', crumb:'Account',
-    html: `
-    ${pageHead('Settings', 'Manage your own account.')}
-    <div class="card">
-      <div class="card-h"><h3>${esc(S.me.name)}</h3></div>
-      <div class="card-b">
-        <div class="kv-grid">
-          <div class="kv-item"><div class="k">Role</div><div class="v">${esc(S.me.role||'--')}</div></div>
-          <div class="kv-item"><div class="k">Access level</div><div class="v">${S.me.permission==='editor'?'Editor (can edit vendor/PO details)':'Viewer (read-only)'}</div></div>
-        </div>
-        <div class="hint" style="margin-top:10px">${I.info}<span>Your PIN is shared across QSync, Employees and Procurement - change it from any of those apps' Settings page.</span></div>
-        <div class="divider"></div>
-        <button class="btn btn-ghost" onclick="logout()">${I.logout} Sign out</button>
-      </div>
-    </div>`,
-    bind(){},
-  };
-}
-route('/settings', () => viewSettings());
