@@ -251,8 +251,7 @@ function renderShell(inner, meta){
         <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to home</a>
         <div class="user-chip">
           ${avatarEl(S.me.name)}
-          <div style="min-width:0;flex:1"><div class="nm">${esc(S.me.name)}</div><div class="rl">${S.me.permission==='editor'?'Editor':'Viewer'}</div></div>
-          <span style="color:var(--nav-text-dim)">${I.chevR}</span>
+          <div style="min-width:0;flex:1"><div class="nm">${esc(S.me.name)}</div></div>
         </div>
         <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)"
           onclick="logout()">${I.logout} Sign out</button>
