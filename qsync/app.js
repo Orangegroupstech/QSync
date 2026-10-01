@@ -96,7 +96,7 @@ const PRODUCTS_META = {
   Cypron:         { prefix:'E', type:'OSD' },
   Corhinza:       { prefix:'F', type:'OSD' },
   'Cannon PM':    { prefix:'G', type:'OSD' },
-  Zaiki:          { prefix:'H', type:'OSD' },
+  Zaiki:          { prefix:'H', type:'OSD', noStages:['Compression'] },
   Mintacid:       { prefix:'I', type:'OLD' },
 };
 const UNIT_OPTIONS = { OSD: ['kg', 'tablets'], OLD: ['litres'] };
@@ -329,8 +329,8 @@ function renderShell(inner, meta){
     <div class="backdrop" onclick="document.body.classList.remove('nav-open')"></div>
     <aside class="sidebar">
       <div class="sidebar-top">
-        <a href="#/requests" style="display:flex;align-items:center;gap:9px;text-decoration:none">
-          <span class="logo-wrap"><span class="logo sm"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></span>
+        <a href="#/requests" style="display:flex;flex-direction:column;align-items:flex-start;gap:7px;text-decoration:none">
+          <span class="brand-img"><img src="../logo.png" alt="Orange Kalbe Limited"></span><span class="brand-name">ORANGE KALBE LIMITED</span>
         </a>
         <button class="btn-icon hide-lg" style="color:var(--nav-text-dim)" onclick="document.body.classList.remove('nav-open')" aria-label="Close menu">${I.x}</button>
       </div>
@@ -546,7 +546,7 @@ function onNewReqProductChange(){
   unitSel.innerHTML = UNIT_OPTIONS[meta.type].map(u => `<option value="${u}">${u}</option>`).join('');
   unitSel.disabled = false;
   stageSel.innerHTML = '<option value="">-- Select a stage --</option>' +
-    STAGE_OPTIONS[meta.type].map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    STAGE_OPTIONS[meta.type].filter(s => !(meta.noStages || []).includes(s)).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   stageSel.disabled = false;
 }
 function bindNewRequest(){

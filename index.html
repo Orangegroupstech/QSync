@@ -16,7 +16,8 @@
   body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font);
     display:flex;align-items:center;justify-content:center;padding:24px}
   .wrap{max-width:760px;width:100%;text-align:center}
-  .brand-logo{display:block;margin:0 auto 18px;border-radius:8px;height:72px;width:auto}
+  .brand-logo{display:block;margin:0 auto 6px;height:72px;width:auto}
+  .brand-name{text-align:center;font-size:12px;font-weight:700;letter-spacing:.16em;color:var(--text-2);margin:0 0 18px}
   h1{font-size:26px;margin:0 0 8px;letter-spacing:-.02em}
   p.sub{color:var(--text-2);font-size:14.5px;margin:0 0 28px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
@@ -48,7 +49,8 @@
 </head>
 <body>
 <div class="wrap">
-  <img class="brand-logo" src="Orange2ballslogo.jpg" alt="Orange Group" width="106" height="72">
+  <img class="brand-logo" src="logo.png" alt="Orange Kalbe Limited" width="106" height="67">
+  <div class="brand-name">ORANGE KALBE LIMITED</div>
   <h1>OKL Console</h1>
   <div id="notice" class="notice hidden"></div>
 
@@ -92,38 +94,31 @@
       <div class="who">Signed in as <strong id="whoName"></strong></div>
       <div><button class="linkbtn" id="changePw">Change password</button><button class="linkbtn" id="signOut">Sign out</button></div>
     </div>
-    <p class="sub">Pick a system to continue.</p>
+    
     <div class="grid">
       <a class="tile" href="employees/">
-        <h3>Employee Database</h3>
-        <p>Staff and casuals directory, department, overtime.</p>
+        <h3>Employees</h3>
         <span class="badge" data-badge="employees"></span>
       </a>
       <a class="tile" href="qsync/">
         <h3>QSync</h3>
-        <p>Production tracking, QA sign-offs, and reports.</p>
         <span class="badge" data-badge="qsync"></span>
       </a>
       <a class="tile" href="procurement/">
         <h3>Procurement</h3>
-        <p>Requisition log across departments - review and fill in vendor/PO details.</p>
         <span class="badge" data-badge="procurement"></span>
       </a>
       <a class="tile hidden" id="usersTile" href="users/">
-        <h3>User Management</h3>
-        <p>Add people, give access, reset passwords.</p>
+        <h3>Users</h3>
         <span class="badge">Admins only</span>
       </a>
       <a class="tile" href="https://orange-group-okl-production-system.vercel.app" target="_blank" rel="noopener">
         <h3>Live production system</h3>
-        <p>OKL production dashboard.</p>
       </a>
       <a class="tile" href="https://orangegroupsai.online/webhook/zaiki-mintacid-dashboard" target="_blank" rel="noopener">
         <h3>Zaiki &amp; Mintacid</h3>
-        <p>Production activity dashboard.</p>
       </a>
     </div>
-    <footer>More OKL systems will appear here as they come online.</footer>
   </section>
 </div>
 

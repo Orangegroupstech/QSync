@@ -222,8 +222,8 @@ function renderShell(inner, meta){
     <div class="backdrop" onclick="document.body.classList.remove('nav-open')"></div>
     <aside class="sidebar">
       <div class="sidebar-top">
-        <a href="#/" style="display:flex;align-items:center;gap:9px;text-decoration:none">
-          <span class="logo-wrap"><span class="logo sm"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></span>
+        <a href="#/" style="display:flex;flex-direction:column;align-items:flex-start;gap:7px;text-decoration:none">
+          <span class="brand-img"><img src="../logo.png" alt="Orange Kalbe Limited"></span><span class="brand-name">ORANGE KALBE LIMITED</span>
         </a>
         <button class="btn-icon hide-lg" style="color:var(--nav-text-dim)" onclick="document.body.classList.remove('nav-open')" aria-label="Close menu">${I.x}</button>
       </div>

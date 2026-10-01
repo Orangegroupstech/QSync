@@ -225,14 +225,14 @@ function renderShell(inner, meta){
     <div class="backdrop" onclick="document.body.classList.remove('nav-open')"></div>
     <aside class="sidebar">
       <div class="sidebar-top">
-        <a href="#/" style="display:flex;align-items:center;gap:9px;text-decoration:none">
-          <span class="logo-wrap"><span class="logo sm"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></span>
+        <a href="#/" style="display:flex;flex-direction:column;align-items:flex-start;gap:7px;text-decoration:none">
+          <span class="brand-img"><img src="../logo.png" alt="Orange Kalbe Limited"></span><span class="brand-name">ORANGE KALBE LIMITED</span>
         </a>
         <button class="btn-icon hide-lg" style="color:var(--nav-text-dim)" onclick="document.body.classList.remove('nav-open')" aria-label="Close menu">${I.x}</button>
       </div>
       <div style="padding:0 16px 10px">
         <div style="font-size:11px;color:var(--nav-text-dim);letter-spacing:.13em;text-transform:uppercase;font-weight:700">OKL Console</div>
-        <div style="font-size:11.5px;color:var(--nav-text-dim);margin-top:2px">User Management</div>
+        <div style="font-size:11.5px;color:var(--nav-text-dim);margin-top:2px">Users</div>
       </div>
       <div class="sidebar-scroll">${navHtml}</div>
       <div class="sidebar-foot">
@@ -305,7 +305,7 @@ async function bootstrap(){
 }
 function loadError(err){
   return `<div style="max-width:480px;margin:80px auto;padding:0 16px;text-align:center;font-family:var(--font,system-ui,sans-serif)">
-    <h2 style="color:#B3261E">Could not load User Management</h2>
+    <h2 style="color:#B3261E">Could not load Users</h2>
     <p style="color:#565E6B;font-size:13.5px">${esc(err.message)}</p>
     <button class="btn btn-primary" onclick="location.reload()">Retry</button>
   </div>`;

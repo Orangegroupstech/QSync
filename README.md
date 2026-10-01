@@ -2,11 +2,11 @@
 
 Static console for `okl.orangegroupsai.online` (one Vercel deployment, no build; Root Directory blank).
 
-- `index.html` - landing page and the **single sign-in** (email + password, forced change of the default PIN, change password, sign out). Shows a tile per console; User Management only for admins.
-- `employees/` - Employee Database (department, overtime submission, overtime list; summaries are placeholders).
+- `index.html` - landing page and the **single sign-in** (email + password, forced change of the default PIN, change password, sign out). Shows a tile per console; Users only for admins.
+- `employees/` - Employees (department, overtime submission, overtime list; summaries are placeholders).
 - `qsync/` - QC console (requests, reports, products/specs, audit trail). People who can only read see no "New Test Request" or edit buttons.
 - `procurement/` - requisition log, approver directory and spares stock. "New Request" lists every department and opens that department's hosted requisition form.
-- `users/` - User Management (admins only): all people, add person, edit access, reset, unlock, deactivate, activity.
+- `users/` - Users (admins only): all people, add person, edit access, reset, unlock, deactivate, activity.
 - `Orange2ballslogo.jpg` - the company logo; also loaded by the hosted requisition/checklist pages served from n8n.
 - External tiles: Live production system, Zaiki & Mintacid dashboard.
 
