@@ -390,7 +390,7 @@ function viewLogin(){
         <a href="../" style="display:inline-flex;align-items:center;gap:6px;color:#B9D2C4;text-decoration:none;font-size:12.5px;font-weight:600;margin-bottom:20px">${I.chevL} Back to OKL Console</a>
         <span class="logo lg"><span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span>
         <h1 style="margin-top:26px">QSync admin console</h1>
-        <p>Sign in with your phone number and PIN to manage users, review requests, and edit product specifications.</p>
+        <p>Sign in with your email and PIN to manage users, review requests, and edit product specifications.</p>
       </div>
       <div class="af"><div class="afi">${I.lock}</div><div><div class="aft">Session security</div>
         <div class="afd">You'll be signed out automatically after 10 minutes of inactivity.</div></div></div>
@@ -399,9 +399,9 @@ function viewLogin(){
       <div class="auth-box">
         <h2>Admin sign in</h2>
         <form id="loginForm" novalidate style="margin-top:18px">
-          <div class="field"><label for="lgPhone">Phone number</label>
-            <input class="inp" id="lgPhone" type="tel" placeholder="2348012345678" autocomplete="username">
-            <div class="err-msg hide" data-err="lgPhone"></div></div>
+          <div class="field"><label for="lgEmail">Email address</label>
+            <input class="inp" id="lgEmail" type="email" placeholder="you@orangegroupsai.online" autocomplete="username">
+            <div class="err-msg hide" data-err="lgEmail"></div></div>
           <div class="field"><label for="lgPin">PIN</label>
             <input class="inp" id="lgPin" type="password" inputmode="numeric" autocomplete="current-password">
             <div class="err-msg hide" data-err="lgPin"></div></div>
@@ -416,19 +416,19 @@ function bindLogin(){
   f.onsubmit = async (e) => {
     e.preventDefault();
     clearErrors(f);
-    const phone = $('#lgPhone').value.trim();
+    const email = $('#lgEmail').value.trim();
     const pin = $('#lgPin').value.trim();
-    if (!phone) return setErr('lgPhone', 'Enter your phone number.');
+    if (!email) return setErr('lgEmail', 'Enter your email address.');
     if (!pin) return setErr('lgPin', 'Enter your PIN.');
     const btn = f.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
-      const res = await api('/webhook/admin/api/login', { method:'POST', body:{ phone, admin_pin: pin } });
+      const res = await api('/webhook/admin/api/login', { method:'POST', body:{ email, admin_pin: pin } });
       setToken(res.token);
       await bootstrap();
       go('/requests');
     } catch (err) {
-      setErr('lgPin', err.message || 'Invalid phone number or PIN.');
+      setErr('lgPin', err.message || 'Invalid email or PIN.');
     } finally {
       btn.disabled = false;
     }
