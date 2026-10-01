@@ -43,7 +43,8 @@
   .err{color:var(--danger);font-size:13px;margin-top:12px;min-height:18px}
   .notice{background:#FFF4EC;border:1px solid #F7D3BB;color:#8A3B0C;border-radius:8px;padding:10px 12px;font-size:13px;margin:0 auto 16px;max-width:400px;text-align:left}
   .bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 22px;font-size:13px;color:var(--text-2);flex-wrap:wrap}
-  .bar .who strong{color:var(--text)}
+  .bar .who{font-size:20px;color:var(--text-2)}
+  .bar .who strong{color:#0F5132;font-size:24px;letter-spacing:-.01em}
   .hidden{display:none}
 </style>
 </head>
@@ -91,7 +92,7 @@
   <!-- signed in -->
   <section id="homeView" class="hidden">
     <div class="bar">
-      <div class="who">Signed in as <strong id="whoName"></strong></div>
+      <div class="who">Welcome, <strong id="whoName"></strong></div>
       <div><button class="linkbtn" id="changePw">Change password</button><button class="linkbtn" id="signOut">Sign out</button></div>
     </div>
     
