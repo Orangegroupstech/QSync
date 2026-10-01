@@ -636,3 +636,19 @@ html[data-theme="dark"] .fieldset > legend,html[data-theme="dark"] .sec-title{co
   .sheet table.kv td{font-size:12.5px;font-weight:600}
   .sign-grid{grid-template-columns:repeat(3,1fr) !important}
 }
+
+/* ---- Contrast theme: logo orange + leaf green ---- */
+:root{--bg:#E4EAE5;--line:#BFCAC2;--line-2:#D5DDD7;--text-3:#5F6975;--ink:#0F5132;
+  --nav-bg:#0B3B22;--nav-bg-2:#13532F;--nav-text:#E6F1EA;--nav-text-dim:#A9C8B5}
+.card{border-color:var(--line);box-shadow:0 2px 8px rgba(11,59,34,.12)}
+.topbar{border-bottom:3px solid var(--brand);box-shadow:0 2px 6px rgba(11,59,34,.10)}
+.topbar .ttl{color:var(--ink)}
+.card-h{background:var(--ink-50);border-bottom:1px solid var(--line)}
+table.tbl th{background:var(--ink-50);color:var(--ink);border-bottom:2px solid var(--ink-600)}
+table.tbl tbody tr:nth-child(even) td{background:#F6F9F7}
+table.tbl tbody tr:hover td{background:var(--brand-50)}
+.sidebar{border-right:3px solid var(--brand)}
+.nav-item.active{color:#fff;box-shadow:inset 3px 0 0 var(--brand)}
+.btn-ghost{border-color:var(--ink-600);color:var(--ink)}
+.btn-ghost:hover{background:var(--ink-50)}
+input.inp,select.inp,textarea.inp{border-color:#9FAEA4}

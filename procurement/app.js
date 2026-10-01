@@ -228,12 +228,11 @@ function renderShell(inner, meta){
         <button class="btn-icon hide-lg" style="color:var(--nav-text-dim)" onclick="document.body.classList.remove('nav-open')" aria-label="Close menu">${I.x}</button>
       </div>
       <div style="padding:0 16px 10px">
-        <div style="font-size:11px;color:var(--nav-text-dim);letter-spacing:.13em;text-transform:uppercase;font-weight:700">OKL Console</div>
-        <div style="font-size:11.5px;color:var(--nav-text-dim);margin-top:2px">Procurement</div>
+        <div style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.02em">Procurement</div>
       </div>
       <div class="sidebar-scroll">${navHtml}</div>
       <div class="sidebar-foot">
-        <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to OKL Console</a>
+        <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to home</a>
         <div class="user-chip">
           ${avatarEl(S.me.name)}
           <div style="min-width:0;flex:1"><div class="nm">${esc(S.me.name)}</div><div class="rl">${S.me.permission==='editor'?'Editor':'Viewer'}</div></div>
@@ -246,7 +245,7 @@ function renderShell(inner, meta){
     <div class="main">
       <header class="topbar">
         <button class="btn-icon menu-btn" onclick="document.body.classList.add('nav-open')" aria-label="Open menu">${I.menu}</button>
-        <a href="#/" class="only-mobile" style="line-height:0" aria-label="OKL Console home">
+        <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home">
           <span class="logo sm" style="border-width:1.5px;box-shadow:0 0 0 1.5px var(--brand)">
             <span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></a>
         <div style="min-width:0">
