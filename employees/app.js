@@ -262,8 +262,8 @@ function renderShell(inner, meta){
       <header class="topbar">
         <button class="btn-icon menu-btn" onclick="document.body.classList.add('nav-open')" aria-label="Open menu">${I.menu}</button>
         <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home">
-          <span class="logo sm" style="border-width:1.5px;box-shadow:0 0 0 1.5px var(--brand)">
-            <span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></a>
+          <span style="display:flex;align-items:center;gap:8px"><img src="../logo.png" alt="Orange Kalbe Limited" style="height:30px;width:auto;display:block">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.12em;color:var(--text-2);line-height:1.15">ORANGE KALBE<br>LIMITED</span></span></a>
         <div style="min-width:0">
           <div class="crumb">${esc(meta.crumb||'')}</div>
           <div class="ttl">${esc(meta.title||'')}</div>
@@ -414,12 +414,12 @@ function viewDashboard(){
     title:'Dashboard', crumb:'Overview',
     html: `${pageHead('Dashboard', 'Headcount and skills across the people currently employed.')}
     <div class="grid g4" style="margin-bottom:16px">
-      ${statCard('Total headcount', total, former ? former + ' former ' + (former===1?'employee':'employees') + ' not counted' : 'Staff and casual', 'users', 'brand', '/employees')}
-      ${statCard('Staff', staff, pct(staff) + '% of headcount', 'users', 'ok', '/employees')}
-      ${statCard('Casual', casual, pct(casual) + '% of headcount', 'users', 'info', '/employees')}
-      ${statCard('Skills recorded', skills.length, withSkills + ' ' + (withSkills===1?'person has':'people have') + ' at least one', 'award', 'warn', '/training')}
+      ${statCard('Total headcount', total, former ? former + ' former ' + (former===1?'employee':'employees') + ' not counted' : 'Staff and casual', 'users', 'brand')}
+      ${statCard('Staff', staff, pct(staff) + '% of headcount', 'users', 'ok')}
+      ${statCard('Casual', casual, pct(casual) + '% of headcount', 'users', 'info')}
+      ${statCard('Skills recorded', skills.length, withSkills + ' ' + (withSkills===1?'person has':'people have') + ' at least one', 'award', 'warn')}
     </div>
-    <div class="card"><div class="card-h"><div><h3>Top skills</h3><div class="sub">Most common current competencies</div></div><a href="#/training" class="small strong">Training &amp; competencies</a></div>
+    <div class="card"><div class="card-h"><div><h3>Top skills</h3><div class="sub">Most common current competencies</div></div></div>
       <div class="card-b stack" style="gap:13px">${top.length ? top.map(k => `<div><div class="row between small"><span class="strong">${esc(k.name)}</span><span class="muted">${k.people.length} ${k.people.length===1?'person':'people'}</span></div>
         <div class="bar" style="margin-top:5px"><i style="width:${Math.round(k.people.length / top[0].people.length * 100)}%"></i></div></div>`).join('')
         : emptyState('award', 'No skills recorded yet', 'Add current competencies to an employee, or record a training session, and they will show up here.')}</div></div>`,
