@@ -393,16 +393,16 @@ function statCard(label, val, meta, icon, accent, link){
     <div class="lbl">${esc(label)}</div><div class="val">${val}</div><div class="meta">${meta}</div>
     <div class="ic-wrap">${I[icon]}</div></div>`;
 }
-function openEmployeeInList(enrollId){
-  expandedEnrollId = enrollId; expandedMode = 'view'; employeeQuery = ''; employeeTypeFilter = '';
-  if (currentPath().split('?')[0] === '/employees') render(); else go('/employees');
-}
 
 /* ============================================================
    Dashboard
    ============================================================ */
+const isActiveEmp = e => (e.status || 'active') !== 'inactive';
+const activeEmps = () => S.employees.filter(isActiveEmp);
+
 function viewDashboard(){
-  const list = S.employees;
+  const list = activeEmps();
+  const former = S.employees.length - list.length;
   const total = list.length;
   const staff = list.filter(e => e.employment_type === 'staff').length;
   const casual = list.filter(e => e.employment_type === 'casual').length;
@@ -410,25 +410,19 @@ function viewDashboard(){
   const withSkills = list.filter(e => Array.isArray(e.current_competencies) && e.current_competencies.length).length;
   const top = skills.slice(0, 8);
   const pct = n => total ? Math.round(n / total * 100) : 0;
-  const splitRow = (label, n, cls) => `<div><div class="row between small"><span class="strong">${esc(label)}</span><span class="muted">${n} &middot; ${pct(n)}%</span></div>
-    <div class="bar ${cls}" style="margin-top:5px"><i style="width:${pct(n)}%"></i></div></div>`;
   return {
     title:'Dashboard', crumb:'Overview',
-    html: `${pageHead('Dashboard', 'Headcount and skills across the people on record.')}
+    html: `${pageHead('Dashboard', 'Headcount and skills across the people currently employed.')}
     <div class="grid g4" style="margin-bottom:16px">
-      ${statCard('Total headcount', total, 'Staff and casual', 'users', 'brand', '/employees')}
+      ${statCard('Total headcount', total, former ? former + ' former ' + (former===1?'employee':'employees') + ' not counted' : 'Staff and casual', 'users', 'brand', '/employees')}
       ${statCard('Staff', staff, pct(staff) + '% of headcount', 'users', 'ok', '/employees')}
       ${statCard('Casual', casual, pct(casual) + '% of headcount', 'users', 'info', '/employees')}
       ${statCard('Skills recorded', skills.length, withSkills + ' ' + (withSkills===1?'person has':'people have') + ' at least one', 'award', 'warn', '/training')}
     </div>
-    <div class="grid g2">
-      <div class="card"><div class="card-h"><div><h3>Headcount split</h3><div class="sub">Staff and casual</div></div></div>
-        <div class="card-b stack" style="gap:13px">${total ? splitRow('Staff', staff, 'ok') + splitRow('Casual', casual, '') : '<div class="muted small">No employees on record yet.</div>'}</div></div>
-      <div class="card"><div class="card-h"><div><h3>Top skills</h3><div class="sub">Most common current competencies</div></div><a href="#/training" class="small strong">Training &amp; competencies</a></div>
-        <div class="card-b stack" style="gap:13px">${top.length ? top.map(k => `<div><div class="row between small"><span class="strong">${esc(k.name)}</span><span class="muted">${k.people.length} ${k.people.length===1?'person':'people'}</span></div>
-          <div class="bar" style="margin-top:5px"><i style="width:${Math.round(k.people.length / top[0].people.length * 100)}%"></i></div></div>`).join('')
-          : emptyState('award', 'No skills recorded yet', 'Add current competencies to an employee and they will show up here.')}</div></div>
-    </div>`,
+    <div class="card"><div class="card-h"><div><h3>Top skills</h3><div class="sub">Most common current competencies</div></div><a href="#/training" class="small strong">Training &amp; competencies</a></div>
+      <div class="card-b stack" style="gap:13px">${top.length ? top.map(k => `<div><div class="row between small"><span class="strong">${esc(k.name)}</span><span class="muted">${k.people.length} ${k.people.length===1?'person':'people'}</span></div>
+        <div class="bar" style="margin-top:5px"><i style="width:${Math.round(k.people.length / top[0].people.length * 100)}%"></i></div></div>`).join('')
+        : emptyState('award', 'No skills recorded yet', 'Add current competencies to an employee, or record a training session, and they will show up here.')}</div></div>`,
   };
 }
 route('/', () => viewDashboard());
@@ -436,64 +430,72 @@ route('/dashboard', () => viewDashboard());
 
 /* ============================================================
    Training & Competencies
-   Built only from what is on the employee records (current competencies and skill
-   gaps). Training sessions have no data yet, so that tab is an empty list.
+   Skills come from the employee records; recording a training session adds its skill
+   to everyone who attended. Only people currently employed are listed.
    ============================================================ */
 let trainTab = 'sessions';
 let matrixDept = '';
 let trainings = null; // null = not loaded yet
+let expandedTraining = null;
 function setTrainTab(t){ trainTab = t; render(); }
+function toggleTraining(id){ expandedTraining = (expandedTraining === id) ? null : id; render(); }
+const fmtDate = iso => { const t = String(iso||'').slice(0,10); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? new Date(t + 'T12:00:00').toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' }) : '--'; };
 
 function trainSessionsTab(){
   if (trainings === null) return `<div class="card"><div class="card-b small muted">Loading...</div></div>`;
-  if (!trainings.length) return `<div class="card"><div class="card-b">${emptyState('award', 'No training sessions recorded yet', 'Sessions will be listed here once they are being recorded.')}</div></div>`;
-  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Session</th><th>Dates</th><th>Attendees</th></tr></thead><tbody>
-    ${trainings.map(t => `<tr><td class="strong">${esc(t.title||'--')}</td><td>${esc(t.start_date||'--')}</td><td class="tnum">${esc(t.attendees==null?'--':t.attendees)}</td></tr>`).join('')}
+  if (!trainings.length) return `<div class="card"><div class="card-b">${emptyState('award', 'No training sessions recorded yet', 'Add a session, pick who attended, and the skill is added to their record.')}</div></div>`;
+  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Session</th><th>Skill built</th><th>Provider</th><th>Attendees</th></tr></thead><tbody>
+    ${trainings.map(t => {
+      const open = expandedTraining === t.id, att = t.attendees || [];
+      return `<tr class="clickable" onclick="toggleTraining(${Number(t.id)})">
+        <td data-label="Date">${esc(fmtDate(t.trained_on))}</td>
+        <td data-label="Session"><div class="strong">${esc(t.title)}</div></td>
+        <td data-label="Skill built"><span class="chip">${esc(t.skill)}</span></td>
+        <td data-label="Provider">${esc(t.provider||'--')}</td>
+        <td data-label="Attendees" class="tnum">${att.length}</td></tr>` + (open ? `
+      <tr><td colspan="5" style="padding:0;background:var(--surface-2);border-bottom:1px solid var(--line)"><div style="padding:14px 16px">
+        <div class="small muted" style="margin-bottom:8px">Attended${t.recorded_by ? ' &middot; recorded by ' + esc(t.recorded_by) : ''}</div>
+        ${att.map(a => `<span class="chip" style="margin:2px 4px 2px 0">${esc(a.name)}</span>`).join('') || '--'}</div></td></tr>` : '');
+    }).join('')}
   </tbody></table></div></div>`;
 }
+
 function trainCatalogueTab(){
-  const skills = skillStats(S.employees, 'current_competencies');
-  if (!skills.length) return `<div class="card"><div class="card-b">${emptyState('award', 'No competencies recorded yet', 'Add current competencies on an employee record and they will be listed here.')}</div></div>`;
+  const skills = skillStats(activeEmps(), 'current_competencies');
+  if (!skills.length) return `<div class="card"><div class="card-b">${emptyState('award', 'No competencies recorded yet', 'Skills will be listed here once people have them recorded.')}</div></div>`;
   return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Competency</th><th>People</th><th>Staff</th><th>Casual</th></tr></thead><tbody>
     ${skills.map(k => `<tr><td data-label="Competency" class="strong">${esc(k.name)}</td><td data-label="People" class="tnum">${k.people.length}</td>
       <td data-label="Staff" class="tnum">${k.staff}</td><td data-label="Casual" class="tnum">${k.casual}</td></tr>`).join('')}
   </tbody></table></div></div>`;
 }
+
 function trainMatrixTab(){
-  const depts = [...new Set(S.employees.map(e => e.department).filter(Boolean))].sort();
-  const have = skillStats(S.employees, 'current_competencies');
-  const gaps = skillStats(S.employees, 'skill_gaps');
-  const cols = [...new Map([...have, ...gaps].map(k => [k.key, k])).values()].slice(0, 14);
-  const emps = S.employees.filter(e => !matrixDept || e.department === matrixDept)
-    .filter(e => cols.some(c => hasSkill(e, 'current_competencies', c.key) || hasSkill(e, 'skill_gaps', c.key)));
-  const legend = `<div class="small muted">&#10003; = has the skill &middot; &times; = listed as a gap</div>`;
+  const pool = activeEmps();
+  const depts = [...new Set(pool.map(e => e.department).filter(Boolean))].sort();
+  const cols = skillStats(pool, 'current_competencies').slice(0, 14);
+  const emps = pool.filter(e => !matrixDept || e.department === matrixDept)
+    .filter(e => cols.some(c => hasSkill(e, 'current_competencies', c.key)));
+  const legend = `<div class="small muted">&#10003; = has the skill &middot; click a name to see all their skills and download their card</div>`;
   const filter = depts.length ? `<div class="row filter-bar" style="margin-bottom:14px">
       <select class="inp filter-sel-status" id="mxDept"><option value="">All departments</option>${depts.map(d => `<option value="${esc(d)}" ${matrixDept===d?'selected':''}>${esc(d)}</option>`).join('')}</select>${legend}</div>`
     : `<div style="margin-bottom:14px">${legend}</div>`;
-  if (!emps.length) return filter + `<div class="card"><div class="card-b">${emptyState('award', 'Nothing to show yet', 'People appear here once they have competencies or skill gaps recorded.')}</div></div>`;
+  if (!emps.length) return filter + `<div class="card"><div class="card-b">${emptyState('award', 'Nothing to show yet', 'People appear here once they have competencies recorded.')}</div></div>`;
   return filter + `<div class="card"><div class="tbl-wrap"><table class="tbl no-stack" style="min-width:${200 + cols.length * 90}px"><thead><tr><th style="min-width:180px">Employee</th>
     ${cols.map(c => `<th style="text-align:center" title="${esc(c.name)}">${esc(c.name)}</th>`).join('')}</tr></thead><tbody>
-    ${emps.map(e => `<tr class="clickable" onclick="openEmployeeInList('${esc(e.enroll_id)}')"><td><div class="strong">${esc(e.name)}</div><div class="small muted">${esc(e.role||'--')}</div></td>
-      ${cols.map(c => `<td style="text-align:center">${hasSkill(e,'current_competencies',c.key) ? '<span class="strong" style="color:var(--ok)">&#10003;</span>' : hasSkill(e,'skill_gaps',c.key) ? '<span class="strong" style="color:var(--danger)">&times;</span>' : ''}</td>`).join('')}</tr>`).join('')}
+    ${emps.map(e => `<tr class="clickable" onclick="openPersonSkills('${esc(e.enroll_id)}')"><td><div class="strong">${esc(e.name)}</div><div class="small muted">${esc(e.role||'--')}</div></td>
+      ${cols.map(c => `<td style="text-align:center">${hasSkill(e,'current_competencies',c.key) ? '<span class="strong" style="color:var(--ok)">&#10003;</span>' : ''}</td>`).join('')}</tr>`).join('')}
   </tbody></table></div></div>`;
 }
-function trainGapsTab(){
-  const gaps = skillStats(S.employees, 'skill_gaps');
-  if (!gaps.length) return `<div class="card"><div class="card-b">${emptyState('checkCircle', 'No skill gaps recorded', 'Skill gaps entered on employee records are ranked here.')}</div></div>`;
-  const max = gaps[0].people.length;
-  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Skill gap</th><th>People affected</th><th>Who</th></tr></thead><tbody>
-    ${gaps.map(g => `<tr><td data-label="Skill gap" class="strong">${esc(g.name)}</td>
-      <td data-label="People"><div class="row" style="gap:8px;flex-wrap:nowrap"><div class="bar danger" style="width:80px"><i style="width:${Math.round(g.people.length/max*100)}%"></i></div><span class="strong tnum">${g.people.length}</span></div></td>
-      <td data-label="Who">${g.people.slice(0,3).map(p => `<a class="chip" style="margin:2px 4px 2px 0" href="javascript:void(0)" onclick="openEmployeeInList('${esc(p.enroll_id)}')">${esc(p.name)}</a>`).join('')}${g.people.length>3?`<span class="small muted">+${g.people.length-3} more</span>`:''}</td></tr>`).join('')}
-  </tbody></table></div></div>`;
-}
+
 function viewTraining(){
-  const tabs = [['sessions','Training sessions'],['catalogue','Competency catalogue'],['matrix','Skills matrix'],['gaps','Skill gaps']];
+  const canEdit = S.me.permission === 'editor';
+  const tabs = [['sessions','Training sessions'],['catalogue','Competency catalogue'],['matrix','Skills matrix']];
   const tabBar = `<div class="tabs">${tabs.map(([k,l]) => `<div class="tab ${trainTab===k?'on':''}" onclick="setTrainTab('${k}')">${esc(l)}</div>`).join('')}</div>`;
-  const body = trainTab==='sessions' ? trainSessionsTab() : trainTab==='catalogue' ? trainCatalogueTab() : trainTab==='matrix' ? trainMatrixTab() : trainGapsTab();
+  const body = trainTab==='sessions' ? trainSessionsTab() : trainTab==='catalogue' ? trainCatalogueTab() : trainMatrixTab();
+  const actions = (trainTab === 'sessions' && canEdit) ? `<button class="btn btn-primary" onclick="openAddTraining()">${I.plus} Add training session</button>` : '';
   return {
     title:'Training & Competencies', crumb:'People',
-    html: pageHead('Training & competencies', 'Who has which skills and where the gaps are, from the employee records.') + tabBar + body,
+    html: pageHead('Training & competencies', 'Who has which skills. Recording a training adds its skill to everyone who attended.', actions) + tabBar + body,
     bind(){
       const sel = $('#mxDept'); if (sel) sel.onchange = e => { matrixDept = e.target.value; render(); };
       if (trainTab === 'sessions' && trainings === null) {
@@ -505,12 +507,169 @@ function viewTraining(){
 }
 route('/training', () => viewTraining());
 
+/* ---- Add a training session ---- */
+function openAddTraining(){
+  const st = { q:'', type:'', dept:'', checked:new Set() };
+  const pool = activeEmps();
+  const depts = [...new Set(pool.map(e => e.department).filter(Boolean))].sort();
+  const skillOpts = skillStats(S.employees, 'current_competencies').map(k => `<option value="${esc(k.name)}"></option>`).join('');
+  const shown = () => { const q = st.q.trim().toLowerCase();
+    return pool.filter(e => (!st.type || e.employment_type === st.type) && (!st.dept || e.department === st.dept)
+      && (!q || e.name.toLowerCase().includes(q) || String(e.enroll_id).toLowerCase().includes(q))); };
+  openModal({
+    title:'Add training session', size:'wide', sub:'Everyone ticked gets the skill added to their record.',
+    body:`<form id="addTrainingForm" novalidate onsubmit="return false">
+      <div class="grid g2">
+        <div class="field"><label for="trTitle">Training title<span class="req">*</span></label><input class="inp" id="trTitle" maxlength="150" placeholder="e.g. Granulation refresher">
+          <div class="err-msg hide" data-err="trTitle"></div></div>
+        <div class="field"><label for="trSkill">Skill it builds<span class="req">*</span></label><input class="inp" id="trSkill" maxlength="100" list="trSkillList" placeholder="e.g. Granulation">
+          <datalist id="trSkillList">${skillOpts}</datalist><div class="err-msg hide" data-err="trSkill"></div></div>
+      </div>
+      <div class="grid g2">
+        <div class="field"><label for="trDate">Date<span class="req">*</span></label><input class="inp" type="date" id="trDate" max="${todayStr()}" value="${todayStr()}">
+          <div class="err-msg hide" data-err="trDate"></div></div>
+        <div class="field"><label for="trProvider">Provider / trainer</label><input class="inp" id="trProvider" maxlength="100"></div>
+      </div>
+      <div class="field"><label>Who attended<span class="req">*</span></label>
+        <div class="row filter-bar" style="margin-bottom:8px">
+          <div class="search filter-search"><span class="ic">${I.search}</span><input class="inp" id="trQ" placeholder="Search name or enroll ID"></div>
+          <select class="inp filter-sel-status" id="trType"><option value="">Staff and casual</option><option value="staff">Staff</option><option value="casual">Casual</option></select>
+          ${depts.length ? `<select class="inp filter-sel-status" id="trDept"><option value="">All departments</option>${depts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>` : ''}
+        </div>
+        <div class="row" style="gap:8px;margin-bottom:8px"><button class="btn btn-ghost btn-sm" type="button" id="trAll">Tick all shown</button>
+          <button class="btn btn-ghost btn-sm" type="button" id="trNone">Clear</button><div class="small muted" id="trCount"></div></div>
+        <div class="tbl-wrap" style="max-height:260px;overflow:auto"><table class="tbl no-stack"><tbody id="trList"></tbody></table></div>
+        <div class="err-msg hide" data-err="trPeople"></div>
+      </div></form>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save session</button>`,
+    onMount:(w, close) => {
+      const paint = () => {
+        const rows = shown();
+        $('#trList', w).innerHTML = rows.length ? rows.map(e => `<tr><td style="width:40px"><input type="checkbox" data-id="${esc(e.enroll_id)}" ${st.checked.has(e.enroll_id)?'checked':''}></td>
+          <td><div class="strong">${esc(e.name)}</div><div class="tiny muted mono">${esc(e.enroll_id)}</div></td>
+          <td><span class="badge ${e.employment_type==='staff'?'b-brand':'b-slate'}">${esc(e.employment_type)}</span></td>
+          <td class="small muted">${esc(e.role||'')}</td></tr>`).join('') : `<tr><td class="muted" style="padding:14px">No one matches.</td></tr>`;
+        $$('input[data-id]', w).forEach(c => c.onchange = () => { c.checked ? st.checked.add(c.dataset.id) : st.checked.delete(c.dataset.id); $('#trCount', w).textContent = st.checked.size + ' ticked'; });
+        $('#trCount', w).textContent = st.checked.size + ' ticked';
+      };
+      $('#trQ', w).oninput = e => { st.q = e.target.value; paint(); };
+      $('#trType', w).onchange = e => { st.type = e.target.value; paint(); };
+      const dsel = $('#trDept', w); if (dsel) dsel.onchange = e => { st.dept = e.target.value; paint(); };
+      $('#trAll', w).onclick = () => { shown().forEach(e => st.checked.add(e.enroll_id)); paint(); };
+      $('#trNone', w).onclick = () => { st.checked = new Set(); paint(); };
+      paint();
+      $('[data-save]', w).onclick = async () => {
+        const f = $('#addTrainingForm', w); clearErrors(f);
+        const title = $('#trTitle', w).value.trim(), skill = $('#trSkill', w).value.trim(), date = $('#trDate', w).value, provider = $('#trProvider', w).value.trim();
+        if (!title) return setErr('trTitle', 'Enter a title.', f);
+        if (!skill) return setErr('trSkill', 'Enter the skill this training builds.', f);
+        if (!date || date > todayStr()) return setErr('trDate', 'Pick today or an earlier date.', f);
+        if (!st.checked.size) return setErr('trPeople', 'Tick at least one person.', f);
+        const btn = $('[data-save]', w); btn.disabled = true;
+        try {
+          await api('/webhook/employees/api/trainings', { method:'POST', body:{ title, skill, trained_on: date, provider, enroll_ids: [...st.checked] } });
+          const key = skill.toLowerCase();
+          S.employees.forEach(e => {
+            if (!st.checked.has(e.enroll_id)) return;
+            const have = Array.isArray(e.current_competencies) ? e.current_competencies : [];
+            if (!have.some(v => String(v||'').trim().toLowerCase() === key)) e.current_competencies = have.concat(skill);
+          });
+          trainings = null; expandedTraining = null; close(); render();
+          toast('Training recorded', st.checked.size + ' ' + (st.checked.size === 1 ? 'person' : 'people') + ' now have ' + skill + '.', 'ok');
+        } catch (err) { setErr('trPeople', err.message, f); btn.disabled = false; }
+      };
+    },
+  });
+}
+
+/* ---- A person's skills, and their downloadable card ---- */
+function openPersonSkills(enrollId){
+  const e = S.employees.find(x => x.enroll_id === enrollId); if (!e) return;
+  const skills = Array.isArray(e.current_competencies) ? e.current_competencies : [];
+  openModal({
+    title: e.name, size:'narrow', sub: [e.enroll_id, e.role, e.employment_type].filter(Boolean).join(' · '),
+    body: `<div class="small muted" style="margin-bottom:8px">Skills and competencies (${skills.length})</div>
+      <div>${skills.length ? skills.map(v => `<span class="chip" style="margin:2px 4px 2px 0">${esc(v)}</span>`).join('') : '<span class="muted small">No skills recorded yet.</span>'}</div>`,
+    footer: `<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-card>${I.download} Download card</button>`,
+    onMount:(w) => { $('[data-card]', w).onclick = async (ev) => {
+      const b = ev.currentTarget; b.disabled = true;
+      try { await downloadSkillCard(e); } catch (err) { toast('Could not make the card', err.message, 'err'); }
+      finally { b.disabled = false; }
+    }; },
+  });
+}
+
+function loadLogo(){
+  return new Promise(resolve => { const img = new Image(); img.onload = () => resolve(img); img.onerror = () => resolve(null); img.src = '../logo.png'; });
+}
+// Draws the card on a canvas and saves it as a PNG: logo, "Certified by ORANGE KALBE LIMITED"
+// directly beneath it, then the person and their skills.
+async function downloadSkillCard(e){
+  const logo = await loadLogo();
+  const skills = (Array.isArray(e.current_competencies) ? e.current_competencies : []).map(v => String(v||'').trim()).filter(Boolean);
+  const W = 900, PAD = 56, SC = 2, FONT = '"Inter","Segoe UI",system-ui,Arial,sans-serif';
+  const probe = document.createElement('canvas').getContext('2d');
+  probe.font = '600 20px ' + FONT;
+  // lay the skill pills out in rows
+  const pills = []; let px = PAD, py = 0; const rowH = 46, gap = 12;
+  skills.forEach(s => {
+    const w = Math.ceil(probe.measureText(s).width) + 36;
+    if (px + w > W - PAD) { px = PAD; py += rowH; }
+    pills.push({ s, x: px, y: py, w }); px += w + gap;
+  });
+  const skillsH = pills.length ? py + rowH : 40;
+  const logoH = logo ? 90 : 0, logoW = logo ? Math.round(logo.width * logoH / logo.height) : 0;
+  const top = 44;
+  const yCert = top + (logo ? logoH + 30 : 20);
+  const yName = yCert + 70;
+  const ySkillsLabel = yName + 96;
+  const ySkills = ySkillsLabel + 24;
+  const H = ySkills + skillsH + 70;
+  const c = document.createElement('canvas'); c.width = W * SC; c.height = H * SC;
+  const ctx = c.getContext('2d'); ctx.scale(SC, SC);
+  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
+  ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ED6B1F'; ctx.fillRect(0, 0, W, 14);
+  ctx.strokeStyle = '#BFCAC2'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, W - 2, H - 2);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  if (logo) ctx.drawImage(logo, (W - logoW) / 2, top, logoW, logoH);
+  ctx.fillStyle = '#0F5132'; ctx.font = '700 17px ' + FONT;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
+  ctx.fillText('CERTIFIED BY ORANGE KALBE LIMITED', W / 2 + 1, yCert);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  ctx.strokeStyle = '#E3E8E4'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(PAD, yCert + 24); ctx.lineTo(W - PAD, yCert + 24); ctx.stroke();
+  ctx.fillStyle = '#16191D'; ctx.font = '700 38px ' + FONT;
+  let name = e.name; while (ctx.measureText(name).width > W - 2 * PAD && name.length > 4) name = name.slice(0, -2);
+  ctx.fillText(name === e.name ? name : name + '…', W / 2, yName);
+  ctx.fillStyle = '#565E6B'; ctx.font = '500 19px ' + FONT;
+  ctx.fillText([e.enroll_id, e.role, e.employment_type].filter(Boolean).join('  ·  '), W / 2, yName + 36);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#8A93A0'; ctx.font = '700 13px ' + FONT;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
+  ctx.fillText('SKILLS & COMPETENCIES', PAD, ySkillsLabel);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  if (!pills.length) { ctx.fillStyle = '#8A93A0'; ctx.font = '500 18px ' + FONT; ctx.fillText('No skills recorded yet.', PAD, ySkills + 24); }
+  pills.forEach(p => {
+    rr(p.x, ySkills + p.y, p.w, 34, 17); ctx.fillStyle = '#FDEBDD'; ctx.fill();
+    ctx.strokeStyle = '#F7D3BB'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#8A3B0C'; ctx.font = '600 20px ' + FONT; ctx.textBaseline = 'middle'; ctx.fillText(p.s, p.x + 18, ySkills + p.y + 18); ctx.textBaseline = 'alphabetic';
+  });
+  ctx.fillStyle = '#8A93A0'; ctx.font = '500 13px ' + FONT; ctx.textAlign = 'center';
+  ctx.fillText('Issued ' + new Date().toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' }), W / 2, H - 28);
+  const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+  if (!blob) throw new Error('Your browser could not create the image.');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'OKL_skills_card_' + String(e.enroll_id).replace(/[^\w-]/g, '') + '.png';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 
 /* ============================================================
    Employees
    ============================================================ */
 let employeeQuery = '';
 let employeeTypeFilter = '';
+let employeeStatusFilter = 'active';
 
 function matchesEmployeeQuery(e, q){
   if (!q) return true;
@@ -572,6 +731,9 @@ function renderEmployeeExpanded(e, canEdit){
       ${readonlyRow('Phone number', e.phone_number)}
       ${readonlyRow('Work email', e.work_email)}
       ${readonlyRow('Workstation', e.workstation)}
+      ${readonlyRow('Status', (e.status||'active')==='inactive' ? 'Inactive (left)' : 'Active')}
+      ${readonlyRow('Join date', fmtDate(e.join_date)==='--' ? '' : fmtDate(e.join_date))}
+      ${readonlyRow('Left date', fmtDate(e.left_date)==='--' ? '' : fmtDate(e.left_date))}
       ${tagRow('Current competencies', e.current_competencies)}
       ${tagRow('Skill gaps', e.skill_gaps)}
     </div>`;
@@ -580,7 +742,8 @@ function renderEmployeeExpanded(e, canEdit){
 function viewEmployees(){
   const q = employeeQuery.trim().toLowerCase();
   const rows = S.employees.filter(e =>
-    (!employeeTypeFilter || e.employment_type === employeeTypeFilter) && matchesEmployeeQuery(e, q));
+    (!employeeTypeFilter || e.employment_type === employeeTypeFilter) &&
+    (employeeStatusFilter === 'all' || (e.status || 'active') === employeeStatusFilter) && matchesEmployeeQuery(e, q));
   const canEdit = S.me.permission === 'editor';
 
   return {
@@ -599,11 +762,16 @@ function viewEmployees(){
         <option value="staff" ${employeeTypeFilter==='staff'?'selected':''}>Staff</option>
         <option value="casual" ${employeeTypeFilter==='casual'?'selected':''}>Casual</option>
       </select>
+      <select class="inp filter-sel-status" id="empStatusFilter">
+        <option value="active" ${employeeStatusFilter==='active'?'selected':''}>Active</option>
+        <option value="inactive" ${employeeStatusFilter==='inactive'?'selected':''}>Inactive (left)</option>
+        <option value="all" ${employeeStatusFilter==='all'?'selected':''}>All employees</option>
+      </select>
       <div class="spacer"></div>
     </div>
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>Enroll ID</th><th>Name</th><th>Gender</th><th>Type</th><th>Role</th><th>Department</th><th>Workstation</th></tr></thead>
+        <thead><tr><th>Enroll ID</th><th>Name</th><th>Gender</th><th>Type</th><th>Role</th><th>Department</th><th>Workstation</th><th>Status</th></tr></thead>
         <tbody>${rows.length ? rows.map(e => {
           const isExpanded = e.enroll_id === expandedEnrollId;
           const row = `
@@ -615,13 +783,14 @@ function viewEmployees(){
             <td data-label="Role">${esc(e.role||'--')}</td>
             <td data-label="Department">${esc(e.department||'--')}</td>
             <td data-label="Workstation">${esc(e.workstation||'--')}</td>
+            <td data-label="Status"><span class="badge ${(e.status||'active')==='inactive'?'b-slate':'b-ok'}">${(e.status||'active')==='inactive'?'Inactive':'Active'}</span></td>
           </tr>`;
           const expansion = isExpanded ? `
-          <tr><td colspan="7" style="padding:0;background:var(--surface-2);border-bottom:1px solid var(--line)">
+          <tr><td colspan="8" style="padding:0;background:var(--surface-2);border-bottom:1px solid var(--line)">
             <div style="padding:16px">${renderEmployeeExpanded(e, canEdit)}</div>
           </td></tr>` : '';
           return row + expansion;
-        }).join('') : `<tr><td colspan="6">${emptyState('users','No employees match', 'Try a different search or filter.')}</td></tr>`}
+        }).join('') : `<tr><td colspan="8">${emptyState('users','No employees match', 'Try a different search or filter.')}</td></tr>`}
         </tbody>
       </table></div>
     </div>`,
@@ -630,6 +799,7 @@ function viewEmployees(){
       $('#empSearch').focus();
       $('#empSearch').setSelectionRange(employeeQuery.length, employeeQuery.length);
       $('#empTypeFilter').onchange = (e) => { employeeTypeFilter = e.target.value; render(); };
+      $('#empStatusFilter').onchange = (e) => { employeeStatusFilter = e.target.value; render(); };
 
       const editForm = $('#editEmployeeForm');
       if (editForm) {
@@ -644,6 +814,8 @@ function viewEmployees(){
             await api('/webhook/employees/api/update', { method:'POST', body: payload });
             const emp = S.employees.find(x => x.enroll_id === payload.enroll_id);
             Object.assign(emp, payload);
+            if (emp.status === 'active') emp.left_date = null;
+            else if (!emp.left_date) emp.left_date = todayStr();
             expandedMode = 'view';
             render(); toast('Changes saved', esc(payload.name) + ' has been updated.', 'ok');
           } catch (err) { setErr('eeName', err.message, editForm); }
@@ -860,6 +1032,18 @@ function employeeFormFields(e, idPrefix){
       <div class="field"><label for="${id('Workstation')}">Workstation</label>
         <input class="inp" id="${id('Workstation')}" value="${esc(e.workstation||'')}" maxlength="100"></div>
     </div>
+    <div class="grid g3">
+      <div class="field"><label for="${id('Status')}">Status</label>
+        <select class="inp" id="${id('Status')}">
+          <option value="active" ${(e.status||'active')!=='inactive'?'selected':''}>Active</option>
+          <option value="inactive" ${e.status==='inactive'?'selected':''}>Inactive (left)</option>
+        </select></div>
+      <div class="field"><label for="${id('JoinDate')}">Join date</label>
+        <input class="inp" id="${id('JoinDate')}" type="date" value="${esc(String(e.join_date||'').slice(0,10))}"></div>
+      <div class="field"><label for="${id('LeftDate')}">Left date</label>
+        <input class="inp" id="${id('LeftDate')}" type="date" value="${esc(String(e.left_date||'').slice(0,10))}">
+        <div class="hint">${I.info}<span>Only for inactive staff; today if left blank.</span></div></div>
+    </div>
     <div class="field"><label for="${id('Competencies')}">Current competencies</label>
       <input class="inp" id="${id('Competencies')}" value="${esc(tagsInputValue(e.current_competencies))}" placeholder="e.g. Tablet Compression, Granulation">
       <div class="hint">${I.info}<span>Comma-separated - add as many as apply.</span></div></div>
@@ -886,6 +1070,9 @@ function readEmployeeForm(idPrefix, scope){
     work_email: $('#'+id('Email'), scope).value.trim(),
     workstation: $('#'+id('Workstation'), scope).value.trim(),
     department: $('#'+id('Department'), scope).value,
+    status: $('#'+id('Status'), scope).value,
+    join_date: $('#'+id('JoinDate'), scope).value,
+    left_date: $('#'+id('LeftDate'), scope).value,
     current_competencies: parseTagsInput($('#'+id('Competencies'), scope).value),
     skill_gaps: parseTagsInput($('#'+id('SkillGaps'), scope).value),
   };
