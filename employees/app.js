@@ -26,6 +26,8 @@ const I = (() => {
     activity: w('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
     externalLink: w('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14L21 3"/>'),
     clock: w('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/>'),
+    home: w('<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>'),
+    award: w('<circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-3 5 3-1.5-8"/>'),
   };
 })();
 
@@ -212,12 +214,15 @@ function matchRoute(path){
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   return [
-    { title:'Modules', items:[ { path:'/employees', label:'Employees', icon:'users' } ] },
-    { title:'Overtime', items:[
+    { title:'Overview', items:[ { path:'/dashboard', label:'Dashboard', icon:'home' } ] },
+    { title:'People', items:[
+      { path:'/employees', label:'Employees', icon:'users' },
+      { path:'/training', label:'Training & Competencies', icon:'award' },
+    ] },
+    { title:'Attendance', items:[
       { path:'/overtime/submit', label:'Overtime Submission', icon:'plus' },
       { path:'/overtime/records', label:'Overtime', icon:'layers' },
-      { path:'/overtime/summary', label:'Overtime Summary', icon:'clock' },
-      { path:'/attendance/summary', label:'Attendance Summary', icon:'activity' },
+      { path:'/attendance', label:'Attendance', icon:'activity' },
     ] },
   ];
 }
@@ -359,6 +364,149 @@ window.addEventListener('hashchange', render);
 })();
 
 /* ============================================================
+   Skills helpers (from the real employee list - nothing is stored separately yet)
+   ============================================================ */
+// Groups free-text skill names case-insensitively; keeps the most common spelling.
+function skillStats(list, field){
+  const map = new Map();
+  list.forEach(e => (Array.isArray(e[field]) ? e[field] : []).forEach(raw => {
+    const name = String(raw||'').trim(); if (!name) return;
+    const key = name.toLowerCase();
+    if (!map.has(key)) map.set(key, { key, spellings:{}, people:[] });
+    const m = map.get(key);
+    m.spellings[name] = (m.spellings[name]||0) + 1;
+    if (!m.people.includes(e)) m.people.push(e);
+  }));
+  return Array.from(map.values()).map(m => ({
+    key: m.key,
+    name: Object.keys(m.spellings).sort((a,b) => m.spellings[b]-m.spellings[a])[0],
+    people: m.people,
+    staff: m.people.filter(p => p.employment_type === 'staff').length,
+    casual: m.people.filter(p => p.employment_type === 'casual').length,
+  })).sort((a,b) => b.people.length - a.people.length || a.name.localeCompare(b.name));
+}
+function hasSkill(e, field, key){
+  return (Array.isArray(e[field]) ? e[field] : []).some(v => String(v||'').trim().toLowerCase() === key);
+}
+function statCard(label, val, meta, icon, accent, link){
+  return `<div class="stat acc-${accent} ${link?'link':''}" ${link?`onclick="go('${link}')"`:''}>
+    <div class="lbl">${esc(label)}</div><div class="val">${val}</div><div class="meta">${meta}</div>
+    <div class="ic-wrap">${I[icon]}</div></div>`;
+}
+function openEmployeeInList(enrollId){
+  expandedEnrollId = enrollId; expandedMode = 'view'; employeeQuery = ''; employeeTypeFilter = '';
+  if (currentPath().split('?')[0] === '/employees') render(); else go('/employees');
+}
+
+/* ============================================================
+   Dashboard
+   ============================================================ */
+function viewDashboard(){
+  const list = S.employees;
+  const total = list.length;
+  const staff = list.filter(e => e.employment_type === 'staff').length;
+  const casual = list.filter(e => e.employment_type === 'casual').length;
+  const skills = skillStats(list, 'current_competencies');
+  const withSkills = list.filter(e => Array.isArray(e.current_competencies) && e.current_competencies.length).length;
+  const top = skills.slice(0, 8);
+  const pct = n => total ? Math.round(n / total * 100) : 0;
+  const splitRow = (label, n, cls) => `<div><div class="row between small"><span class="strong">${esc(label)}</span><span class="muted">${n} &middot; ${pct(n)}%</span></div>
+    <div class="bar ${cls}" style="margin-top:5px"><i style="width:${pct(n)}%"></i></div></div>`;
+  return {
+    title:'Dashboard', crumb:'Overview',
+    html: `${pageHead('Dashboard', 'Headcount and skills across the people on record.')}
+    <div class="grid g4" style="margin-bottom:16px">
+      ${statCard('Total headcount', total, 'Staff and casual', 'users', 'brand', '/employees')}
+      ${statCard('Staff', staff, pct(staff) + '% of headcount', 'users', 'ok', '/employees')}
+      ${statCard('Casual', casual, pct(casual) + '% of headcount', 'users', 'info', '/employees')}
+      ${statCard('Skills recorded', skills.length, withSkills + ' ' + (withSkills===1?'person has':'people have') + ' at least one', 'award', 'warn', '/training')}
+    </div>
+    <div class="grid g2">
+      <div class="card"><div class="card-h"><div><h3>Headcount split</h3><div class="sub">Staff and casual</div></div></div>
+        <div class="card-b stack" style="gap:13px">${total ? splitRow('Staff', staff, 'ok') + splitRow('Casual', casual, '') : '<div class="muted small">No employees on record yet.</div>'}</div></div>
+      <div class="card"><div class="card-h"><div><h3>Top skills</h3><div class="sub">Most common current competencies</div></div><a href="#/training" class="small strong">Training &amp; competencies</a></div>
+        <div class="card-b stack" style="gap:13px">${top.length ? top.map(k => `<div><div class="row between small"><span class="strong">${esc(k.name)}</span><span class="muted">${k.people.length} ${k.people.length===1?'person':'people'}</span></div>
+          <div class="bar" style="margin-top:5px"><i style="width:${Math.round(k.people.length / top[0].people.length * 100)}%"></i></div></div>`).join('')
+          : emptyState('award', 'No skills recorded yet', 'Add current competencies to an employee and they will show up here.')}</div></div>
+    </div>`,
+  };
+}
+route('/', () => viewDashboard());
+route('/dashboard', () => viewDashboard());
+
+/* ============================================================
+   Training & Competencies
+   Built only from what is on the employee records (current competencies and skill
+   gaps). Training sessions have no data yet, so that tab is an empty list.
+   ============================================================ */
+let trainTab = 'sessions';
+let matrixDept = '';
+let trainings = null; // null = not loaded yet
+function setTrainTab(t){ trainTab = t; render(); }
+
+function trainSessionsTab(){
+  if (trainings === null) return `<div class="card"><div class="card-b small muted">Loading...</div></div>`;
+  if (!trainings.length) return `<div class="card"><div class="card-b">${emptyState('award', 'No training sessions recorded yet', 'Sessions will be listed here once they are being recorded.')}</div></div>`;
+  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Session</th><th>Dates</th><th>Attendees</th></tr></thead><tbody>
+    ${trainings.map(t => `<tr><td class="strong">${esc(t.title||'--')}</td><td>${esc(t.start_date||'--')}</td><td class="tnum">${esc(t.attendees==null?'--':t.attendees)}</td></tr>`).join('')}
+  </tbody></table></div></div>`;
+}
+function trainCatalogueTab(){
+  const skills = skillStats(S.employees, 'current_competencies');
+  if (!skills.length) return `<div class="card"><div class="card-b">${emptyState('award', 'No competencies recorded yet', 'Add current competencies on an employee record and they will be listed here.')}</div></div>`;
+  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Competency</th><th>People</th><th>Staff</th><th>Casual</th></tr></thead><tbody>
+    ${skills.map(k => `<tr><td data-label="Competency" class="strong">${esc(k.name)}</td><td data-label="People" class="tnum">${k.people.length}</td>
+      <td data-label="Staff" class="tnum">${k.staff}</td><td data-label="Casual" class="tnum">${k.casual}</td></tr>`).join('')}
+  </tbody></table></div></div>`;
+}
+function trainMatrixTab(){
+  const depts = [...new Set(S.employees.map(e => e.department).filter(Boolean))].sort();
+  const have = skillStats(S.employees, 'current_competencies');
+  const gaps = skillStats(S.employees, 'skill_gaps');
+  const cols = [...new Map([...have, ...gaps].map(k => [k.key, k])).values()].slice(0, 14);
+  const emps = S.employees.filter(e => !matrixDept || e.department === matrixDept)
+    .filter(e => cols.some(c => hasSkill(e, 'current_competencies', c.key) || hasSkill(e, 'skill_gaps', c.key)));
+  const legend = `<div class="small muted">&#10003; = has the skill &middot; &times; = listed as a gap</div>`;
+  const filter = depts.length ? `<div class="row filter-bar" style="margin-bottom:14px">
+      <select class="inp filter-sel-status" id="mxDept"><option value="">All departments</option>${depts.map(d => `<option value="${esc(d)}" ${matrixDept===d?'selected':''}>${esc(d)}</option>`).join('')}</select>${legend}</div>`
+    : `<div style="margin-bottom:14px">${legend}</div>`;
+  if (!emps.length) return filter + `<div class="card"><div class="card-b">${emptyState('award', 'Nothing to show yet', 'People appear here once they have competencies or skill gaps recorded.')}</div></div>`;
+  return filter + `<div class="card"><div class="tbl-wrap"><table class="tbl no-stack" style="min-width:${200 + cols.length * 90}px"><thead><tr><th style="min-width:180px">Employee</th>
+    ${cols.map(c => `<th style="text-align:center" title="${esc(c.name)}">${esc(c.name)}</th>`).join('')}</tr></thead><tbody>
+    ${emps.map(e => `<tr class="clickable" onclick="openEmployeeInList('${esc(e.enroll_id)}')"><td><div class="strong">${esc(e.name)}</div><div class="small muted">${esc(e.role||'--')}</div></td>
+      ${cols.map(c => `<td style="text-align:center">${hasSkill(e,'current_competencies',c.key) ? '<span class="strong" style="color:var(--ok)">&#10003;</span>' : hasSkill(e,'skill_gaps',c.key) ? '<span class="strong" style="color:var(--danger)">&times;</span>' : ''}</td>`).join('')}</tr>`).join('')}
+  </tbody></table></div></div>`;
+}
+function trainGapsTab(){
+  const gaps = skillStats(S.employees, 'skill_gaps');
+  if (!gaps.length) return `<div class="card"><div class="card-b">${emptyState('checkCircle', 'No skill gaps recorded', 'Skill gaps entered on employee records are ranked here.')}</div></div>`;
+  const max = gaps[0].people.length;
+  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Skill gap</th><th>People affected</th><th>Who</th></tr></thead><tbody>
+    ${gaps.map(g => `<tr><td data-label="Skill gap" class="strong">${esc(g.name)}</td>
+      <td data-label="People"><div class="row" style="gap:8px;flex-wrap:nowrap"><div class="bar danger" style="width:80px"><i style="width:${Math.round(g.people.length/max*100)}%"></i></div><span class="strong tnum">${g.people.length}</span></div></td>
+      <td data-label="Who">${g.people.slice(0,3).map(p => `<a class="chip" style="margin:2px 4px 2px 0" href="javascript:void(0)" onclick="openEmployeeInList('${esc(p.enroll_id)}')">${esc(p.name)}</a>`).join('')}${g.people.length>3?`<span class="small muted">+${g.people.length-3} more</span>`:''}</td></tr>`).join('')}
+  </tbody></table></div></div>`;
+}
+function viewTraining(){
+  const tabs = [['sessions','Training sessions'],['catalogue','Competency catalogue'],['matrix','Skills matrix'],['gaps','Skill gaps']];
+  const tabBar = `<div class="tabs">${tabs.map(([k,l]) => `<div class="tab ${trainTab===k?'on':''}" onclick="setTrainTab('${k}')">${esc(l)}</div>`).join('')}</div>`;
+  const body = trainTab==='sessions' ? trainSessionsTab() : trainTab==='catalogue' ? trainCatalogueTab() : trainTab==='matrix' ? trainMatrixTab() : trainGapsTab();
+  return {
+    title:'Training & Competencies', crumb:'People',
+    html: pageHead('Training & competencies', 'Who has which skills and where the gaps are, from the employee records.') + tabBar + body,
+    bind(){
+      const sel = $('#mxDept'); if (sel) sel.onchange = e => { matrixDept = e.target.value; render(); };
+      if (trainTab === 'sessions' && trainings === null) {
+        api('/webhook/employees/api/trainings').then(r => r.trainings || []).catch(() => [])
+          .then(list => { trainings = list; if (currentPath().split('?')[0] === '/training' && trainTab === 'sessions') render(); });
+      }
+    },
+  };
+}
+route('/training', () => viewTraining());
+
+
+/* ============================================================
    Employees
    ============================================================ */
 let employeeQuery = '';
@@ -436,7 +584,7 @@ function viewEmployees(){
   const canEdit = S.me.permission === 'editor';
 
   return {
-    title:'Employees', crumb:'Modules',
+    title:'Employees', crumb:'People',
     html: `
     ${pageHead('Employees', 'Every casual and staff member currently on record.',
       `<button class="btn btn-ghost" onclick="handleExportClick(this)">${I.download} Export CSV</button>` +
@@ -505,12 +653,11 @@ function viewEmployees(){
     },
   };
 }
-route('/', () => viewEmployees());
 route('/employees', () => viewEmployees());
 
 
 /* ============================================================
-   Overtime (inside the Employees console)
+   Attendance: overtime (inside the Employees console)
    Recording needs edit access to Employees; everyone signed in can read.
    ============================================================ */
 const todayStr = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
@@ -587,7 +734,7 @@ function viewOvertimeSubmit(){
   if (!otState.date) otState.date = todayStr();
   const depOpts = (S.departments || []).map(d => `<option value="${esc(d)}" ${otState.department===d?'selected':''}>${esc(d)}</option>`).join('');
   return {
-    title:'Overtime Submission', crumb:'Overtime',
+    title:'Overtime Submission', crumb:'Attendance',
     html: `${pageHead('Overtime Submission', 'Pick a department and a day, tick the people who worked overtime and enter the hours (the same figure applies to everyone ticked).')}
       ${canEdit ? '' : `<div class="notice info">${I.info}<div>You have view-only access - recording overtime needs edit access to Employees.</div></div>`}
       <div class="card"><div class="card-b">
@@ -640,7 +787,7 @@ async function loadOtList(){
 function viewOvertimeList(){
   if (!otListState.to) { otListState.to = todayStr(); otListState.from = addDays(otListState.to, -31); }
   return {
-    title:'Overtime', crumb:'Overtime',
+    title:'Overtime', crumb:'Attendance',
     html: `${pageHead('Overtime', 'Overtime that has been recorded, newest first.')}
       <div class="row filter-bar" style="margin-bottom:14px">
         <div class="field" style="margin:0"><label for="olFrom">From</label><input class="inp" type="date" id="olFrom" value="${esc(otListState.from)}"></div>
@@ -662,8 +809,7 @@ function stubView(title, crumb){
   return { title, crumb, html: `${pageHead(title, 'This section has not been set up yet.')}
     <div class="card"><div class="card-b">${emptyState('box', 'Not configured yet', 'It will appear here once it has been set up.')}</div></div>` };
 }
-route('/overtime/summary', () => stubView('Overtime Summary', 'Overtime'));
-route('/attendance/summary', () => stubView('Attendance Summary', 'Overtime'));
+route('/attendance', () => stubView('Attendance', 'Attendance'));
 
 async function handleExportClick(btn){
   btn.disabled = true;
