@@ -590,7 +590,7 @@ function openPersonSkills(enrollId){
     title: e.name, size:'narrow', sub: [e.enroll_id, e.role, e.employment_type].filter(Boolean).join(' · '),
     body: `<div class="small muted" style="margin-bottom:8px">Skills and competencies (${skills.length})</div>
       <div>${skills.length ? skills.map(v => `<span class="chip" style="margin:2px 4px 2px 0">${esc(v)}</span>`).join('') : '<span class="muted small">No skills recorded yet.</span>'}</div>`,
-    footer: `<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-card>${I.download} Download card</button>`,
+    footer: `<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-card ${skills.length ? '' : 'disabled title="No skills recorded yet"'}>${I.download} Download certificate</button>`,
     onMount:(w) => { $('[data-card]', w).onclick = async (ev) => {
       const b = ev.currentTarget; b.disabled = true;
       try { await downloadSkillCard(e); } catch (err) { toast('Could not make the card', err.message, 'err'); }
@@ -602,63 +602,43 @@ function openPersonSkills(enrollId){
 function loadLogo(){
   return new Promise(resolve => { const img = new Image(); img.onload = () => resolve(img); img.onerror = () => resolve(null); img.src = '../logo.png'; });
 }
-// Draws the card on a canvas and saves it as a PNG: logo, "Certified by ORANGE KALBE LIMITED"
-// directly beneath it, then the person and their skills.
+// Draws the certificate on a canvas and saves it as a PNG: logo, then
+// "This is to certify that <name> has completed training(s) on <courses> administered by
+// Orange Kalbe Limited". Nothing else (no date, ID, role).
 async function downloadSkillCard(e){
   const logo = await loadLogo();
-  const skills = (Array.isArray(e.current_competencies) ? e.current_competencies : []).map(v => String(v||'').trim()).filter(Boolean);
-  const W = 900, PAD = 56, SC = 2, FONT = '"Inter","Segoe UI",system-ui,Arial,sans-serif';
+  const courses = (Array.isArray(e.current_competencies) ? e.current_competencies : []).map(v => String(v||'').trim()).filter(Boolean);
+  const list = courses.length > 1 ? courses.slice(0, -1).join(', ') + ' and ' + courses[courses.length - 1] : (courses[0] || '');
+  const W = 900, PAD = 70, SC = 2, FONT = '"Inter","Segoe UI",system-ui,Arial,sans-serif', MAXW = W - 2 * PAD;
   const probe = document.createElement('canvas').getContext('2d');
-  probe.font = '600 20px ' + FONT;
-  // lay the skill pills out in rows
-  const pills = []; let px = PAD, py = 0; const rowH = 46, gap = 12;
-  skills.forEach(s => {
-    const w = Math.ceil(probe.measureText(s).width) + 36;
-    if (px + w > W - PAD) { px = PAD; py += rowH; }
-    pills.push({ s, x: px, y: py, w }); px += w + gap;
-  });
-  const skillsH = pills.length ? py + rowH : 40;
-  const logoH = logo ? 90 : 0, logoW = logo ? Math.round(logo.width * logoH / logo.height) : 0;
-  const top = 44;
-  const yCert = top + (logo ? logoH + 30 : 20);
-  const yName = yCert + 70;
-  const ySkillsLabel = yName + 96;
-  const ySkills = ySkillsLabel + 24;
-  const H = ySkills + skillsH + 70;
+  const wrap = (text, font) => { probe.font = font; const out = []; let line = '';
+    text.split(/\s+/).forEach(w => { const t = line ? line + ' ' + w : w; if (line && probe.measureText(t).width > MAXW) { out.push(line); line = w; } else line = t; });
+    if (line) out.push(line); return out; };
+  const F_PLAIN = '500 24px ' + FONT, F_NAME = '700 44px ' + FONT, F_LIST = '700 28px ' + FONT;
+  const nameLines = wrap(e.name, F_NAME), listLines = wrap(list, F_LIST);
+  const logoH = logo ? 100 : 0, logoW = logo ? Math.round(logo.width * logoH / logo.height) : 0;
+  let y = 48 + logoH + (logo ? 56 : 20);
+  const yThis = y; y += 52;
+  const yName = y; y += nameLines.length * 54 + 6;
+  const yHas = y; y += 50;
+  const yList = y; y += listLines.length * 40 + 14;
+  const yBy = y; const H = yBy + 70;
   const c = document.createElement('canvas'); c.width = W * SC; c.height = H * SC;
   const ctx = c.getContext('2d'); ctx.scale(SC, SC);
-  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
   ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = '#ED6B1F'; ctx.fillRect(0, 0, W, 14);
   ctx.strokeStyle = '#BFCAC2'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, W - 2, H - 2);
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  if (logo) ctx.drawImage(logo, (W - logoW) / 2, top, logoW, logoH);
-  ctx.fillStyle = '#0F5132'; ctx.font = '700 17px ' + FONT;
-  if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
-  ctx.fillText('CERTIFIED BY ORANGE KALBE LIMITED', W / 2 + 1, yCert);
-  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
-  ctx.strokeStyle = '#E3E8E4'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(PAD, yCert + 24); ctx.lineTo(W - PAD, yCert + 24); ctx.stroke();
-  ctx.fillStyle = '#16191D'; ctx.font = '700 38px ' + FONT;
-  let name = e.name; while (ctx.measureText(name).width > W - 2 * PAD && name.length > 4) name = name.slice(0, -2);
-  ctx.fillText(name === e.name ? name : name + '…', W / 2, yName);
-  ctx.fillStyle = '#565E6B'; ctx.font = '500 19px ' + FONT;
-  ctx.fillText([e.enroll_id, e.role, e.employment_type].filter(Boolean).join('  ·  '), W / 2, yName + 36);
-  ctx.textAlign = 'left'; ctx.fillStyle = '#8A93A0'; ctx.font = '700 13px ' + FONT;
-  if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
-  ctx.fillText('SKILLS & COMPETENCIES', PAD, ySkillsLabel);
-  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
-  if (!pills.length) { ctx.fillStyle = '#8A93A0'; ctx.font = '500 18px ' + FONT; ctx.fillText('No skills recorded yet.', PAD, ySkills + 24); }
-  pills.forEach(p => {
-    rr(p.x, ySkills + p.y, p.w, 34, 17); ctx.fillStyle = '#FDEBDD'; ctx.fill();
-    ctx.strokeStyle = '#F7D3BB'; ctx.lineWidth = 1; ctx.stroke();
-    ctx.fillStyle = '#8A3B0C'; ctx.font = '600 20px ' + FONT; ctx.textBaseline = 'middle'; ctx.fillText(p.s, p.x + 18, ySkills + p.y + 18); ctx.textBaseline = 'alphabetic';
-  });
-  ctx.fillStyle = '#8A93A0'; ctx.font = '500 13px ' + FONT; ctx.textAlign = 'center';
-  ctx.fillText('Issued ' + new Date().toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' }), W / 2, H - 28);
+  if (logo) ctx.drawImage(logo, (W - logoW) / 2, 48, logoW, logoH);
+  ctx.fillStyle = '#565E6B'; ctx.font = F_PLAIN; ctx.fillText('This is to certify that', W / 2, yThis);
+  ctx.fillStyle = '#16191D'; ctx.font = F_NAME; nameLines.forEach((l, i) => ctx.fillText(l, W / 2, yName + i * 54));
+  ctx.fillStyle = '#565E6B'; ctx.font = F_PLAIN; ctx.fillText(courses.length > 1 ? 'has completed trainings on' : 'has completed training on', W / 2, yHas);
+  ctx.fillStyle = '#B4510F'; ctx.font = F_LIST; listLines.forEach((l, i) => ctx.fillText(l, W / 2, yList + i * 40));
+  ctx.fillStyle = '#565E6B'; ctx.font = F_PLAIN; ctx.fillText('administered by Orange Kalbe Limited', W / 2, yBy);
   const blob = await new Promise(res => c.toBlob(res, 'image/png'));
   if (!blob) throw new Error('Your browser could not create the image.');
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = 'OKL_skills_card_' + String(e.enroll_id).replace(/[^\w-]/g, '') + '.png';
+  const a = document.createElement('a'); a.href = url; a.download = 'OKL_certificate_' + String(e.enroll_id).replace(/[^\w-]/g, '') + '.png';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
