@@ -894,7 +894,7 @@ function viewOvertimeSubmit(){
 route('/overtime/submit', () => viewOvertimeSubmit());
 
 /* ---- Overtime: the log ---- */
-let otListState = { from:'', to:'', department:'', q:'', showVoid:false, mode:'entries', records:null };
+let otListState = { preset:'last30', from:'', to:'', department:'', q:'', showVoid:false, mode:'overview', records:null };
 function filteredOvertime(){
   const s = otListState, q = s.q.trim().toLowerCase();
   return (s.records || []).filter(r =>
@@ -911,6 +911,29 @@ function paintOtList(){
   const total = live.reduce((t, r) => t + Number(r.hours || 0), 0);
   const foot = `<div class="small muted" style="padding:12px 4px">${live.length} ${live.length === 1 ? 'entry' : 'entries'}, ${fmtHours(total)} hours in total${rows.length !== live.length ? ' (voided entries not counted)' : ''}.</div>`;
   if (!rows.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No overtime recorded in this period.</div>`; return; }
+  if (s.mode === 'overview') {
+    const people = new Set(live.map(r => r.enroll_id)).size;
+    const group = (keyFn) => { const g = new Map(); live.forEach(r => { const k = keyFn(r) || 'No department'; if (!g.has(k)) g.set(k, { key:k, hours:0, entries:0, people:new Set() }); const x = g.get(k); x.hours += Number(r.hours || 0); x.entries++; x.people.add(r.enroll_id); }); return [...g.values()]; };
+    const depts = group(r => r.department).sort((a, b) => b.hours - a.hours);
+    const dayRows = group(r => String(r.work_date).slice(0, 10)).sort((a, b) => a.key < b.key ? 1 : -1);
+    const top = group(r => r.enroll_id); const nameOf = new Map(live.map(r => [r.enroll_id, r.name]));
+    const topPeople = top.sort((a, b) => b.hours - a.hours).slice(0, 10);
+    const maxD = depts.length ? depts[0].hours || 1 : 1, maxDay = Math.max(1, ...dayRows.map(x => x.hours));
+    box.innerHTML = `<div class="card-b">
+      <div class="grid g4" style="margin-bottom:16px">
+        ${statCard('Entries', live.length, 'one per person per day', 'layers', 'brand')}
+        ${statCard('People', people, 'with overtime in this period', 'users', 'ok')}
+        ${statCard('Total hours', fmtHours(total), 'voided entries not counted', 'clock', 'warn')}
+        ${statCard('Avg per entry', fmtHours(live.length ? total / live.length : 0), 'hours', 'activity', 'info')}
+      </div>
+      <div class="grid g2">
+        <div><div class="strong" style="margin-bottom:8px">Hours by department</div><div class="stack" style="gap:11px">${depts.map(x => `<div><div class="row between small"><span class="strong">${esc(x.key)}</span><span class="muted">${fmtHours(x.hours)} h - ${x.people.size} ${x.people.size === 1 ? 'person' : 'people'}</span></div><div class="bar" style="margin-top:4px"><i style="width:${Math.round(x.hours / maxD * 100)}%"></i></div></div>`).join('')}</div></div>
+        <div><div class="strong" style="margin-bottom:8px">Top 10 people</div><div class="stack" style="gap:11px">${topPeople.map(x => `<div><div class="row between small"><span class="strong">${esc(nameOf.get(x.key) || x.key)}</span><span class="muted">${fmtHours(x.hours)} h - ${x.entries} ${x.entries === 1 ? 'day' : 'days'}</span></div><div class="bar" style="margin-top:4px"><i style="width:${Math.round(x.hours / (topPeople[0].hours || 1) * 100)}%"></i></div></div>`).join('')}</div></div>
+      </div>
+      <div class="strong" style="margin:18px 0 8px">Hours by day</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>People</th><th>Hours</th><th style="width:40%"></th></tr></thead><tbody>${dayRows.map(x => `<tr><td data-label="Date">${esc(fmtDayShort(x.key))}</td><td data-label="People" class="tnum">${x.people.size}</td><td data-label="Hours" class="tnum strong">${fmtHours(x.hours)}</td><td><div class="bar"><i style="width:${Math.round(x.hours / maxDay * 100)}%"></i></div></td></tr>`).join('')}</tbody></table></div></div>`;
+    return;
+  }
   if (s.mode === 'totals') {
     const by = new Map();
     live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0 }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); });
@@ -949,23 +972,21 @@ function exportOvertimeCSV(){
   download('okl_overtime_' + otListState.from + '_to_' + otListState.to + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
 }
 function viewOvertimeList(){
-  if (!otListState.to) { otListState.to = todayStr(); otListState.from = addDays(otListState.to, -31); }
+  if (!otListState.to) { const r = presetRange(otListState.preset); otListState.from = r[0]; otListState.to = r[1]; }
   const s = otListState;
   return {
     title:'Overtime', crumb:'Attendance',
-    html: `${pageHead('Overtime', 'Everything submitted on the department forms, newest first.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
+    html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, every entry, and totals by person.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
       <div class="row filter-bar" style="margin-bottom:14px">
-        <div class="field" style="margin:0"><label for="olFrom">From</label><input class="inp" type="date" id="olFrom" value="${esc(s.from)}"></div>
-        <div class="field" style="margin:0"><label for="olTo">To</label><input class="inp" type="date" id="olTo" value="${esc(s.to)}"></div>
+        ${periodFields(s, 'ol')}
         <div class="field" style="margin:0"><label for="olDept">Department</label><select class="inp" id="olDept"><option value="">All departments</option></select></div>
         <div class="field" style="margin:0"><label for="olQ">Person</label><input class="inp" id="olQ" placeholder="Search name or ID" value="${esc(s.q)}"></div>
         <label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>
       </div>
-      <div class="tabs"><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">Totals by person</div></div>
+      <div class="tabs"><div class="tab ${s.mode==='overview'?'on':''}" data-mode="overview">Overview</div><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">By person</div></div>
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
-      $('#olFrom').onchange = e => { otListState.from = e.target.value; loadOtList(); };
-      $('#olTo').onchange = e => { otListState.to = e.target.value; loadOtList(); };
+      bindPeriodFields(otListState, 'ol', loadOtList);
       $('#olDept').onchange = e => { otListState.department = e.target.value; paintOtList(); };
       $('#olQ').oninput = debounce(e => { otListState.q = e.target.value; paintOtList(); }, 150);
       $('#olVoid').onchange = e => { otListState.showVoid = e.target.checked; paintOtList(); };
@@ -1027,11 +1048,484 @@ async function openVoidOvertime(id){
   });
 }
 
-function stubView(title, crumb){
-  return { title, crumb, html: `${pageHead(title, 'This section has not been set up yet.')}
-    <div class="card"><div class="card-b">${emptyState('box', 'Not configured yet', 'It will appear here once it has been set up.')}</div></div>` };
+/* ============================================================
+   Attendance: device export (upload), overview, daily register, by person
+   Punches come from the attendance machine's Excel export. Nothing is automated: an editor uploads
+   the file, days that are already in the system are skipped, and everything below is worked out
+   from the raw punches (so changing the lateness time re-labels past days too).
+   ============================================================ */
+const LATE_DEFAULT = '08:30';
+const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+const att = { preset:'last30', from:'', to:'', dept:'', type:'', q:'', day:'', chip:'all', sort:'name', data:null, key:'', tab:'' };
+const attMins = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : 0; };
+const attHHMM = n => { n = Math.round(n); return String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0'); };
+const isoWeekday = iso => new Date(iso + 'T12:00:00Z').getUTCDay();          // 0 = Sunday
+const isWorkDay = iso => { const w = isoWeekday(iso); return w >= 1 && w <= 5; };
+const fmtDay = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric', timeZone:'UTC' });
+const fmtDayShort = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', timeZone:'UTC' });
+const fmtWhen = v => v ? new Date(v).toLocaleString('en-GB', { timeZone:'Africa/Lagos', day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '--';
+
+function presetRange(key){
+  const t = todayStr(), y = +t.slice(0, 4), m = +t.slice(5, 7), pad = n => String(n).padStart(2, '0');
+  const lastOf = (yy, mm) => new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
+  switch (key) {
+    case 'month': return [`${y}-${pad(m)}-01`, t];
+    case 'last30': return [addDays(t, -29), t];
+    case 'last90': return [addDays(t, -89), t];
+    case 'lastmonth': { const pm = m === 1 ? 12 : m - 1, py = m === 1 ? y - 1 : y; return [`${py}-${pad(pm)}-01`, lastOf(py, pm)]; }
+    case 'year': return [`${y}-01-01`, t];
+  }
+  return null;
 }
-route('/attendance', () => stubView('Attendance', 'Attendance'));
+function initAttPeriod(){ if (!att.from) { const r = presetRange(att.preset); att.from = r[0]; att.to = r[1]; } }
+const PERIODS = [['month','This month'],['last30','Last 30 days'],['last90','Last 90 days'],['lastmonth','Last month'],['year','This year'],['custom','Custom']];
+
+function periodFields(s, p){      // p = element id prefix; shared by attendance and overtime
+  return `<div class="field" style="margin:0"><label for="${p}Preset">Period</label><select class="inp" id="${p}Preset">${PERIODS.map(([k, l]) => `<option value="${k}" ${s.preset === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div class="field" style="margin:0"><label for="${p}From">From</label><input class="inp" type="date" id="${p}From" value="${esc(s.from)}"></div>
+    <div class="field" style="margin:0"><label for="${p}To">To</label><input class="inp" type="date" id="${p}To" value="${esc(s.to)}"></div>`;
+}
+function bindPeriodFields(s, p, onRange){
+  $('#' + p + 'Preset').onchange = e => {
+    s.preset = e.target.value; const r = presetRange(s.preset);
+    if (r) { s.from = r[0]; s.to = r[1]; $('#' + p + 'From').value = s.from; $('#' + p + 'To').value = s.to; onRange(); }
+  };
+  $('#' + p + 'From').onchange = e => { s.from = e.target.value; s.preset = 'custom'; $('#' + p + 'Preset').value = 'custom'; onRange(); };
+  $('#' + p + 'To').onchange = e => { s.to = e.target.value; s.preset = 'custom'; $('#' + p + 'Preset').value = 'custom'; onRange(); };
+}
+function deptOptionsHtml(sel, label){
+  return `<option value="">${esc(label || 'All departments')}</option>` + (S.departments || []).map(d => `<option value="${esc(d)}" ${sel === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+}
+
+/* ---- loading ---- */
+async function attFetchRange(from, to){
+  return api('/webhook/employees/api/attendance?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to));
+}
+async function attEnsure(){
+  const key = att.from + '|' + att.to;
+  if (att.data && att.key === key) return att.data;
+  att.data = null;
+  const res = await attFetchRange(att.from, att.to);
+  att.data = { late_after: res.late_after || LATE_DEFAULT, days: res.days || [], rows: res.rows || [] };
+  att.key = key;
+  return att.data;
+}
+
+/* ---- the numbers ---- */
+function attCompute(){
+  const d = att.data, lateM = attMins(d.late_after || LATE_DEFAULT);
+  const days = (d.days || []).map(x => String(x.date).slice(0, 10)).filter(x => x >= att.from && x <= att.to).sort();
+  const idx = new Map();
+  (d.rows || []).forEach(r => { let m = idx.get(r[0]); if (!m) idx.set(r[0], m = new Map()); m.set(String(r[1]).slice(0, 10), { i:r[2], o:r[3], n:Number(r[4]) }); });
+  const q = att.q.trim().toLowerCase();
+  const emps = S.employees.filter(e => (!att.dept || e.department === att.dept) && (!att.type || e.employment_type === att.type)
+    && (!q || String(e.name).toLowerCase().includes(q) || String(e.enroll_id).toLowerCase().includes(q))
+    && (isActiveEmp(e) || idx.has(e.enroll_id)));
+  const expected = (e, day) => {
+    if (!isWorkDay(day)) return false;
+    if (e.join_date && String(e.join_date).slice(0, 10) > day) return false;
+    if (!isActiveEmp(e)) { const l = String(e.left_date || '').slice(0, 10); return !!l && day <= l; }
+    return true;
+  };
+  const recs = [];
+  emps.forEach(e => {
+    const m = idx.get(e.enroll_id);
+    days.forEach(day => {
+      const p = m && m.get(day);
+      if (!p) { if (expected(e, day)) recs.push({ e, day, absent:true }); return; }
+      let i = p.i, o = p.o, missing = null;
+      if (p.n <= 1) { if (attMins(p.i) < 720) { o = null; missing = 'out'; } else { i = null; o = p.i; missing = 'in'; } }
+      const lateMin = i ? Math.max(0, attMins(i) - lateM) : 0;
+      recs.push({ e, day, i, o, missing, lateMin, late: lateMin > 0, hours: (i && o) ? (attMins(o) - attMins(i)) / 60 : null, present:true });
+    });
+  });
+  const byEmp = new Map(emps.map(e => [e.enroll_id, { e, present:0, late:0, absent:0, missing:0, arrSum:0, arrN:0, lateSum:0, hours:0 }]));
+  const byDay = new Map(days.map(day => [day, { day, present:0, late:0, absent:0, missing:0, expected:0 }]));
+  recs.forEach(r => {
+    const a = byEmp.get(r.e.enroll_id), dd = byDay.get(r.day);
+    if (r.absent) { a.absent++; dd.absent++; dd.expected++; return; }
+    a.present++; dd.present++; if (expected(r.e, r.day)) dd.expected++;
+    if (r.i) { a.arrSum += attMins(r.i); a.arrN++; }
+    if (r.late) { a.late++; dd.late++; a.lateSum += r.lateMin; }
+    if (r.missing) { a.missing++; dd.missing++; }
+    if (r.hours) a.hours += r.hours;
+  });
+  const dayList = days.map(day => byDay.get(day));
+  const wk = dayList.filter(x => isWorkDay(x.day));
+  const base = wk.length ? wk : dayList;
+  const sum = (arr, k) => arr.reduce((t, x) => t + x[k], 0);
+  const people = [...byEmp.values()];
+  const arrN = sum(people, 'arrN');
+  return {
+    late: d.late_after || LATE_DEFAULT, days, recs, people, dayList, emps,
+    workingDays: wk.length, avgPresent: base.length ? sum(base, 'present') / base.length : 0, avgExpected: base.length ? sum(base, 'expected') / base.length : 0,
+    lateTotal: sum(people, 'late'), absentTotal: sum(people, 'absent'), missingTotal: sum(people, 'missing'),
+    lateRate: arrN ? sum(people, 'late') / arrN : 0,
+  };
+}
+function attGroup(people, keyFn){
+  const g = new Map();
+  people.forEach(p => { const k = keyFn(p.e) || 'No department'; if (!g.has(k)) g.set(k, { key:k, n:0, present:0, late:0, absent:0, arrN:0 }); const x = g.get(k); x.n++; x.present += p.present; x.late += p.late; x.absent += p.absent; x.arrN += p.arrN; });
+  return [...g.values()];
+}
+
+/* ---- page frame ---- */
+function attTabs(tab){
+  const canEdit = S.me.permission === 'editor';
+  const tabs = [['overview', 'Overview', '/attendance'], ['daily', 'Daily', '/attendance/daily'], ['people', 'By person', '/attendance/people']]
+    .concat(canEdit ? [['upload', 'Upload', '/attendance/upload']] : []).concat([['history', 'History', '/attendance/history'], ['settings', 'Settings', '/attendance/settings']]);
+  return `<div class="tabs">${tabs.map(([k, l, p]) => `<a class="tab ${tab === k ? 'on' : ''}" href="#${p}" style="text-decoration:none">${l}</a>`).join('')}</div>`;
+}
+function attFilterBar(withQ){
+  return `<div class="row filter-bar" style="margin-bottom:14px">${periodFields(att, 'af')}
+    <div class="field" style="margin:0"><label for="afDept">Department</label><select class="inp" id="afDept">${deptOptionsHtml(att.dept)}</select></div>
+    <div class="field" style="margin:0"><label for="afType">Type</label><select class="inp" id="afType"><option value="">Staff and casual</option><option value="staff" ${att.type === 'staff' ? 'selected' : ''}>Staff</option><option value="casual" ${att.type === 'casual' ? 'selected' : ''}>Casual</option></select></div>
+    ${withQ ? `<div class="field" style="margin:0"><label for="afQ">Person</label><input class="inp" id="afQ" placeholder="Search name or ID" value="${esc(att.q)}"></div>` : ''}</div>`;
+}
+function viewAttendance(tab){
+  initAttPeriod(); att.tab = tab;
+  const filtered = ['overview', 'daily', 'people'].includes(tab);
+  return {
+    title:'Attendance', crumb:'Attendance',
+    html: `${pageHead('Attendance', 'Daily register, lateness and absences from the attendance machine export.')}${attTabs(tab)}${filtered ? attFilterBar(tab !== 'overview') : ''}
+      <div id="attBody"><div class="small muted" style="padding:14px">Loading...</div></div>`,
+    bind(){
+      if (filtered) {
+        const again = () => attLoad(tab);
+        bindPeriodFields(att, 'af', again);
+        $('#afDept').onchange = e => { att.dept = e.target.value; paintAtt(tab); };
+        $('#afType').onchange = e => { att.type = e.target.value; paintAtt(tab); };
+        const q = $('#afQ'); if (q) q.oninput = debounce(e => { att.q = e.target.value; paintAtt(tab); }, 150);
+      }
+      attLoad(tab);
+    },
+  };
+}
+async function attLoad(tab){
+  if (tab === 'upload') return paintAttUpload();
+  if (tab === 'history') return loadAttHistory();
+  const body = $('#attBody'); if (body) body.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
+  try { await attEnsure(); } catch (err) { if ($('#attBody')) $('#attBody').innerHTML = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load attendance', esc(err.message))}</div></div>`; return; }
+  paintAtt(tab);
+}
+function paintAtt(tab){
+  const body = $('#attBody'); if (!body || att.tab !== tab || !att.data) return;
+  if (tab === 'settings') return paintAttSettings(body);
+  const c = attCompute();
+  if (!c.days.length) {
+    body.innerHTML = `<div class="card"><div class="card-b">${emptyState('clock', 'No attendance in this period', 'Nothing has been uploaded for these dates yet. Pick another period' + (S.me.permission === 'editor' ? ' or upload the machine export.' : '.'),
+      S.me.permission === 'editor' ? `<a class="btn btn-primary" href="#/attendance/upload">${I.plus} Upload attendance</a>` : '')}</div></div>`;
+    return;
+  }
+  if (tab === 'daily') return paintAttDaily(body, c);
+  if (tab === 'people') return paintAttPeople(body, c);
+  paintAttOverview(body, c);
+}
+const pctTxt = n => (Math.round(n * 1000) / 10) + '%';
+
+/* ---- Overview ---- */
+function paintAttOverview(body, c){
+  const wkNote = c.dayList.length !== c.workingDays ? ` (${c.dayList.length} days with data, ${c.dayList.length - c.workingDays} on a weekend)` : '';
+  const typeRows = attGroup(c.people, e => e.employment_type === 'casual' ? 'Casual' : 'Staff');
+  const depRows = attGroup(c.people, e => e.department).sort((a, b) => b.n - a.n);
+  const topLate = c.people.filter(p => p.late > 0).sort((a, b) => b.late - a.late || b.lateSum - a.lateSum).slice(0, 10);
+  const wd = c.workingDays || c.dayList.length || 1;
+  const rowStats = x => `<td class="tnum">${fmtHours(x.present / wd)}</td><td class="tnum">${x.late}</td><td class="tnum">${x.absent}</td><td class="tnum">${x.arrN ? pctTxt(x.late / x.arrN) : '--'}</td>`;
+  body.innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${statCard('Working days', c.workingDays, 'with attendance uploaded' + (c.dayList.length !== c.workingDays ? ' (+' + (c.dayList.length - c.workingDays) + ' weekend)' : ''), 'clock', 'brand')}
+      ${statCard('Avg present per day', fmtHours(c.avgPresent), 'of ' + fmtHours(c.avgExpected) + ' expected', 'users', 'ok')}
+      ${statCard('Late arrivals', c.lateTotal, 'first punch after ' + c.late + ' - ' + pctTxt(c.lateRate) + ' of arrivals', 'alert', 'warn')}
+      ${statCard('Absences', c.absentTotal, c.missingTotal + ' day' + (c.missingTotal === 1 ? '' : 's') + ' with a missing punch', 'x', 'danger')}
+    </div>
+    <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>By day</h3><div class="sub">Click a day to open its register${esc(wkNote)}</div></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Present</th><th>Late</th><th>Absent</th><th>No out/in punch</th><th style="width:28%">Attendance</th></tr></thead>
+      <tbody>${c.dayList.map(x => `<tr class="clickable" onclick="attGoDay('${x.day}')"><td data-label="Date" class="strong">${esc(fmtDayShort(x.day))}</td><td data-label="Present" class="tnum">${x.present}</td>
+        <td data-label="Late" class="tnum">${x.late}</td><td data-label="Absent" class="tnum">${x.absent}</td><td data-label="Missing punch" class="tnum">${x.missing}</td>
+        <td data-label="Attendance">${x.expected ? `<div class="bar ${x.present / x.expected < 0.8 ? 'warn' : 'ok'}"><i style="width:${Math.min(100, Math.round(x.present / x.expected * 100))}%"></i></div>` : '<span class="small muted">Weekend</span>'}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-h"><h3>Staff and casual</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Type</th><th>Avg/day</th><th>Late</th><th>Absent</th><th>Late rate</th></tr></thead>
+        <tbody>${typeRows.map(x => `<tr><td data-label="Type" class="strong">${esc(x.key)} <span class="small muted">(${x.n})</span></td>${rowStats(x)}</tr>`).join('')}</tbody></table></div></div>
+      <div class="card"><div class="card-h"><h3>Most late</h3><div class="sub">Days arriving after ${esc(c.late)}</div></div>
+        ${topLate.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Late days</th><th>Avg late</th></tr></thead>
+        <tbody>${topLate.map(p => `<tr><td data-label="Name"><div class="strong">${esc(p.e.name)}</div><div class="tiny muted">${esc(p.e.department || '--')}</div></td><td data-label="Late days" class="tnum strong">${p.late}</td><td data-label="Avg late" class="tnum">${Math.round(p.lateSum / p.late)} min</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="card-b small muted">Nobody was late in this period.</div>`}</div>
+    </div>
+    <div class="card"><div class="card-h"><h3>By department</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Department</th><th>People</th><th>Avg/day</th><th>Late</th><th>Absent</th><th>Late rate</th></tr></thead>
+      <tbody>${depRows.map(x => `<tr><td data-label="Department" class="strong">${esc(x.key)}</td><td data-label="People" class="tnum">${x.n}</td>${rowStats(x)}</tr>`).join('')}</tbody></table></div></div>
+    <div class="small muted" style="margin-top:12px">Late = first punch after ${esc(c.late)}. Absent = on the payroll that day (join and left dates respected), Monday to Friday, no punch. Days that have not been uploaded are never counted as absences.</div>`;
+}
+function attGoDay(day){ att.day = day; go('/attendance/daily'); }
+
+/* ---- Daily register ---- */
+function attStatusBadges(r){
+  if (r.absent) return '<span class="badge b-danger">Absent</span>';
+  const a = r.late ? `<span class="badge b-warn">Late ${r.lateMin} min</span>` : (r.i ? '<span class="badge b-ok">On time</span>' : '<span class="badge b-info">Present</span>');
+  const b = r.missing ? ` <span class="badge b-slate">No ${r.missing === 'out' ? 'out' : 'in'} punch</span>` : '';
+  return a + b;
+}
+function paintAttDaily(body, c){
+  const days = c.days.slice().reverse();
+  if (!days.includes(att.day)) att.day = days[0];
+  const recs = c.recs.filter(r => r.day === att.day);
+  const cnt = { all:recs.length, present:recs.filter(r => r.present).length, late:recs.filter(r => r.late).length, absent:recs.filter(r => r.absent).length, missing:recs.filter(r => r.missing).length };
+  const show = recs.filter(r => att.chip === 'all' || (att.chip === 'present' && r.present) || (att.chip === 'late' && r.late) || (att.chip === 'absent' && r.absent) || (att.chip === 'missing' && r.missing))
+    .sort((a, b) => a.e.name.localeCompare(b.e.name));
+  const k = days.indexOf(att.day);
+  const chip = (key, label) => `<span class="chip ${att.chip === key ? 'on' : ''}" data-chip="${key}" style="cursor:pointer">${label} ${cnt[key]}</span>`;
+  body.innerHTML = `
+    <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:10px">
+      <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" id="adPrev" ${k >= days.length - 1 ? 'disabled' : ''} aria-label="Previous day">${I.chevL}</button>
+        <select class="inp" id="adDay" style="width:auto">${days.map(d => `<option value="${d}" ${d === att.day ? 'selected' : ''}>${esc(fmtDay(d))}</option>`).join('')}</select>
+        <button class="btn btn-ghost btn-sm" id="adNext" ${k <= 0 ? 'disabled' : ''} aria-label="Next day">${I.chevR}</button></div>
+      <div class="row" style="gap:6px;flex-wrap:wrap">${chip('all', 'Everyone')}${chip('present', 'Present')}${chip('late', 'Late')}${chip('absent', 'Absent')}${chip('missing', 'Missing a punch')}</div></div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Type</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th></tr></thead>
+      <tbody>${show.length ? show.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.e.name)}</div><div class="tiny muted mono">${esc(r.e.enroll_id)}</div></td><td data-label="Department">${esc(r.e.department || '--')}</td>
+        <td data-label="Type">${esc(r.e.employment_type === 'casual' ? 'Casual' : 'Staff')}</td><td data-label="In" class="tnum">${esc(r.i || '--')}</td><td data-label="Out" class="tnum">${esc(r.o || '--')}</td>
+        <td data-label="Hours" class="tnum">${r.hours ? fmtHours(r.hours) : '--'}</td><td data-label="Status">${attStatusBadges(r)}</td></tr>`).join('')
+        : `<tr><td colspan="7"><div class="small muted" style="padding:10px">Nobody matches this filter on ${esc(fmtDay(att.day))}.</div></td></tr>`}</tbody></table></div></div>`;
+  $('#adDay').onchange = e => { att.day = e.target.value; paintAtt('daily'); };
+  $('#adPrev').onclick = () => { att.day = days[k + 1]; paintAtt('daily'); };
+  $('#adNext').onclick = () => { att.day = days[k - 1]; paintAtt('daily'); };
+  $$('[data-chip]').forEach(x => x.onclick = () => { att.chip = x.dataset.chip; paintAtt('daily'); });
+}
+
+/* ---- By person ---- */
+function attPersonRows(c){
+  const rows = c.people.filter(p => p.present || p.absent);
+  const sorters = { name:(a, b) => a.e.name.localeCompare(b.e.name), late:(a, b) => b.late - a.late || a.e.name.localeCompare(b.e.name),
+    absent:(a, b) => b.absent - a.absent || a.e.name.localeCompare(b.e.name), present:(a, b) => b.present - a.present || a.e.name.localeCompare(b.e.name) };
+  return rows.sort(sorters[att.sort] || sorters.name);
+}
+function paintAttPeople(body, c){
+  const rows = attPersonRows(c);
+  body.innerHTML = `
+    <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:10px">
+      <div class="small muted">${rows.length} ${rows.length === 1 ? 'person' : 'people'} over ${c.dayList.length} ${c.dayList.length === 1 ? 'day' : 'days'} of data. Click a name for their day-by-day record.</div>
+      <div class="row" style="gap:8px"><select class="inp" id="apSort" style="width:auto"><option value="name">Sort: name</option><option value="late" ${att.sort === 'late' ? 'selected' : ''}>Sort: most late</option><option value="absent" ${att.sort === 'absent' ? 'selected' : ''}>Sort: most absent</option><option value="present" ${att.sort === 'present' ? 'selected' : ''}>Sort: most present</option></select>
+      <button class="btn btn-ghost" id="apCsv">${I.download} Export CSV</button></div></div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days present</th><th>Days late</th><th>Days absent</th><th>Avg arrival</th><th>Total hours</th></tr></thead>
+      <tbody>${rows.map(p => `<tr class="clickable" onclick="openAttPerson('${esc(p.e.enroll_id)}')"><td data-label="Name"><div class="strong">${esc(p.e.name)}</div><div class="tiny muted mono">${esc(p.e.enroll_id)} - ${esc(p.e.employment_type === 'casual' ? 'Casual' : 'Staff')}</div></td>
+        <td data-label="Department">${esc(p.e.department || '--')}</td><td data-label="Days present" class="tnum">${p.present}</td><td data-label="Days late" class="tnum ${p.late ? 'strong' : ''}">${p.late}</td>
+        <td data-label="Days absent" class="tnum ${p.absent ? 'strong' : ''}">${p.absent}</td><td data-label="Avg arrival" class="tnum">${p.arrN ? attHHMM(p.arrSum / p.arrN) : '--'}</td><td data-label="Total hours" class="tnum">${p.hours ? fmtHours(p.hours) : '--'}</td></tr>`).join('')}</tbody></table></div></div>`;
+  $('#apSort').onchange = e => { att.sort = e.target.value; paintAtt('people'); };
+  $('#apCsv').onclick = () => attPeopleCsv(c);
+}
+function attPeopleCsv(c){
+  const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const lines = [['Enroll ID', 'Name', 'Department', 'Type', 'Days present', 'Days late', 'Days absent', 'Missing punch days', 'Avg arrival', 'Total hours'].join(',')].concat(attPersonRows(c).map(p =>
+    [p.e.enroll_id, p.e.name, p.e.department, p.e.employment_type, p.present, p.late, p.absent, p.missing, p.arrN ? attHHMM(p.arrSum / p.arrN) : '', fmtHours(p.hours)].map(cell).join(',')));
+  download('okl_attendance_' + att.from + '_to_' + att.to + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
+}
+function openAttPerson(id){
+  if (!att.data) return;
+  const c = attCompute(), p = c.people.find(x => x.e.enroll_id === id); if (!p) return;
+  const recs = c.recs.filter(r => r.e.enroll_id === id).sort((a, b) => a.day < b.day ? 1 : -1);
+  openModal({
+    title: p.e.name, size:'wide', sub: (p.e.department || 'No department') + ' - ' + att.from + ' to ' + att.to,
+    body: `<div class="grid g4" style="margin-bottom:12px">${[['Present', p.present], ['Late', p.late], ['Absent', p.absent], ['Avg arrival', p.arrN ? attHHMM(p.arrSum / p.arrN) : '--']].map(([l, v]) => `<div class="stat"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th></tr></thead>
+      <tbody>${recs.map(r => `<tr><td data-label="Date">${esc(fmtDayShort(r.day))}</td><td data-label="In" class="tnum">${esc(r.i || '--')}</td><td data-label="Out" class="tnum">${esc(r.o || '--')}</td><td data-label="Hours" class="tnum">${r.hours ? fmtHours(r.hours) : '--'}</td><td data-label="Status">${attStatusBadges(r)}</td></tr>`).join('')}</tbody></table></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Close</button>`,
+  });
+}
+
+/* ---- Settings ---- */
+function paintAttSettings(body){
+  const canEdit = S.me.permission === 'editor', late = att.data.late_after || LATE_DEFAULT;
+  body.innerHTML = `<div class="card" style="max-width:520px"><div class="card-h"><h3>Lateness</h3></div><div class="card-b">
+    <div class="field"><label for="asLate">Late after</label><input class="inp" type="time" id="asLate" value="${esc(late)}" ${canEdit ? '' : 'disabled'}>
+      <div class="hint">${I.info}<span>A first punch after this time counts as late; exactly this time is on time. Changing it re-labels every day already uploaded.</span></div>
+      <div class="err-msg hide" data-err="asLate"></div></div>
+    ${canEdit ? `<button class="btn btn-primary" id="asSave">${I.check} Save</button>` : '<div class="small muted">Only editors can change this.</div>'}</div></div>`;
+  const save = $('#asSave');
+  if (save) save.onclick = async () => {
+    clearErrors(body); const v = $('#asLate').value;
+    if (!v) return setErr('asLate', 'Enter a time such as 08:30.', body);
+    save.disabled = true;
+    try { const res = await api('/webhook/employees/api/attendance/settings', { method:'POST', body:{ late_after: v } }); att.data.late_after = res.late_after || v; toast('Lateness updated', 'Late is now after ' + att.data.late_after + '.', 'ok'); }
+    catch (err) { setErr('asLate', err.message, body); }
+    save.disabled = false;
+  };
+}
+
+/* ---- History ---- */
+async function loadAttHistory(){
+  const body = $('#attBody'); if (body) body.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
+  let list = [];
+  try { list = (await api('/webhook/employees/api/attendance/imports')).imports || []; }
+  catch (err) { if ($('#attBody')) $('#attBody').innerHTML = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load history', esc(err.message))}</div></div>`; return; }
+  if (!$('#attBody') || att.tab !== 'history') return;
+  $('#attBody').innerHTML = `<div class="card">${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Uploaded</th><th>File</th><th>By</th><th>Period</th><th>Days</th><th>Punches</th><th>Unknown IDs</th></tr></thead>
+    <tbody>${list.map(i => `<tr><td data-label="Uploaded">${esc(fmtWhen(i.uploaded_at))}</td><td data-label="File" class="small">${esc(i.file_name || '--')}</td><td data-label="By">${esc(i.uploaded_by || '--')}</td>
+      <td data-label="Period">${i.first_date ? esc(String(i.first_date).slice(0, 10) + ' to ' + String(i.last_date).slice(0, 10)) : '--'}</td>
+      <td data-label="Days">${i.days_imported} imported${i.days_skipped ? ', ' + i.days_skipped + ' skipped' : ''}${i.days_replaced ? ', ' + i.days_replaced + ' replaced' : ''}</td>
+      <td data-label="Punches" class="tnum">${i.punches_saved}</td><td data-label="Unknown IDs" class="tnum" title="${esc((i.unmatched || []).join(', '))}">${(i.unmatched || []).length}</td></tr>`).join('')}</tbody></table></div>`
+    : `<div class="card-b">${emptyState('clock', 'Nothing uploaded yet', 'Each upload of the machine export is listed here.')}</div>`}</div>`;
+}
+
+/* ---- Upload ---- */
+const attUp = { name:'', grid:null, year:null, verified:false, days:[], punches:[], entered:new Set(), replace:new Set(), busy:false, result:null, error:'' };
+
+// rows = the sheet as an array of arrays. Pure function (no SheetJS needed) so it can be tested.
+function attParseGrid(rows){
+  const dateRe = /^\s*(\d{1,2})\/(\d{1,2})(?:\s+([A-Za-z]{3}))?/;
+  let h = -1;
+  for (let r = 0; r < Math.min(rows.length, 15); r++) {
+    const cells = (rows[r] || []).map(x => String(x == null ? '' : x));
+    if (cells.some(x => /enroll\s*id|user\s*id/i.test(x)) && cells.some(x => dateRe.test(x))) { h = r; break; }
+  }
+  if (h < 0) return null;
+  const head = rows[h].map(x => String(x == null ? '' : x).trim());
+  let idCol = head.findIndex(x => /^enroll\s*id$/i.test(x)); if (idCol < 0) idCol = head.findIndex(x => /^user\s*id$/i.test(x));
+  const nameCol = head.findIndex(x => /^name$/i.test(x));
+  const cols = [];
+  head.forEach((x, i) => { const m = dateRe.exec(x); if (m && i !== idCol) cols.push({ idx:i, m:+m[1], d:+m[2], wd:m[3] ? m[3].slice(0, 3).toLowerCase() : '' }); });
+  const toTimes = v => {
+    if (v == null || v === '') return [];
+    if (typeof v === 'number') { if (v > 0 && v < 1) { const t = Math.round(v * 1440); return [attHHMM(t % 1440)]; } return []; }
+    const out = []; String(v).replace(/(\d{1,2}):(\d{2})/g, (_, a, b) => { if (+a < 24 && +b < 60) { const t = String(+a).padStart(2, '0') + ':' + b; if (!out.includes(t)) out.push(t); } return ''; });
+    return out;
+  };
+  const people = [];
+  for (let r = h + 1; r < rows.length; r++) {
+    const row = rows[r] || [];
+    let id = String(row[idCol] == null ? '' : row[idCol]).trim().replace(/\.0+$/, '');
+    if (!id) continue;
+    const cells = {}; cols.forEach(c => { const t = toTimes(row[c.idx]); if (t.length) cells[c.idx] = t; });
+    people.push({ id, name: nameCol >= 0 ? String(row[nameCol] == null ? '' : row[nameCol]).trim() : '', cells });
+  }
+  return { cols, people };
+}
+const WD3 = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+// the file has day and month but no year: assign years (rolling over after December) from a starting year
+function attColDates(cols, startYear){
+  let y = startYear, prev = 0; const out = [];
+  cols.forEach(c => {
+    if (c.m < prev) y++; prev = c.m;
+    const dt = new Date(Date.UTC(y, c.m - 1, c.d, 12));
+    out.push(dt.getUTCMonth() === c.m - 1 && dt.getUTCDate() === c.d ? dt.toISOString().slice(0, 10) : null);
+  });
+  return out;
+}
+function attWeekdaysMatch(cols, dates){ return cols.every((c, i) => !c.wd || (dates[i] && WD3[isoWeekday(dates[i])] === c.wd)); }
+// the year whose calendar agrees with the weekday labels (latest year that is not in the future)
+function attInferYear(cols, today){
+  const cy = +today.slice(0, 4);
+  for (let y = cy + 1; y >= cy - 10; y--) {
+    const dates = attColDates(cols, y), last = dates.filter(Boolean).pop();
+    if (last && last <= addDays(today, 1) && attWeekdaysMatch(cols, dates)) return { year:y, verified:true };
+  }
+  return { year:cy, verified:false };
+}
+function attBuildPunches(grid, dates){
+  const punches = [], perDay = new Map();
+  grid.cols.forEach((c, i) => { if (dates[i]) perDay.set(dates[i], { date:dates[i], people:0, punches:0 }); });
+  grid.people.forEach(p => grid.cols.forEach((c, i) => {
+    const t = p.cells[c.idx], d = dates[i]; if (!t || !d) return;
+    const dd = perDay.get(d); dd.people++; dd.punches += t.length;
+    t.forEach(x => punches.push({ i:p.id, d, t:x }));
+  }));
+  return { punches, days:[...perDay.values()].sort((a, b) => a.date < b.date ? -1 : 1) };
+}
+function loadSheetJS(){
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script'); s.src = SHEETJS_URL;
+    s.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error('The spreadsheet reader did not load.'));
+    s.onerror = () => reject(new Error('Could not load the spreadsheet reader. Check your connection and try again.'));
+    document.head.appendChild(s);
+  });
+}
+async function attReadFile(file){
+  const XLSX = await loadSheetJS();
+  const wb = XLSX.read(await file.arrayBuffer(), { type:'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
+}
+async function attRefreshUpload(){
+  const g = attUp.grid; if (!g) return;
+  const dates = attColDates(g.cols, attUp.year);
+  attUp.verified = attWeekdaysMatch(g.cols, dates);
+  const built = attBuildPunches(g, dates); attUp.punches = built.punches; attUp.days = built.days;
+  attUp.entered = new Set(); attUp.replace = new Set();
+  if (built.days.length) {
+    try { const res = await attFetchRange(built.days[0].date, built.days[built.days.length - 1].date); (res.days || []).forEach(x => attUp.entered.add(String(x.date).slice(0, 10))); }
+    catch (err) { attUp.error = err.message; }
+  }
+  paintAttUpload();
+}
+async function attChooseFile(file){
+  Object.assign(attUp, { name:file.name, grid:null, result:null, error:'', busy:true, days:[], punches:[] }); paintAttUpload();
+  try {
+    const grid = attParseGrid(await attReadFile(file));
+    if (!grid || !grid.cols.length) throw new Error('This does not look like the machine export: no Enroll ID / User ID column with date columns (like "09/21 Mon") was found.');
+    if (!grid.people.length) throw new Error('The file has no people rows.');
+    attUp.grid = grid;
+    const inf = attInferYear(grid.cols, todayStr()); attUp.year = inf.year;
+  } catch (err) { attUp.error = err.message; attUp.busy = false; paintAttUpload(); return; }
+  attUp.busy = false; await attRefreshUpload();
+}
+function paintAttUpload(){
+  const body = $('#attBody'); if (!body || att.tab !== 'upload') return;
+  if (S.me.permission !== 'editor') { body.innerHTML = `<div class="card"><div class="card-b">${emptyState('lock', 'View only', 'Only editors can upload attendance.')}</div></div>`; return; }
+  const u = attUp, known = new Set(S.employees.map(e => e.enroll_id));
+  const g = u.grid, unknown = g ? [...new Set(g.people.map(p => p.id).filter(id => !known.has(id)))] : [];
+  const todo = u.days.filter(d => !u.entered.has(d.date) || u.replace.has(d.date));
+  const years = []; const cy = +todayStr().slice(0, 4); for (let y = cy + 1; y >= cy - 10; y--) years.push(y);
+  let html = `<div class="card"><div class="card-b">
+    <div class="field" style="margin:0"><label for="upFile">Machine export (.xls or .xlsx)</label><input class="inp" type="file" id="upFile" accept=".xls,.xlsx,.csv"></div>
+    <div class="hint" style="margin-top:8px">${I.info}<span>Every date column carries its own day and month, so you do not pick dates. Days that are already in the system are skipped, so overlapping exports are safe.</span></div></div></div>`;
+  if (u.busy) html += `<div class="small muted" style="padding:14px">Reading the file...</div>`;
+  if (u.error) html += `<div class="card" style="margin-top:14px"><div class="card-b" style="color:var(--danger)">${esc(u.error)}</div></div>`;
+  if (g && !u.busy && u.days.length) {
+    html += `<div class="card" style="margin-top:14px"><div class="card-h row between"><div><h3>${esc(u.name)}</h3>
+      <div class="sub">${u.days.length} ${u.days.length === 1 ? 'day' : 'days'} found, ${esc(fmtDayShort(u.days[0].date))} to ${esc(fmtDayShort(u.days[u.days.length - 1].date))} - ${g.people.length} people - ${u.punches.length} punches</div></div>
+      <div class="field" style="margin:0"><label for="upYear" class="tiny">Year of the first column</label><select class="inp" id="upYear" style="width:auto">${years.map(y => `<option ${y === u.year ? 'selected' : ''}>${y}</option>`).join('')}</select></div></div>
+      ${u.verified ? '' : `<div class="card-b" style="color:var(--warn)">The weekday labels in the file do not match ${u.year}. Check the year before importing.</div>`}
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>People</th><th>Punches</th><th>Status</th><th>Replace?</th></tr></thead>
+      <tbody>${u.days.map(d => { const en = u.entered.has(d.date); return `<tr><td data-label="Date" class="strong">${esc(fmtDay(d.date))}</td><td data-label="People" class="tnum">${d.people}</td><td data-label="Punches" class="tnum">${d.punches}</td>
+        <td data-label="Status">${en ? (u.replace.has(d.date) ? '<span class="badge b-warn">Will replace</span>' : '<span class="badge b-slate">Already entered - skipped</span>') : '<span class="badge b-ok">New</span>'}</td>
+        <td data-label="Replace?">${en ? `<label class="row" style="gap:6px;margin:0;font-weight:500"><input type="checkbox" data-rep="${d.date}" ${u.replace.has(d.date) ? 'checked' : ''}> replace this day</label>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
+      ${unknown.length ? `<div class="card-b small" style="border-top:1px solid var(--line-2)"><span class="strong">${unknown.length} ID${unknown.length === 1 ? '' : 's'} in the file ${unknown.length === 1 ? 'is' : 'are'} not in the employee list</span> and will be ignored: <span class="mono">${esc(unknown.slice(0, 12).join(', '))}${unknown.length > 12 ? ' ...' : ''}</span></div>` : ''}
+      <div class="card-b row between" style="border-top:1px solid var(--line-2);flex-wrap:wrap;gap:10px"><div class="small muted">${todo.length ? todo.length + ' ' + (todo.length === 1 ? 'day' : 'days') + ' will be imported.' : 'Every day in this file is already entered.'}</div>
+        <button class="btn btn-primary" id="upGo" ${todo.length ? '' : 'disabled'}>${I.check} Import ${todo.length || ''} ${todo.length === 1 ? 'day' : 'days'}</button></div></div>`;
+  }
+  if (u.result) {
+    const r = u.result;
+    html += `<div class="card" style="margin-top:14px"><div class="card-b">${r.nothing_new ? `<div class="strong">Nothing new to import</div><div class="small muted">All ${r.days_skipped} days in the file were already entered.</div>`
+      : `<div class="strong" style="color:var(--ok)">Imported ${r.days_imported} ${r.days_imported === 1 ? 'day' : 'days'}</div>
+         <div class="small">${r.punches_saved} punches saved${r.days_skipped ? ', ' + r.days_skipped + ' ' + (r.days_skipped === 1 ? 'day' : 'days') + ' skipped (already entered)' : ''}${r.days_replaced ? ', ' + r.days_replaced + ' replaced' : ''}${(r.unmatched || []).length ? ', ' + r.unmatched.length + ' unknown IDs ignored' : ''}.</div>`}
+      <div style="margin-top:12px"><a class="btn btn-ghost btn-sm" href="#/attendance">View attendance</a></div></div></div>`;
+  }
+  body.innerHTML = html;
+  const f = $('#upFile'); f.onchange = () => { if (f.files[0]) attChooseFile(f.files[0]); };
+  const y = $('#upYear'); if (y) y.onchange = e => { attUp.year = +e.target.value; attRefreshUpload(); };
+  $$('[data-rep]').forEach(c => c.onchange = () => { c.checked ? attUp.replace.add(c.dataset.rep) : attUp.replace.delete(c.dataset.rep); paintAttUpload(); });
+  const go1 = $('#upGo'); if (go1) go1.onclick = attImport;
+}
+async function attImport(){
+  const u = attUp, take = new Set(u.days.filter(d => !u.entered.has(d.date) || u.replace.has(d.date)).map(d => d.date));
+  const punches = u.punches.filter(p => take.has(p.d));
+  if (!punches.length) return;
+  const ok = await confirmDialog('Import attendance', `Import <strong>${take.size}</strong> ${take.size === 1 ? 'day' : 'days'} (${punches.length} punches)?` + (u.replace.size ? ' Days marked "replace" are overwritten.' : ''), 'Import');
+  if (!ok) return;
+  const btn = $('#upGo'); if (btn) btn.disabled = true;
+  try {
+    const res = await api('/webhook/employees/api/attendance/import', { method:'POST', body:{ file:u.name, punches, replace:[...u.replace] } });
+    u.result = res; att.data = null; att.key = '';
+    u.grid = null; u.days = []; u.punches = []; u.entered = new Set(); u.replace = new Set(); u.error = '';
+    toast('Attendance imported', res.days_imported + ' ' + (res.days_imported === 1 ? 'day' : 'days') + ' saved.', 'ok');
+  } catch (err) { u.error = err.message; }
+  paintAttUpload();
+}
+
+route('/attendance', () => viewAttendance('overview'));
+route('/attendance/daily', () => viewAttendance('daily'));
+route('/attendance/people', () => viewAttendance('people'));
+route('/attendance/upload', () => viewAttendance('upload'));
+route('/attendance/history', () => viewAttendance('history'));
+route('/attendance/settings', () => viewAttendance('settings'));
 
 async function handleExportClick(btn){
   btn.disabled = true;
