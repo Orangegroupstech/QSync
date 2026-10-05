@@ -350,7 +350,7 @@ window.addEventListener('hashchange', render);
 /* ============================================================
    People (User Management) - admins only
    ============================================================ */
-const CONSOLES = [ { key:'employees', label:'Employees' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' } ];
+const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' } ];
 const SIGNOFFS = [ { key:'signoff.production', label:'Production' }, { key:'signoff.ipqa', label:'IPQA' },
                    { key:'signoff.qa_supervisor', label:'QA Supervisor' }, { key:'signoff.qc_supervisor', label:'QC Supervisor' } ];
 const scopeLabel = k => (CONSOLES.concat(SIGNOFFS).find(x => x.key === k) || { label: k }).label;

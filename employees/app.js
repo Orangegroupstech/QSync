@@ -36,6 +36,10 @@ const $  = (s, r) => (r||document).querySelector(s);
 const $$ = (s, r) => Array.from((r||document).querySelectorAll(s));
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms||220); }; }
+function properName(v){
+  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase()
+    .replace(/(^|[\s\-.(])([a-z\u00e0-\u00ff])/g, (m, a, b) => a + b.toUpperCase());
+}
 function initials(name){ return String(name||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase(); }
 function avatarColor(seed){
   const palette = ['#ED6B1F','#1F5C3D','#1B5FBF','#8B5CF6','#B3261E','#0E7490','#B45309','#4B5563','#BE185D','#15803D'];
@@ -249,7 +253,7 @@ function renderShell(inner, meta){
         <button class="btn-icon hide-lg" style="color:var(--nav-text-dim)" onclick="document.body.classList.remove('nav-open')" aria-label="Close menu">${I.x}</button>
       </div>
       <div style="padding:0 16px 10px">
-        <div style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.02em">Employees</div>
+        <div style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.02em">Human Resource</div>
       </div>
       <div class="sidebar-scroll">${navHtml}</div>
       <div class="sidebar-foot">
@@ -310,16 +314,17 @@ async function bootstrap(){
     api('/webhook/employees/api/list'),
     api('/webhook/employees/api/departments').catch(() => ({ departments: [] })),
   ]);
-  S = { me: meFromAuth(auth, 'employees'), employees: data.employees, departments: dep.departments || [] };
+  S = { me: meFromAuth(auth, 'employees'), employees: (data.employees || []).map(e => Object.assign(e, { name: properName(e.name) })), departments: dep.departments || [] };
   resetIdleTimer();
 }
 function loadError(err){
   return `<div style="max-width:480px;margin:80px auto;padding:0 16px;text-align:center;font-family:var(--font,system-ui,sans-serif)">
-    <h2 style="color:#B3261E">Could not load Employees</h2>
+    <h2 style="color:#B3261E">Could not load Human Resource</h2>
     <p style="color:#565E6B;font-size:13.5px">${esc(err.message)}</p>
     <button class="btn btn-primary" onclick="location.reload()">Retry</button>
   </div>`;
 }
+let lastRenderPath = null;
 function render(){
   const app = document.getElementById('app');
   try {
@@ -330,6 +335,7 @@ function render(){
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
     }
+    const keepY = window.scrollY;
     let out;
     try { out = m.handler(m.params); }
     catch (err){
@@ -341,7 +347,7 @@ function render(){
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
-    window.scrollTo({ top:0 });
+    window.scrollTo({ top: lastRenderPath === path ? keepY : 0 }); lastRenderPath = path;
   } catch (err) {
     console.error(err);
     app.innerHTML = fatalErrorHtml(err);
@@ -650,6 +656,9 @@ async function downloadSkillCard(e){
 let employeeQuery = '';
 let employeeTypeFilter = '';
 let employeeStatusFilter = 'active';
+let employeeDeptFilter = '';
+let employeeGenderFilter = '';
+let employeeSearchActive = false;
 
 function matchesEmployeeQuery(e, q){
   if (!q) return true;
@@ -664,19 +673,23 @@ function matchesEmployeeQuery(e, q){
 let expandedEnrollId = null;
 let expandedMode = 'view';
 
+function showEmployeeRow(enrollId){      // keep the opened row on screen without jumping to the top
+  const r = document.querySelector('tr[data-eid="' + String(enrollId).replace(/"/g, '') + '"]');
+  if (r) r.scrollIntoView({ block:'nearest' });
+}
 function toggleEmployeeRow(enrollId){
   expandedEnrollId = (expandedEnrollId === enrollId) ? null : enrollId;
   expandedMode = 'view';
-  render();
+  render(); if (expandedEnrollId) showEmployeeRow(enrollId);
 }
 function startEditingEmployee(enrollId){
   expandedEnrollId = enrollId;
   expandedMode = 'edit';
-  render();
+  render(); showEmployeeRow(enrollId);
 }
 function cancelEditingEmployee(enrollId){
   expandedMode = 'view';
-  render();
+  render(); showEmployeeRow(enrollId);
 }
 
 function renderEmployeeExpanded(e, canEdit){
@@ -754,7 +767,11 @@ function viewEmployees(){
   const q = employeeQuery.trim().toLowerCase();
   const rows = S.employees.filter(e =>
     (!employeeTypeFilter || e.employment_type === employeeTypeFilter) &&
-    (employeeStatusFilter === 'all' || (e.status || 'active') === employeeStatusFilter) && matchesEmployeeQuery(e, q));
+    (employeeStatusFilter === 'all' || (e.status || 'active') === employeeStatusFilter) &&
+    (!employeeDeptFilter || (employeeDeptFilter === '__none' ? !e.department : e.department === employeeDeptFilter)) &&
+    (!employeeGenderFilter || (e.gender || '') === employeeGenderFilter) && matchesEmployeeQuery(e, q));
+  const depts = [...new Set([...(S.departments || []), ...S.employees.map(e => e.department).filter(Boolean)])].sort();
+  const filtering = !!(q || employeeTypeFilter || employeeDeptFilter || employeeGenderFilter || employeeStatusFilter !== 'active');
   const canEdit = S.me.permission === 'editor';
   const cols = canEdit ? 9 : 8;
 
@@ -764,22 +781,34 @@ function viewEmployees(){
     ${pageHead('Employees', 'Every casual and staff member currently on record.',
       `<button class="btn btn-ghost" onclick="handleExportClick(this)">${I.download} Export CSV</button>` +
       (canEdit ? `<button class="btn btn-primary" onclick="openAddEmployee()">${I.plus} Add employee</button>` : ''))}
-    <div class="row filter-bar" style="margin-bottom:14px">
+    <div class="row filter-bar compact" style="margin-bottom:12px">
       <div class="search filter-search">
         <span class="ic">${I.search}</span>
-        <input class="inp" id="empSearch" placeholder="Search name, enroll ID, role, department, workstation..." value="${esc(employeeQuery)}">
+        <input class="inp" id="empSearch" placeholder="Search name, ID, role, workstation..." value="${esc(employeeQuery)}">
       </div>
-      <select class="inp filter-sel-status" id="empTypeFilter">
-        <option value="">All employment types</option>
+      <select class="inp" id="empDeptFilter" aria-label="Department">
+        <option value="">All departments</option>
+        ${depts.map(d => `<option value="${esc(d)}" ${employeeDeptFilter===d?'selected':''}>${esc(d)}</option>`).join('')}
+        <option value="__none" ${employeeDeptFilter==='__none'?'selected':''}>No department</option>
+      </select>
+      <select class="inp" id="empTypeFilter" aria-label="Employment type">
+        <option value="">Staff and casual</option>
         <option value="staff" ${employeeTypeFilter==='staff'?'selected':''}>Staff</option>
         <option value="casual" ${employeeTypeFilter==='casual'?'selected':''}>Casual</option>
       </select>
-      <select class="inp filter-sel-status" id="empStatusFilter">
+      <select class="inp" id="empGenderFilter" aria-label="Gender">
+        <option value="">Any gender</option>
+        <option value="Male" ${employeeGenderFilter==='Male'?'selected':''}>Male</option>
+        <option value="Female" ${employeeGenderFilter==='Female'?'selected':''}>Female</option>
+      </select>
+      <select class="inp" id="empStatusFilter" aria-label="Status">
         <option value="active" ${employeeStatusFilter==='active'?'selected':''}>Active</option>
         <option value="inactive" ${employeeStatusFilter==='inactive'?'selected':''}>Inactive (left)</option>
-        <option value="all" ${employeeStatusFilter==='all'?'selected':''}>All employees</option>
+        <option value="all" ${employeeStatusFilter==='all'?'selected':''}>All</option>
       </select>
+      ${filtering ? `<button class="btn btn-ghost btn-sm" id="empClear">Clear</button>` : ''}
       <div class="spacer"></div>
+      <div class="small muted">${rows.length} ${rows.length === 1 ? 'person' : 'people'}</div>
     </div>
     <div id="bulkBar"></div>
     <div class="card">
@@ -788,7 +817,7 @@ function viewEmployees(){
         <tbody>${rows.length ? rows.map(e => {
           const isExpanded = e.enroll_id === expandedEnrollId;
           const row = `
-          <tr class="clickable" onclick="toggleEmployeeRow('${esc(e.enroll_id)}')">
+          <tr class="clickable" data-eid="${esc(e.enroll_id)}" onclick="toggleEmployeeRow('${esc(e.enroll_id)}')">
             ${canEdit ? `<td onclick="event.stopPropagation()"><input type="checkbox" data-sel="${esc(e.enroll_id)}" ${selectedEmployees.has(e.enroll_id)?'checked':''} aria-label="Select ${esc(e.name)}"></td>` : ''}
             <td class="mono" data-label="Enroll ID">${esc(e.enroll_id)}</td>
             <td data-label="Name"><div class="row" style="gap:10px">${avatarEl(e.name)}<div class="strong">${esc(e.name)}</div></div></td>
@@ -809,11 +838,13 @@ function viewEmployees(){
       </table></div>
     </div>`,
     bind(){
-      $('#empSearch').oninput = debounce((e) => { employeeQuery = e.target.value; render(); }, 200);
-      $('#empSearch').focus();
-      $('#empSearch').setSelectionRange(employeeQuery.length, employeeQuery.length);
+      $('#empSearch').oninput = debounce((e) => { employeeQuery = e.target.value; employeeSearchActive = true; render(); }, 200);
+      if (employeeSearchActive) { employeeSearchActive = false; $('#empSearch').focus({ preventScroll:true }); $('#empSearch').setSelectionRange(employeeQuery.length, employeeQuery.length); }
       $('#empTypeFilter').onchange = (e) => { employeeTypeFilter = e.target.value; render(); };
       $('#empStatusFilter').onchange = (e) => { employeeStatusFilter = e.target.value; render(); };
+      $('#empDeptFilter').onchange = (e) => { employeeDeptFilter = e.target.value; render(); };
+      $('#empGenderFilter').onchange = (e) => { employeeGenderFilter = e.target.value; render(); };
+      const clr = $('#empClear'); if (clr) clr.onclick = () => { employeeQuery = ''; employeeTypeFilter = ''; employeeDeptFilter = ''; employeeGenderFilter = ''; employeeStatusFilter = 'active'; render(); };
 
       if (canEdit) {
         const visible = rows.map(e => e.enroll_id);
@@ -835,6 +866,7 @@ function viewEmployees(){
           ev.preventDefault();
           clearErrors(editForm);
           const payload = readEmployeeForm('ee', editForm);
+          payload.name = properName(payload.name);
           if (!payload.name) return setErr('eeName', 'Enter a name.', editForm);
           const btn = editForm.querySelector('button[type=submit]');
           btn.disabled = true;
@@ -909,29 +941,30 @@ function paintOtList(){
   const rows = filteredOvertime(), canEdit = S.me.permission === 'editor';
   const live = rows.filter(r => r.status !== 'void');
   const total = live.reduce((t, r) => t + Number(r.hours || 0), 0);
-  const foot = `<div class="small muted" style="padding:12px 4px">${live.length} ${live.length === 1 ? 'entry' : 'entries'}, ${fmtHours(total)} hours in total${rows.length !== live.length ? ' (voided entries not counted)' : ''}.</div>`;
+  const foot = `<div class="small muted" style="padding:12px 14px">${live.length} ${live.length === 1 ? 'entry' : 'entries'}, ${fmtHours(total)} hours in total${rows.length !== live.length ? ' (voided entries not counted)' : ''}.</div>`;
   if (!rows.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No overtime recorded in this period.</div>`; return; }
   if (s.mode === 'overview') {
     const people = new Set(live.map(r => r.enroll_id)).size;
     const group = (keyFn) => { const g = new Map(); live.forEach(r => { const k = keyFn(r) || 'No department'; if (!g.has(k)) g.set(k, { key:k, hours:0, entries:0, people:new Set() }); const x = g.get(k); x.hours += Number(r.hours || 0); x.entries++; x.people.add(r.enroll_id); }); return [...g.values()]; };
     const depts = group(r => r.department).sort((a, b) => b.hours - a.hours);
-    const dayRows = group(r => String(r.work_date).slice(0, 10)).sort((a, b) => a.key < b.key ? 1 : -1);
-    const top = group(r => r.enroll_id); const nameOf = new Map(live.map(r => [r.enroll_id, r.name]));
-    const topPeople = top.sort((a, b) => b.hours - a.hours).slice(0, 10);
-    const maxD = depts.length ? depts[0].hours || 1 : 1, maxDay = Math.max(1, ...dayRows.map(x => x.hours));
+    const weekOf = iso => { const d = new Date(String(iso).slice(0, 10) + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+    const weeks = group(r => weekOf(r.work_date)).sort((a, b) => a.key < b.key ? 1 : -1);
+    const nameOf = new Map(live.map(r => [r.enroll_id, r.name]));
+    const topPeople = group(r => r.enroll_id).sort((a, b) => b.hours - a.hours).slice(0, 10);
+    const maxD = depts[0].hours || 1, maxW = Math.max(1, ...weeks.map(x => x.hours)), maxP = topPeople[0].hours || 1;
+    const bar = (label, right, pct) => `<div><div class="row between small"><span class="strong">${esc(label)}</span><span class="muted">${right}</span></div><div class="bar" style="margin-top:4px"><i style="width:${pct}%"></i></div></div>`;
     box.innerHTML = `<div class="card-b">
-      <div class="grid g4" style="margin-bottom:16px">
-        ${statCard('Entries', live.length, 'one per person per day', 'layers', 'brand')}
-        ${statCard('People', people, 'with overtime in this period', 'users', 'ok')}
-        ${statCard('Total hours', fmtHours(total), 'voided entries not counted', 'clock', 'warn')}
-        ${statCard('Avg per entry', fmtHours(live.length ? total / live.length : 0), 'hours', 'activity', 'info')}
+      <div class="grid g3" style="margin-bottom:18px">
+        ${statCard('Total hours', fmtHours(total), live.length + ' ' + (live.length === 1 ? 'entry' : 'entries') + ' in this period', 'clock', 'brand')}
+        ${statCard('People', people, 'worked overtime', 'users', 'ok')}
+        ${statCard('Average per person', fmtHours(people ? total / people : 0), 'hours in this period', 'activity', 'info')}
       </div>
       <div class="grid g2">
-        <div><div class="strong" style="margin-bottom:8px">Hours by department</div><div class="stack" style="gap:11px">${depts.map(x => `<div><div class="row between small"><span class="strong">${esc(x.key)}</span><span class="muted">${fmtHours(x.hours)} h - ${x.people.size} ${x.people.size === 1 ? 'person' : 'people'}</span></div><div class="bar" style="margin-top:4px"><i style="width:${Math.round(x.hours / maxD * 100)}%"></i></div></div>`).join('')}</div></div>
-        <div><div class="strong" style="margin-bottom:8px">Top 10 people</div><div class="stack" style="gap:11px">${topPeople.map(x => `<div><div class="row between small"><span class="strong">${esc(nameOf.get(x.key) || x.key)}</span><span class="muted">${fmtHours(x.hours)} h - ${x.entries} ${x.entries === 1 ? 'day' : 'days'}</span></div><div class="bar" style="margin-top:4px"><i style="width:${Math.round(x.hours / (topPeople[0].hours || 1) * 100)}%"></i></div></div>`).join('')}</div></div>
+        <div><div class="strong" style="margin-bottom:8px">Hours by department</div><div class="stack" style="gap:11px">${depts.map(x => bar(x.key, fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people') + ' - ' + fmtHours(x.hours / x.people.size) + ' h each', Math.round(x.hours / maxD * 100))).join('')}</div></div>
+        <div><div class="strong" style="margin-bottom:8px">Most overtime</div><div class="stack" style="gap:11px">${topPeople.map(x => bar(nameOf.get(x.key) || x.key, fmtHours(x.hours) + ' h - ' + x.entries + ' ' + (x.entries === 1 ? 'day' : 'days'), Math.round(x.hours / maxP * 100))).join('')}</div></div>
       </div>
-      <div class="strong" style="margin:18px 0 8px">Hours by day</div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>People</th><th>Hours</th><th style="width:40%"></th></tr></thead><tbody>${dayRows.map(x => `<tr><td data-label="Date">${esc(fmtDayShort(x.key))}</td><td data-label="People" class="tnum">${x.people.size}</td><td data-label="Hours" class="tnum strong">${fmtHours(x.hours)}</td><td><div class="bar"><i style="width:${Math.round(x.hours / maxDay * 100)}%"></i></div></td></tr>`).join('')}</tbody></table></div></div>`;
+      <div class="strong" style="margin:20px 0 8px">Hours by week</div>
+      <div class="stack" style="gap:11px">${weeks.map(x => bar('Week of ' + fmtDayShort(x.key), fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people'), Math.round(x.hours / maxW * 100))).join('')}</div></div>`;
     return;
   }
   if (s.mode === 'totals') {
@@ -956,7 +989,7 @@ async function loadOtList(){
   otListState.records = null; paintOtList();
   try {
     const res = await api('/webhook/employees/api/overtime?from=' + encodeURIComponent(otListState.from) + '&to=' + encodeURIComponent(otListState.to));
-    otListState.records = res.records || [];
+    otListState.records = (res.records || []).map(r => Object.assign(r, { name: properName(r.name) }));
   } catch (err) { toast('Could not load overtime', err.message, 'err'); otListState.records = []; }
   const sel = $('#olDept');
   if (sel) {
@@ -976,14 +1009,14 @@ function viewOvertimeList(){
   const s = otListState;
   return {
     title:'Overtime', crumb:'Attendance',
-    html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, every entry, and totals by person.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
+    html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, totals by person, and every entry.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
       <div class="row filter-bar" style="margin-bottom:14px">
         ${periodFields(s, 'ol')}
         <div class="field" style="margin:0"><label for="olDept">Department</label><select class="inp" id="olDept"><option value="">All departments</option></select></div>
         <div class="field" style="margin:0"><label for="olQ">Person</label><input class="inp" id="olQ" placeholder="Search name or ID" value="${esc(s.q)}"></div>
         <label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>
       </div>
-      <div class="tabs"><div class="tab ${s.mode==='overview'?'on':''}" data-mode="overview">Overview</div><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">By person</div></div>
+      <div class="tabs"><div class="tab ${s.mode==='overview'?'on':''}" data-mode="overview">Overview</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">By person</div><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div></div>
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
       bindPeriodFields(otListState, 'ol', loadOtList);
@@ -1114,7 +1147,7 @@ async function attEnsure(){
 /* ---- the numbers ---- */
 function attCompute(){
   const d = att.data, lateM = attMins(d.late_after || LATE_DEFAULT);
-  const days = (d.days || []).map(x => String(x.date).slice(0, 10)).filter(x => x >= att.from && x <= att.to).sort();
+  const days = (d.days || []).map(x => String(x.date).slice(0, 10)).filter(x => x >= att.from && x <= att.to && isWorkDay(x)).sort();   // weekends count as overtime, not attendance
   const idx = new Map();
   (d.rows || []).forEach(r => { let m = idx.get(r[0]); if (!m) idx.set(r[0], m = new Map()); m.set(String(r[1]).slice(0, 10), { i:r[2], o:r[3], n:Number(r[4]) }); });
   const q = att.q.trim().toLowerCase();
@@ -1136,10 +1169,10 @@ function attCompute(){
       let i = p.i, o = p.o, missing = null;
       if (p.n <= 1) { if (attMins(p.i) < 720) { o = null; missing = 'out'; } else { i = null; o = p.i; missing = 'in'; } }
       const lateMin = i ? Math.max(0, attMins(i) - lateM) : 0;
-      recs.push({ e, day, i, o, missing, lateMin, late: lateMin > 0, hours: (i && o) ? (attMins(o) - attMins(i)) / 60 : null, present:true });
+      recs.push({ e, day, i, o, missing, lateMin, late: lateMin > 0, present:true });
     });
   });
-  const byEmp = new Map(emps.map(e => [e.enroll_id, { e, present:0, late:0, absent:0, missing:0, arrSum:0, arrN:0, lateSum:0, hours:0 }]));
+  const byEmp = new Map(emps.map(e => [e.enroll_id, { e, present:0, late:0, absent:0, missing:0, arrSum:0, arrN:0, lateSum:0 }]));
   const byDay = new Map(days.map(day => [day, { day, present:0, late:0, absent:0, missing:0, expected:0 }]));
   recs.forEach(r => {
     const a = byEmp.get(r.e.enroll_id), dd = byDay.get(r.day);
@@ -1148,18 +1181,16 @@ function attCompute(){
     if (r.i) { a.arrSum += attMins(r.i); a.arrN++; }
     if (r.late) { a.late++; dd.late++; a.lateSum += r.lateMin; }
     if (r.missing) { a.missing++; dd.missing++; }
-    if (r.hours) a.hours += r.hours;
   });
   const dayList = days.map(day => byDay.get(day));
-  const wk = dayList.filter(x => isWorkDay(x.day));
-  const base = wk.length ? wk : dayList;
+  const base = dayList;
   const sum = (arr, k) => arr.reduce((t, x) => t + x[k], 0);
   const people = [...byEmp.values()];
   const arrN = sum(people, 'arrN');
   return {
     late: d.late_after || LATE_DEFAULT, days, recs, people, dayList, emps,
-    workingDays: wk.length, avgPresent: base.length ? sum(base, 'present') / base.length : 0, avgExpected: base.length ? sum(base, 'expected') / base.length : 0,
-    lateTotal: sum(people, 'late'), absentTotal: sum(people, 'absent'), missingTotal: sum(people, 'missing'),
+    workingDays: dayList.length, avgPresent: base.length ? sum(base, 'present') / base.length : 0, avgExpected: base.length ? sum(base, 'expected') / base.length : 0,
+    lateTotal: sum(people, 'late'), latePeople: people.filter(p => p.late > 0).length, absentTotal: sum(people, 'absent'), absentPeople: people.filter(p => p.absent > 0).length, missingTotal: sum(people, 'missing'),
     lateRate: arrN ? sum(people, 'late') / arrN : 0,
   };
 }
@@ -1171,9 +1202,7 @@ function attGroup(people, keyFn){
 
 /* ---- page frame ---- */
 function attTabs(tab){
-  const canEdit = S.me.permission === 'editor';
-  const tabs = [['overview', 'Overview', '/attendance'], ['daily', 'Daily', '/attendance/daily'], ['people', 'By person', '/attendance/people']]
-    .concat(canEdit ? [['upload', 'Upload', '/attendance/upload']] : []).concat([['history', 'History', '/attendance/history'], ['settings', 'Settings', '/attendance/settings']]);
+  const tabs = [['overview', 'Overview', '/attendance'], ['daily', 'Daily', '/attendance/daily'], ['people', 'By person', '/attendance/people'], ['setup', 'Upload & settings', '/attendance/upload']];
   return `<div class="tabs">${tabs.map(([k, l, p]) => `<a class="tab ${tab === k ? 'on' : ''}" href="#${p}" style="text-decoration:none">${l}</a>`).join('')}</div>`;
 }
 function attFilterBar(withQ){
@@ -1187,7 +1216,7 @@ function viewAttendance(tab){
   const filtered = ['overview', 'daily', 'people'].includes(tab);
   return {
     title:'Attendance', crumb:'Attendance',
-    html: `${pageHead('Attendance', 'Daily register, lateness and absences from the attendance machine export.')}${attTabs(tab)}${filtered ? attFilterBar(tab !== 'overview') : ''}
+    html: `${pageHead('Attendance', 'Weekday attendance, lateness and absences from the attendance machine export. Weekends count as overtime.')}${attTabs(tab)}${filtered ? attFilterBar(tab !== 'overview') : ''}
       <div id="attBody"><div class="small muted" style="padding:14px">Loading...</div></div>`,
     bind(){
       if (filtered) {
@@ -1202,15 +1231,19 @@ function viewAttendance(tab){
   };
 }
 async function attLoad(tab){
-  if (tab === 'upload') return paintAttUpload();
-  if (tab === 'history') return loadAttHistory();
+  if (tab === 'setup') {
+    if (!$('#attBody')) return;
+    $('#attBody').innerHTML = `<div id="attUp"></div><div id="attSet" style="margin-top:18px"></div><div id="attHist" style="margin-top:18px"></div>`;
+    paintAttUpload(); loadAttHistory();
+    try { await attEnsure(); } catch (e) { /* settings fall back to the default time */ }
+    return paintAttSettings($('#attSet'));
+  }
   const body = $('#attBody'); if (body) body.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
   try { await attEnsure(); } catch (err) { if ($('#attBody')) $('#attBody').innerHTML = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load attendance', esc(err.message))}</div></div>`; return; }
   paintAtt(tab);
 }
 function paintAtt(tab){
   const body = $('#attBody'); if (!body || att.tab !== tab || !att.data) return;
-  if (tab === 'settings') return paintAttSettings(body);
   const c = attCompute();
   if (!c.days.length) {
     body.innerHTML = `<div class="card"><div class="card-b">${emptyState('clock', 'No attendance in this period', 'Nothing has been uploaded for these dates yet. Pick another period' + (S.me.permission === 'editor' ? ' or upload the machine export.' : '.'),
@@ -1225,35 +1258,36 @@ const pctTxt = n => (Math.round(n * 1000) / 10) + '%';
 
 /* ---- Overview ---- */
 function paintAttOverview(body, c){
-  const wkNote = c.dayList.length !== c.workingDays ? ` (${c.dayList.length} days with data, ${c.dayList.length - c.workingDays} on a weekend)` : '';
-  const typeRows = attGroup(c.people, e => e.employment_type === 'casual' ? 'Casual' : 'Staff');
   const depRows = attGroup(c.people, e => e.department).sort((a, b) => b.n - a.n);
   const topLate = c.people.filter(p => p.late > 0).sort((a, b) => b.late - a.late || b.lateSum - a.lateSum).slice(0, 10);
-  const wd = c.workingDays || c.dayList.length || 1;
-  const rowStats = x => `<td class="tnum">${fmtHours(x.present / wd)}</td><td class="tnum">${x.late}</td><td class="tnum">${x.absent}</td><td class="tnum">${x.arrN ? pctTxt(x.late / x.arrN) : '--'}</td>`;
+  const minDays = Math.min(3, c.dayList.length);
+  const topEarly = c.people.filter(p => p.arrN >= minDays && p.arrN > 0).sort((a, b) => a.arrSum / a.arrN - b.arrSum / b.arrN || b.arrN - a.arrN).slice(0, 10);
+  const wd = c.workingDays || 1;
   body.innerHTML = `
     <div class="grid g4" style="margin-bottom:16px">
-      ${statCard('Working days', c.workingDays, 'with attendance uploaded' + (c.dayList.length !== c.workingDays ? ' (+' + (c.dayList.length - c.workingDays) + ' weekend)' : ''), 'clock', 'brand')}
-      ${statCard('Avg present per day', fmtHours(c.avgPresent), 'of ' + fmtHours(c.avgExpected) + ' expected', 'users', 'ok')}
-      ${statCard('Late arrivals', c.lateTotal, 'first punch after ' + c.late + ' - ' + pctTxt(c.lateRate) + ' of arrivals', 'alert', 'warn')}
-      ${statCard('Absences', c.absentTotal, c.missingTotal + ' day' + (c.missingTotal === 1 ? '' : 's') + ' with a missing punch', 'x', 'danger')}
+      ${statCard('Working days', c.workingDays, 'weekdays with attendance uploaded', 'clock', 'brand')}
+      ${statCard('Avg present per day', fmtHours(c.avgPresent), 'of ' + fmtHours(c.avgExpected) + ' on the payroll', 'users', 'ok')}
+      ${statCard('Late arrivals', c.lateTotal, 'first punch after ' + c.late + ' - ' + c.latePeople + ' ' + (c.latePeople === 1 ? 'person' : 'people'), 'alert', 'warn')}
+      ${statCard('People absent', c.absentPeople, c.absentTotal + ' absent ' + (c.absentTotal === 1 ? 'day' : 'days') + ' in total', 'x', 'danger')}
     </div>
-    <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>By day</h3><div class="sub">Click a day to open its register${esc(wkNote)}</div></div></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>By day</h3><div class="sub">Click a day to open its register</div></div></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Present</th><th>Late</th><th>Absent</th><th>No out/in punch</th><th style="width:28%">Attendance</th></tr></thead>
       <tbody>${c.dayList.map(x => `<tr class="clickable" onclick="attGoDay('${x.day}')"><td data-label="Date" class="strong">${esc(fmtDayShort(x.day))}</td><td data-label="Present" class="tnum">${x.present}</td>
         <td data-label="Late" class="tnum">${x.late}</td><td data-label="Absent" class="tnum">${x.absent}</td><td data-label="Missing punch" class="tnum">${x.missing}</td>
-        <td data-label="Attendance">${x.expected ? `<div class="bar ${x.present / x.expected < 0.8 ? 'warn' : 'ok'}"><i style="width:${Math.min(100, Math.round(x.present / x.expected * 100))}%"></i></div>` : '<span class="small muted">Weekend</span>'}</td></tr>`).join('')}</tbody></table></div></div>
+        <td data-label="Attendance">${x.expected ? `<div class="bar ${x.present / x.expected < 0.8 ? 'warn' : 'ok'}"><i style="width:${Math.min(100, Math.round(x.present / x.expected * 100))}%"></i></div>` : ''}</td></tr>`).join('')}</tbody></table></div></div>
     <div class="grid g2" style="margin-bottom:16px">
-      <div class="card"><div class="card-h"><h3>Staff and casual</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Type</th><th>Avg/day</th><th>Late</th><th>Absent</th><th>Late rate</th></tr></thead>
-        <tbody>${typeRows.map(x => `<tr><td data-label="Type" class="strong">${esc(x.key)} <span class="small muted">(${x.n})</span></td>${rowStats(x)}</tr>`).join('')}</tbody></table></div></div>
       <div class="card"><div class="card-h"><h3>Most late</h3><div class="sub">Days arriving after ${esc(c.late)}</div></div>
         ${topLate.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Late days</th><th>Avg late</th></tr></thead>
         <tbody>${topLate.map(p => `<tr><td data-label="Name"><div class="strong">${esc(p.e.name)}</div><div class="tiny muted">${esc(p.e.department || '--')}</div></td><td data-label="Late days" class="tnum strong">${p.late}</td><td data-label="Avg late" class="tnum">${Math.round(p.lateSum / p.late)} min</td></tr>`).join('')}</tbody></table></div>`
         : `<div class="card-b small muted">Nobody was late in this period.</div>`}</div>
+      <div class="card"><div class="card-h"><h3>Most early</h3><div class="sub">Earliest average first punch</div></div>
+        ${topEarly.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Avg arrival</th><th>Days</th></tr></thead>
+        <tbody>${topEarly.map(p => `<tr><td data-label="Name"><div class="strong">${esc(p.e.name)}</div><div class="tiny muted">${esc(p.e.department || '--')}</div></td><td data-label="Avg arrival" class="tnum strong">${attHHMM(p.arrSum / p.arrN)}</td><td data-label="Days" class="tnum">${p.arrN}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="card-b small muted">Not enough days to rank in this period.</div>`}</div>
     </div>
     <div class="card"><div class="card-h"><h3>By department</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Department</th><th>People</th><th>Avg/day</th><th>Late</th><th>Absent</th><th>Late rate</th></tr></thead>
-      <tbody>${depRows.map(x => `<tr><td data-label="Department" class="strong">${esc(x.key)}</td><td data-label="People" class="tnum">${x.n}</td>${rowStats(x)}</tr>`).join('')}</tbody></table></div></div>
-    <div class="small muted" style="margin-top:12px">Late = first punch after ${esc(c.late)}. Absent = on the payroll that day (join and left dates respected), Monday to Friday, no punch. Days that have not been uploaded are never counted as absences.</div>`;
+      <tbody>${depRows.map(x => `<tr><td data-label="Department" class="strong">${esc(x.key)}</td><td data-label="People" class="tnum">${x.n}</td><td class="tnum">${fmtHours(x.present / wd)}</td><td class="tnum">${x.late}</td><td class="tnum">${x.absent}</td><td class="tnum">${x.arrN ? pctTxt(x.late / x.arrN) : '--'}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="small muted" style="margin-top:12px">Weekdays only. Late = first punch after ${esc(c.late)}. Absent = on the payroll that day (join and left dates respected) with no punch. Days that have not been uploaded are never counted as absences.</div>`;
 }
 function attGoDay(day){ att.day = day; go('/attendance/daily'); }
 
@@ -1279,11 +1313,11 @@ function paintAttDaily(body, c){
         <select class="inp" id="adDay" style="width:auto">${days.map(d => `<option value="${d}" ${d === att.day ? 'selected' : ''}>${esc(fmtDay(d))}</option>`).join('')}</select>
         <button class="btn btn-ghost btn-sm" id="adNext" ${k <= 0 ? 'disabled' : ''} aria-label="Next day">${I.chevR}</button></div>
       <div class="row" style="gap:6px;flex-wrap:wrap">${chip('all', 'Everyone')}${chip('present', 'Present')}${chip('late', 'Late')}${chip('absent', 'Absent')}${chip('missing', 'Missing a punch')}</div></div>
-    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Type</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th></tr></thead>
+    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Type</th><th>In</th><th>Out</th><th>Status</th></tr></thead>
       <tbody>${show.length ? show.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.e.name)}</div><div class="tiny muted mono">${esc(r.e.enroll_id)}</div></td><td data-label="Department">${esc(r.e.department || '--')}</td>
         <td data-label="Type">${esc(r.e.employment_type === 'casual' ? 'Casual' : 'Staff')}</td><td data-label="In" class="tnum">${esc(r.i || '--')}</td><td data-label="Out" class="tnum">${esc(r.o || '--')}</td>
-        <td data-label="Hours" class="tnum">${r.hours ? fmtHours(r.hours) : '--'}</td><td data-label="Status">${attStatusBadges(r)}</td></tr>`).join('')
-        : `<tr><td colspan="7"><div class="small muted" style="padding:10px">Nobody matches this filter on ${esc(fmtDay(att.day))}.</div></td></tr>`}</tbody></table></div></div>`;
+        <td data-label="Status">${attStatusBadges(r)}</td></tr>`).join('')
+        : `<tr><td colspan="6"><div class="small muted" style="padding:10px">Nobody matches this filter on ${esc(fmtDay(att.day))}.</div></td></tr>`}</tbody></table></div></div>`;
   $('#adDay').onchange = e => { att.day = e.target.value; paintAtt('daily'); };
   $('#adPrev').onclick = () => { att.day = days[k + 1]; paintAtt('daily'); };
   $('#adNext').onclick = () => { att.day = days[k - 1]; paintAtt('daily'); };
@@ -1304,17 +1338,17 @@ function paintAttPeople(body, c){
       <div class="small muted">${rows.length} ${rows.length === 1 ? 'person' : 'people'} over ${c.dayList.length} ${c.dayList.length === 1 ? 'day' : 'days'} of data. Click a name for their day-by-day record.</div>
       <div class="row" style="gap:8px"><select class="inp" id="apSort" style="width:auto"><option value="name">Sort: name</option><option value="late" ${att.sort === 'late' ? 'selected' : ''}>Sort: most late</option><option value="absent" ${att.sort === 'absent' ? 'selected' : ''}>Sort: most absent</option><option value="present" ${att.sort === 'present' ? 'selected' : ''}>Sort: most present</option></select>
       <button class="btn btn-ghost" id="apCsv">${I.download} Export CSV</button></div></div>
-    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days present</th><th>Days late</th><th>Days absent</th><th>Avg arrival</th><th>Total hours</th></tr></thead>
+    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days present</th><th>Days late</th><th>Days absent</th><th>Avg arrival</th></tr></thead>
       <tbody>${rows.map(p => `<tr class="clickable" onclick="openAttPerson('${esc(p.e.enroll_id)}')"><td data-label="Name"><div class="strong">${esc(p.e.name)}</div><div class="tiny muted mono">${esc(p.e.enroll_id)} - ${esc(p.e.employment_type === 'casual' ? 'Casual' : 'Staff')}</div></td>
         <td data-label="Department">${esc(p.e.department || '--')}</td><td data-label="Days present" class="tnum">${p.present}</td><td data-label="Days late" class="tnum ${p.late ? 'strong' : ''}">${p.late}</td>
-        <td data-label="Days absent" class="tnum ${p.absent ? 'strong' : ''}">${p.absent}</td><td data-label="Avg arrival" class="tnum">${p.arrN ? attHHMM(p.arrSum / p.arrN) : '--'}</td><td data-label="Total hours" class="tnum">${p.hours ? fmtHours(p.hours) : '--'}</td></tr>`).join('')}</tbody></table></div></div>`;
+        <td data-label="Days absent" class="tnum ${p.absent ? 'strong' : ''}">${p.absent}</td><td data-label="Avg arrival" class="tnum">${p.arrN ? attHHMM(p.arrSum / p.arrN) : '--'}</td></tr>`).join('')}</tbody></table></div></div>`;
   $('#apSort').onchange = e => { att.sort = e.target.value; paintAtt('people'); };
   $('#apCsv').onclick = () => attPeopleCsv(c);
 }
 function attPeopleCsv(c){
   const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  const lines = [['Enroll ID', 'Name', 'Department', 'Type', 'Days present', 'Days late', 'Days absent', 'Missing punch days', 'Avg arrival', 'Total hours'].join(',')].concat(attPersonRows(c).map(p =>
-    [p.e.enroll_id, p.e.name, p.e.department, p.e.employment_type, p.present, p.late, p.absent, p.missing, p.arrN ? attHHMM(p.arrSum / p.arrN) : '', fmtHours(p.hours)].map(cell).join(',')));
+  const lines = [['Enroll ID', 'Name', 'Department', 'Type', 'Days present', 'Days late', 'Days absent', 'Missing punch days', 'Avg arrival'].join(',')].concat(attPersonRows(c).map(p =>
+    [p.e.enroll_id, p.e.name, p.e.department, p.e.employment_type, p.present, p.late, p.absent, p.missing, p.arrN ? attHHMM(p.arrSum / p.arrN) : ''].map(cell).join(',')));
   download('okl_attendance_' + att.from + '_to_' + att.to + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
 }
 function openAttPerson(id){
@@ -1324,16 +1358,17 @@ function openAttPerson(id){
   openModal({
     title: p.e.name, size:'wide', sub: (p.e.department || 'No department') + ' - ' + att.from + ' to ' + att.to,
     body: `<div class="grid g4" style="margin-bottom:12px">${[['Present', p.present], ['Late', p.late], ['Absent', p.absent], ['Avg arrival', p.arrN ? attHHMM(p.arrSum / p.arrN) : '--']].map(([l, v]) => `<div class="stat"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th></tr></thead>
-      <tbody>${recs.map(r => `<tr><td data-label="Date">${esc(fmtDayShort(r.day))}</td><td data-label="In" class="tnum">${esc(r.i || '--')}</td><td data-label="Out" class="tnum">${esc(r.o || '--')}</td><td data-label="Hours" class="tnum">${r.hours ? fmtHours(r.hours) : '--'}</td><td data-label="Status">${attStatusBadges(r)}</td></tr>`).join('')}</tbody></table></div>`,
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Status</th></tr></thead>
+      <tbody>${recs.map(r => `<tr><td data-label="Date">${esc(fmtDayShort(r.day))}</td><td data-label="In" class="tnum">${esc(r.i || '--')}</td><td data-label="Out" class="tnum">${esc(r.o || '--')}</td><td data-label="Status">${attStatusBadges(r)}</td></tr>`).join('')}</tbody></table></div>`,
     footer: `<button class="btn btn-ghost" data-close>Close</button>`,
   });
 }
 
 /* ---- Settings ---- */
 function paintAttSettings(body){
+  if (!body || att.tab !== 'setup') return;
   const canEdit = S.me.permission === 'editor', late = att.data.late_after || LATE_DEFAULT;
-  body.innerHTML = `<div class="card" style="max-width:520px"><div class="card-h"><h3>Lateness</h3></div><div class="card-b">
+  body.innerHTML = `<div class="card"><div class="card-h"><h3>Lateness</h3></div><div class="card-b">
     <div class="field"><label for="asLate">Late after</label><input class="inp" type="time" id="asLate" value="${esc(late)}" ${canEdit ? '' : 'disabled'}>
       <div class="hint">${I.info}<span>A first punch after this time counts as late; exactly this time is on time. Changing it re-labels every day already uploaded.</span></div>
       <div class="err-msg hide" data-err="asLate"></div></div>
@@ -1351,12 +1386,12 @@ function paintAttSettings(body){
 
 /* ---- History ---- */
 async function loadAttHistory(){
-  const body = $('#attBody'); if (body) body.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
+  const body = $('#attHist'); if (body) body.innerHTML = `<div class="small muted" style="padding:14px">Loading history...</div>`;
   let list = [];
   try { list = (await api('/webhook/employees/api/attendance/imports')).imports || []; }
-  catch (err) { if ($('#attBody')) $('#attBody').innerHTML = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load history', esc(err.message))}</div></div>`; return; }
-  if (!$('#attBody') || att.tab !== 'history') return;
-  $('#attBody').innerHTML = `<div class="card">${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Uploaded</th><th>File</th><th>By</th><th>Period</th><th>Days</th><th>Punches</th><th>Unknown IDs</th></tr></thead>
+  catch (err) { if ($('#attHist')) $('#attHist').innerHTML = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load history', esc(err.message))}</div></div>`; return; }
+  if (!$('#attHist') || att.tab !== 'setup') return;
+  $('#attHist').innerHTML = `<div class="card"><div class="card-h"><h3>Upload history</h3></div>${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Uploaded</th><th>File</th><th>By</th><th>Period</th><th>Days</th><th>Punches</th><th>Unknown IDs</th></tr></thead>
     <tbody>${list.map(i => `<tr><td data-label="Uploaded">${esc(fmtWhen(i.uploaded_at))}</td><td data-label="File" class="small">${esc(i.file_name || '--')}</td><td data-label="By">${esc(i.uploaded_by || '--')}</td>
       <td data-label="Period">${i.first_date ? esc(String(i.first_date).slice(0, 10) + ' to ' + String(i.last_date).slice(0, 10)) : '--'}</td>
       <td data-label="Days">${i.days_imported} imported${i.days_skipped ? ', ' + i.days_skipped + ' skipped' : ''}${i.days_replaced ? ', ' + i.days_replaced + ' replaced' : ''}</td>
@@ -1467,13 +1502,13 @@ async function attChooseFile(file){
   attUp.busy = false; await attRefreshUpload();
 }
 function paintAttUpload(){
-  const body = $('#attBody'); if (!body || att.tab !== 'upload') return;
-  if (S.me.permission !== 'editor') { body.innerHTML = `<div class="card"><div class="card-b">${emptyState('lock', 'View only', 'Only editors can upload attendance.')}</div></div>`; return; }
+  const body = $('#attUp'); if (!body || att.tab !== 'setup') return;
+  if (S.me.permission !== 'editor') { body.innerHTML = ''; return; }
   const u = attUp, known = new Set(S.employees.map(e => e.enroll_id));
   const g = u.grid, unknown = g ? [...new Set(g.people.map(p => p.id).filter(id => !known.has(id)))] : [];
   const todo = u.days.filter(d => !u.entered.has(d.date) || u.replace.has(d.date));
   const years = []; const cy = +todayStr().slice(0, 4); for (let y = cy + 1; y >= cy - 10; y--) years.push(y);
-  let html = `<div class="card"><div class="card-b">
+  let html = `<div class="card"><div class="card-h"><h3>Upload attendance</h3></div><div class="card-b">
     <div class="field" style="margin:0"><label for="upFile">Machine export (.xls or .xlsx)</label><input class="inp" type="file" id="upFile" accept=".xls,.xlsx,.csv"></div>
     <div class="hint" style="margin-top:8px">${I.info}<span>Every date column carries its own day and month, so you do not pick dates. Days that are already in the system are skipped, so overlapping exports are safe.</span></div></div></div>`;
   if (u.busy) html += `<div class="small muted" style="padding:14px">Reading the file...</div>`;
@@ -1523,9 +1558,9 @@ async function attImport(){
 route('/attendance', () => viewAttendance('overview'));
 route('/attendance/daily', () => viewAttendance('daily'));
 route('/attendance/people', () => viewAttendance('people'));
-route('/attendance/upload', () => viewAttendance('upload'));
-route('/attendance/history', () => viewAttendance('history'));
-route('/attendance/settings', () => viewAttendance('settings'));
+route('/attendance/upload', () => viewAttendance('setup'));
+route('/attendance/history', () => viewAttendance('setup'));
+route('/attendance/settings', () => viewAttendance('setup'));
 
 async function handleExportClick(btn){
   btn.disabled = true;
@@ -1632,6 +1667,7 @@ function openAddEmployee(){
       $('[data-save]', w).onclick = async () => {
         const f = $('#addEmployeeForm', w); clearErrors(f);
         const payload = readEmployeeForm('ae', w);
+        payload.name = properName(payload.name);
         if (!payload.enroll_id) return setErr('aeEnrollId', 'Enter an Enroll ID.', f);
         if (!payload.name) return setErr('aeName', 'Enter a name.', f);
         try {
