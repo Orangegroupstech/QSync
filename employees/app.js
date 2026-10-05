@@ -719,12 +719,44 @@ function renderEmployeeExpanded(e, canEdit){
     </div>`;
 }
 
+let selectedEmployees = new Set();
+function paintBulkBar(){
+  const b = $('#bulkBar'); if (!b) return;
+  const n = selectedEmployees.size;
+  if (!n) { b.innerHTML = ''; return; }
+  const opts = `<option value="">No department</option>` + (S.departments || []).map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+  b.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="card-b row between" style="gap:12px;flex-wrap:wrap">
+      <div class="strong">${n} selected</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <select class="inp" id="bulkDept" style="width:auto;min-width:210px"><option value="__pick" disabled selected>Set department to...</option>${opts}</select>
+        <button class="btn btn-primary btn-sm" id="bulkApply">Apply</button>
+        <button class="btn btn-ghost btn-sm" id="bulkClear">Clear selection</button>
+      </div></div></div>`;
+  $('#bulkClear').onclick = () => { selectedEmployees = new Set(); $$('[data-sel]').forEach(c => { c.checked = false; }); const a = $('#empSelAll'); if (a) a.checked = false; paintBulkBar(); };
+  $('#bulkApply').onclick = applyBulkDepartment;
+}
+async function applyBulkDepartment(){
+  const sel = $('#bulkDept');
+  if (!sel || sel.value === '__pick') return toast('Pick a department', 'Choose one from the list first.', 'err');
+  const department = sel.value, ids = [...selectedEmployees];
+  const label = department || 'no department';
+  const ok = await confirmDialog('Set department', `Set <strong>${esc(label)}</strong> for ${ids.length} ${ids.length === 1 ? 'person' : 'people'}?`, 'Apply');
+  if (!ok) return;
+  try {
+    await api('/webhook/employees/api/bulk-department', { method:'POST', body:{ enroll_ids: ids, department } });
+    S.employees.forEach(e => { if (selectedEmployees.has(e.enroll_id)) e.department = department || null; });
+    selectedEmployees = new Set(); render();
+    toast('Department updated', ids.length + ' ' + (ids.length === 1 ? 'person is' : 'people are') + ' now in ' + label + '.', 'ok');
+  } catch (err) { toast('Could not update', err.message, 'err'); }
+}
+
 function viewEmployees(){
   const q = employeeQuery.trim().toLowerCase();
   const rows = S.employees.filter(e =>
     (!employeeTypeFilter || e.employment_type === employeeTypeFilter) &&
     (employeeStatusFilter === 'all' || (e.status || 'active') === employeeStatusFilter) && matchesEmployeeQuery(e, q));
   const canEdit = S.me.permission === 'editor';
+  const cols = canEdit ? 9 : 8;
 
   return {
     title:'Employees', crumb:'People',
@@ -749,13 +781,15 @@ function viewEmployees(){
       </select>
       <div class="spacer"></div>
     </div>
+    <div id="bulkBar"></div>
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>Enroll ID</th><th>Name</th><th>Gender</th><th>Type</th><th>Role</th><th>Department</th><th>Workstation</th><th>Status</th></tr></thead>
+        <thead><tr>${canEdit ? '<th style="width:36px"><input type="checkbox" id="empSelAll" aria-label="Select all shown"></th>' : ''}<th>Enroll ID</th><th>Name</th><th>Gender</th><th>Type</th><th>Role</th><th>Department</th><th>Workstation</th><th>Status</th></tr></thead>
         <tbody>${rows.length ? rows.map(e => {
           const isExpanded = e.enroll_id === expandedEnrollId;
           const row = `
           <tr class="clickable" onclick="toggleEmployeeRow('${esc(e.enroll_id)}')">
+            ${canEdit ? `<td onclick="event.stopPropagation()"><input type="checkbox" data-sel="${esc(e.enroll_id)}" ${selectedEmployees.has(e.enroll_id)?'checked':''} aria-label="Select ${esc(e.name)}"></td>` : ''}
             <td class="mono" data-label="Enroll ID">${esc(e.enroll_id)}</td>
             <td data-label="Name"><div class="row" style="gap:10px">${avatarEl(e.name)}<div class="strong">${esc(e.name)}</div></div></td>
             <td data-label="Gender">${esc(e.gender||'--')}</td>
@@ -766,11 +800,11 @@ function viewEmployees(){
             <td data-label="Status"><span class="badge ${(e.status||'active')==='inactive'?'b-slate':'b-ok'}">${(e.status||'active')==='inactive'?'Inactive':'Active'}</span></td>
           </tr>`;
           const expansion = isExpanded ? `
-          <tr><td colspan="8" style="padding:0;background:var(--surface-2);border-bottom:1px solid var(--line)">
+          <tr><td colspan="${cols}" style="padding:0;background:var(--surface-2);border-bottom:1px solid var(--line)">
             <div style="padding:16px">${renderEmployeeExpanded(e, canEdit)}</div>
           </td></tr>` : '';
           return row + expansion;
-        }).join('') : `<tr><td colspan="8">${emptyState('users','No employees match', 'Try a different search or filter.')}</td></tr>`}
+        }).join('') : `<tr><td colspan="${cols}">${emptyState('users','No employees match', 'Try a different search or filter.')}</td></tr>`}
         </tbody>
       </table></div>
     </div>`,
@@ -780,6 +814,20 @@ function viewEmployees(){
       $('#empSearch').setSelectionRange(employeeQuery.length, employeeQuery.length);
       $('#empTypeFilter').onchange = (e) => { employeeTypeFilter = e.target.value; render(); };
       $('#empStatusFilter').onchange = (e) => { employeeStatusFilter = e.target.value; render(); };
+
+      if (canEdit) {
+        const visible = rows.map(e => e.enroll_id);
+        selectedEmployees = new Set([...selectedEmployees].filter(id => visible.includes(id)));
+        const all = $('#empSelAll');
+        const syncAll = () => { if (all) all.checked = visible.length > 0 && visible.every(id => selectedEmployees.has(id)); };
+        $$('[data-sel]').forEach(c => { c.onchange = () => { c.checked ? selectedEmployees.add(c.dataset.sel) : selectedEmployees.delete(c.dataset.sel); syncAll(); paintBulkBar(); }; });
+        if (all) all.onchange = () => {
+          visible.forEach(id => all.checked ? selectedEmployees.add(id) : selectedEmployees.delete(id));
+          $$('[data-sel]').forEach(c => { c.checked = all.checked; });
+          paintBulkBar();
+        };
+        syncAll(); paintBulkBar();
+      }
 
       const editForm = $('#editEmployeeForm');
       if (editForm) {
@@ -809,119 +857,77 @@ route('/employees', () => viewEmployees());
 
 
 /* ============================================================
-   Attendance: overtime (inside the Employees console)
-   Recording needs edit access to Employees; everyone signed in can read.
+   Attendance: overtime
+   Entries are made on the hosted department form (the same page supervisors use); this console
+   opens it and is where editors review, correct and void what was submitted.
    ============================================================ */
 const todayStr = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
 const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
-let otState = { department:'', date:'', hours:'', people:[], checked:new Set(), q:'', loading:false };
+const fmtHours = n => String(Math.round(Number(n || 0) * 100) / 100);
+const hhmm = t => t ? String(t).slice(0, 5) : '';
+const OVERTIME_FORM_URL = 'https://orangegroupsai.online/webhook/employees/overtime-form';
 
-function renderOtPeople(canEdit){
-  if (!otState.department) return `<div class="small muted" style="padding:14px 0">Choose a department to see its people.</div>`;
-  if (otState.loading) return `<div class="small muted" style="padding:14px 0">Loading...</div>`;
-  const q = otState.q.trim().toLowerCase();
-  const rows = otState.people.filter(p => !q || p.name.toLowerCase().includes(q) || p.enroll_id.toLowerCase().includes(q));
-  if (!otState.people.length) return `<div class="small muted" style="padding:14px 0">Nobody is recorded in this department yet. Set the Department on their employee record first.</div>`;
-  return `
-    <div class="row between" style="margin:10px 0">
-      <div class="search filter-search"><span class="ic">${I.search}</span>
-        <input class="inp" id="otQ" placeholder="Search name or enroll ID" value="${esc(otState.q)}"></div>
-      <div class="row" style="gap:8px">
-        <button class="btn btn-ghost btn-sm" type="button" id="otAll">Tick all shown</button>
-        <button class="btn btn-ghost btn-sm" type="button" id="otNone">Clear</button>
-      </div>
-    </div>
-    <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th style="width:40px"></th><th>Name</th><th>Type</th><th>Already recorded that day</th></tr></thead>
-      <tbody>${rows.map(p => `<tr>
-        <td><input type="checkbox" data-id="${esc(p.enroll_id)}" ${otState.checked.has(p.enroll_id)?'checked':''} ${canEdit?'':'disabled'}></td>
-        <td><div class="strong">${esc(p.name)}</div><div class="tiny muted mono">${esc(p.enroll_id)}</div></td>
-        <td><span class="badge ${p.employment_type==='staff'?'b-brand':'b-slate'}">${esc(p.employment_type)}</span></td>
-        <td>${p.hours!=null ? esc(String(Number(p.hours))) + ' h' : '--'}</td></tr>`).join('') || `<tr><td colspan="4" class="muted" style="padding:14px">No match.</td></tr>`}</tbody>
-    </table></div>
-    <div class="row between" style="margin-top:12px">
-      <div class="small muted">${otState.checked.size} ticked</div>
-      ${canEdit ? `<button class="btn btn-primary" type="button" id="otSave">${I.check} Save overtime</button>` : ''}
-    </div>`;
-}
-async function loadOtPeople(){
-  if (!otState.department){ otState.people = []; otState.checked = new Set(); paintOtPeople(); return; }
-  otState.loading = true; paintOtPeople();
-  try {
-    const res = await api('/webhook/employees/api/overtime/people?department=' + encodeURIComponent(otState.department) + '&date=' + encodeURIComponent(otState.date));
-    otState.people = res.people || [];
-    otState.checked = new Set(otState.people.filter(p => p.hours != null).map(p => p.enroll_id));
-    const first = otState.people.find(p => p.hours != null);
-    if (first && !otState.hours) { otState.hours = String(Number(first.hours)); const h = $('#otHours'); if (h) h.value = otState.hours; }
-  } catch (err) { toast('Could not load people', err.message, 'err'); otState.people = []; }
-  otState.loading = false; paintOtPeople();
-}
-function paintOtPeople(){
-  const box = $('#otPeople'); if (!box) return;
-  const canEdit = S.me.permission === 'editor';
-  box.innerHTML = renderOtPeople(canEdit);
-  const q = $('#otQ'); if (q) q.oninput = () => { otState.q = q.value; const pos = q.selectionStart; paintOtPeople(); const n = $('#otQ'); if (n){ n.focus(); n.setSelectionRange(pos, pos); } };
-  $$('input[data-id]', box).forEach(c => c.onchange = () => { c.checked ? otState.checked.add(c.dataset.id) : otState.checked.delete(c.dataset.id); paintOtPeople(); });
-  const all = $('#otAll'); if (all) all.onclick = () => {
-    const ql = otState.q.trim().toLowerCase();
-    otState.people.filter(p => !ql || p.name.toLowerCase().includes(ql) || p.enroll_id.toLowerCase().includes(ql)).forEach(p => otState.checked.add(p.enroll_id)); paintOtPeople(); };
-  const none = $('#otNone'); if (none) none.onclick = () => { otState.checked = new Set(); paintOtPeople(); };
-  const save = $('#otSave'); if (save) save.onclick = saveOvertime;
-}
-async function saveOvertime(){
-  const hours = Number(otState.hours);
-  if (!otState.department) return toast('Choose a department', '', 'err');
-  if (!otState.date || otState.date > todayStr()) return toast('Check the date', 'Pick today or an earlier date.', 'err');
-  if (!Number.isFinite(hours) || hours < 0.5 || hours > 24 || (hours * 2) % 1 !== 0) return toast('Check the hours', 'Between 0.5 and 24, in steps of 0.5.', 'err');
-  if (!otState.checked.size) return toast('Tick at least one person', '', 'err');
-  const btn = $('#otSave'); if (btn) btn.disabled = true;
-  try {
-    const res = await api('/webhook/employees/api/overtime', { method:'POST', body:{ date: otState.date, department: otState.department, hours, enroll_ids: [...otState.checked] } });
-    toast('Overtime saved', res.saved + ' ' + (res.saved === 1 ? 'person' : 'people') + ' recorded for ' + otState.date + '.', 'ok');
-    await loadOtPeople();
-  } catch (err) { toast('Could not save', err.message, 'err'); if (btn) btn.disabled = false; }
-}
+/* ---- Overtime Submission: department tiles that open the hosted form ---- */
 function viewOvertimeSubmit(){
-  const canEdit = S.me.permission === 'editor';
-  if (!otState.date) otState.date = todayStr();
-  const depOpts = (S.departments || []).map(d => `<option value="${esc(d)}" ${otState.department===d?'selected':''}>${esc(d)}</option>`).join('');
+  const departments = (S.departments || []);
+  const tile = (name) => `
+    <a class="card ot-dept-card" href="${esc(OVERTIME_FORM_URL + '?department=' + encodeURIComponent(name))}" target="_blank" rel="noopener"
+       style="display:block;text-decoration:none;color:inherit">
+      <div class="card-h"><h3>${esc(name)}</h3></div>
+      <div class="card-b">
+        <p class="small muted">Record overtime for ${esc(name)}.</p>
+        <div class="row" style="margin-top:14px;gap:6px;color:var(--brand-600);font-weight:600;font-size:13px">Open form ${I.externalLink}</div>
+      </div>
+    </a>`;
   return {
     title:'Overtime Submission', crumb:'Attendance',
-    html: `${pageHead('Overtime Submission', 'Pick a department and a day, tick the people who worked overtime and enter the hours (the same figure applies to everyone ticked).')}
-      ${canEdit ? '' : `<div class="notice info">${I.info}<div>You have view-only access - recording overtime needs edit access to Employees.</div></div>`}
-      <div class="card"><div class="card-b">
-        <div class="grid g3">
-          <div class="field"><label for="otDept">Department</label>
-            <select class="inp" id="otDept"><option value="">Select...</option>${depOpts}</select></div>
-          <div class="field"><label for="otDate">Date</label>
-            <input class="inp" type="date" id="otDate" max="${todayStr()}" value="${esc(otState.date)}"></div>
-          <div class="field"><label for="otHours">Hours worked</label>
-            <input class="inp" type="number" id="otHours" min="0.5" max="24" step="0.5" value="${esc(otState.hours)}" ${canEdit?'':'disabled'}></div>
-        </div>
-        <div id="otPeople"></div>
-      </div></div>`,
-    bind(){
-      $('#otDept').onchange = e => { otState.department = e.target.value; otState.q = ''; loadOtPeople(); };
-      $('#otDate').onchange = e => { otState.date = e.target.value || todayStr(); loadOtPeople(); };
-      $('#otHours').oninput = e => { otState.hours = e.target.value; };
-      if (otState.department) loadOtPeople(); else paintOtPeople();
-    },
+    html: `
+    <style>.ot-dept-card{transition:.16s ease}.ot-dept-card:hover{border-color:var(--brand);box-shadow:0 8px 24px rgba(16,25,20,.08);transform:translateY(-2px)}</style>
+    ${pageHead('Overtime Submission', 'Pick the department - each opens that department\'s hosted overtime form in a new tab. Supervisors can use the same link directly.')}
+    ${departments.length ? `<div class="grid g3">${departments.map(tile).join('')}</div>`
+      : `<div class="card"><div class="card-b">${emptyState('box', 'No departments yet', 'Departments appear here once they exist.')}</div></div>`}
+    <div class="card" style="margin-top:16px"><div class="card-b small muted">
+      <div class="strong" style="color:var(--text);margin-bottom:4px">Link for supervisors</div>
+      <div class="mono" style="word-break:break-all">${esc(OVERTIME_FORM_URL)}</div></div></div>`,
   };
 }
 route('/overtime/submit', () => viewOvertimeSubmit());
 
-let otListState = { from:'', to:'', department:'', records:null };
+/* ---- Overtime: the log ---- */
+let otListState = { from:'', to:'', department:'', q:'', showVoid:false, mode:'entries', records:null };
+function filteredOvertime(){
+  const s = otListState, q = s.q.trim().toLowerCase();
+  return (s.records || []).filter(r =>
+    (s.showVoid || r.status !== 'void') && (!s.department || r.department === s.department) &&
+    (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q)));
+}
+function otTimes(r){ return r.start_time ? hhmm(r.start_time) + ' - ' + hhmm(r.end_time) : '--'; }
 function paintOtList(){
   const box = $('#otListBody'); if (!box) return;
-  if (!otListState.records) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
-  const rows = otListState.records.filter(r => !otListState.department || r.department === otListState.department);
-  const total = rows.reduce((t, r) => t + Number(r.hours || 0), 0);
-  box.innerHTML = rows.length ? `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Date</th><th>Name</th><th>Department</th><th>Hours</th><th>Recorded by</th></tr></thead>
-      <tbody>${rows.map(r => `<tr><td>${esc(r.work_date)}</td><td><div class="strong">${esc(r.name)}</div></td><td>${esc(r.department||'--')}</td>
-        <td>${esc(String(Number(r.hours)))}</td><td class="small">${esc(r.recorded_by||'--')}</td></tr>`).join('')}</tbody></table></div>
-      <div class="small muted" style="padding:12px 4px">${rows.length} entries, ${total} hours in total.</div>`
-    : `<div class="small muted" style="padding:14px">No overtime recorded in this period.</div>`;
+  const s = otListState;
+  if (!s.records) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
+  const rows = filteredOvertime(), canEdit = S.me.permission === 'editor';
+  const live = rows.filter(r => r.status !== 'void');
+  const total = live.reduce((t, r) => t + Number(r.hours || 0), 0);
+  const foot = `<div class="small muted" style="padding:12px 4px">${live.length} ${live.length === 1 ? 'entry' : 'entries'}, ${fmtHours(total)} hours in total${rows.length !== live.length ? ' (voided entries not counted)' : ''}.</div>`;
+  if (!rows.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No overtime recorded in this period.</div>`; return; }
+  if (s.mode === 'totals') {
+    const by = new Map();
+    live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0 }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); });
+    const list = [...by.values()].sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+    box.innerHTML = `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days</th><th>Hours</th></tr></thead>
+      <tbody>${list.map(x => `<tr><td data-label="Name"><div class="strong">${esc(x.name)}</div><div class="tiny muted mono">${esc(x.id)}</div></td>
+        <td data-label="Department">${esc([...x.depts].filter(Boolean).join(', ') || '--')}</td><td data-label="Days" class="tnum">${x.days}</td><td data-label="Hours" class="tnum strong">${fmtHours(x.hours)}</td></tr>`).join('')}</tbody></table></div>${foot}`;
+    return;
+  }
+  box.innerHTML = `<div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Date</th><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Duty</th><th>Submitted by</th><th>Status</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+      <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}>
+        <td data-label="Date">${esc(r.work_date)}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
+        <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
+        <td data-label="Duty" class="small">${esc(r.duty||'--')}</td><td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>
+        <td data-label="Status">${r.status === 'void' ? `<span class="badge b-slate" title="${esc(r.void_reason||'')}">Void</span>` : '<span class="badge b-ok">Recorded</span>'}</td>
+        ${canEdit ? `<td>${r.status === 'void' ? '' : `<div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="openEditOvertime(${Number(r.id)})">${I.edit} Edit</button><button class="btn btn-ghost btn-sm" onclick="openVoidOvertime(${Number(r.id)})">Void</button></div>`}</td>` : ''}</tr>`).join('')}</tbody></table></div>${foot}`;
 }
 async function loadOtList(){
   otListState.records = null; paintOtList();
@@ -936,26 +942,90 @@ async function loadOtList(){
   }
   paintOtList();
 }
+function exportOvertimeCSV(){
+  const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const head = ['Date','Name','Enroll ID','Department','Start','End','Hours','Duty','Submitted by','Status'];
+  const lines = [head.join(',')].concat(filteredOvertime().map(r => [r.work_date, r.name, r.enroll_id, r.department, hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.duty, r.submitted_by || r.recorded_by, r.status].map(cell).join(',')));
+  download('okl_overtime_' + otListState.from + '_to_' + otListState.to + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
+}
 function viewOvertimeList(){
   if (!otListState.to) { otListState.to = todayStr(); otListState.from = addDays(otListState.to, -31); }
+  const s = otListState;
   return {
     title:'Overtime', crumb:'Attendance',
-    html: `${pageHead('Overtime', 'Overtime that has been recorded, newest first.')}
+    html: `${pageHead('Overtime', 'Everything submitted on the department forms, newest first.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
       <div class="row filter-bar" style="margin-bottom:14px">
-        <div class="field" style="margin:0"><label for="olFrom">From</label><input class="inp" type="date" id="olFrom" value="${esc(otListState.from)}"></div>
-        <div class="field" style="margin:0"><label for="olTo">To</label><input class="inp" type="date" id="olTo" value="${esc(otListState.to)}"></div>
+        <div class="field" style="margin:0"><label for="olFrom">From</label><input class="inp" type="date" id="olFrom" value="${esc(s.from)}"></div>
+        <div class="field" style="margin:0"><label for="olTo">To</label><input class="inp" type="date" id="olTo" value="${esc(s.to)}"></div>
         <div class="field" style="margin:0"><label for="olDept">Department</label><select class="inp" id="olDept"><option value="">All departments</option></select></div>
+        <div class="field" style="margin:0"><label for="olQ">Person</label><input class="inp" id="olQ" placeholder="Search name or ID" value="${esc(s.q)}"></div>
+        <label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>
       </div>
+      <div class="tabs"><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">Totals by person</div></div>
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
       $('#olFrom').onchange = e => { otListState.from = e.target.value; loadOtList(); };
       $('#olTo').onchange = e => { otListState.to = e.target.value; loadOtList(); };
       $('#olDept').onchange = e => { otListState.department = e.target.value; paintOtList(); };
+      $('#olQ').oninput = debounce(e => { otListState.q = e.target.value; paintOtList(); }, 150);
+      $('#olVoid').onchange = e => { otListState.showVoid = e.target.checked; paintOtList(); };
+      $('#olCsv').onclick = exportOvertimeCSV;
+      $$('.tab[data-mode]').forEach(t => t.onclick = () => { otListState.mode = t.dataset.mode; $$('.tab[data-mode]').forEach(x => x.classList.toggle('on', x === t)); paintOtList(); });
       loadOtList();
     },
   };
 }
 route('/overtime/records', () => viewOvertimeList());
+
+function openEditOvertime(id){
+  const r = (otListState.records || []).find(x => Number(x.id) === Number(id)); if (!r) return;
+  const calc = (a, b) => { const m = t => { const x = /^(\d{1,2}):(\d{2})/.exec(t || ''); return x ? (+x[1]) * 60 + (+x[2]) : null; };
+    const s = m(a), e = m(b); return (s == null || e == null || e <= s) ? null : Math.round((e - s) / 60 * 100) / 100; };
+  openModal({
+    title:'Edit overtime', size:'narrow', sub: r.name + ' · ' + r.work_date + ' · ' + (r.department || ''),
+    body:`<div class="grid g2">
+        <div class="field"><label for="eoStart">Start time</label><input class="inp" type="time" id="eoStart" value="${esc(hhmm(r.start_time))}"></div>
+        <div class="field"><label for="eoEnd">End time</label><input class="inp" type="time" id="eoEnd" value="${esc(hhmm(r.end_time))}"></div></div>
+      <div class="field"><label for="eoDuty">Duty</label><input class="inp" id="eoDuty" maxlength="150" value="${esc(r.duty||'')}"></div>
+      <div class="small muted" id="eoHours"></div><div class="err-msg hide" data-err="eoStart"></div>
+      ${r.start_time ? '' : `<div class="hint">${I.info}<span>This entry was recorded with hours only (${esc(fmtHours(r.hours))} h). Enter start and end times to replace it.</span></div>`}`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
+    onMount:(w, close) => {
+      const upd = () => { const h = calc($('#eoStart', w).value, $('#eoEnd', w).value); $('#eoHours', w).textContent = h == null ? 'End must be after start.' : 'Duration: ' + fmtHours(h) + ' h'; };
+      $('#eoStart', w).oninput = upd; $('#eoEnd', w).oninput = upd; upd();
+      $('[data-save]', w).onclick = async () => {
+        clearErrors(w);
+        const start = $('#eoStart', w).value, end = $('#eoEnd', w).value;
+        if (calc(start, end) == null) return setErr('eoStart', 'End must be after start.', w);
+        const btn = $('[data-save]', w); btn.disabled = true;
+        try {
+          const res = await api('/webhook/employees/api/overtime/update', { method:'POST', body:{ id: r.id, start, end, duty: $('#eoDuty', w).value.trim() } });
+          r.start_time = start + ':00'; r.end_time = end + ':00'; r.duty = $('#eoDuty', w).value.trim() || null; r.hours = res.hours != null ? res.hours : calc(start, end);
+          close(); paintOtList(); toast('Overtime updated', r.name + ' now has ' + fmtHours(r.hours) + ' h on ' + r.work_date + '.', 'ok');
+        } catch (err) { setErr('eoStart', err.message, w); btn.disabled = false; }
+      };
+    },
+  });
+}
+async function openVoidOvertime(id){
+  const r = (otListState.records || []).find(x => Number(x.id) === Number(id)); if (!r) return;
+  openModal({
+    title:'Void overtime entry', size:'narrow', sub: r.name + ' · ' + r.work_date + ' · ' + fmtHours(r.hours) + ' h',
+    body:`<div class="small" style="margin-bottom:10px">The entry stops counting and its row is removed from the Google Sheet. It stays in the log as voided.</div>
+      <div class="field"><label for="voReason">Reason (optional)</label><input class="inp" id="voReason" maxlength="200" placeholder="e.g. entered by mistake"></div>
+      <div class="err-msg hide" data-err="voReason"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-danger" data-save>Void entry</button>`,
+    onMount:(w, close) => { $('[data-save]', w).onclick = async () => {
+      const btn = $('[data-save]', w); btn.disabled = true;
+      try {
+        const reason = $('#voReason', w).value.trim();
+        await api('/webhook/employees/api/overtime/void', { method:'POST', body:{ id: r.id, reason } });
+        r.status = 'void'; r.void_reason = reason || null;
+        close(); paintOtList(); toast('Entry voided', r.name + ' on ' + r.work_date + '.', 'ok');
+      } catch (err) { setErr('voReason', err.message, w); btn.disabled = false; }
+    }; },
+  });
+}
 
 function stubView(title, crumb){
   return { title, crumb, html: `${pageHead(title, 'This section has not been set up yet.')}

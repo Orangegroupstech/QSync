@@ -3,7 +3,7 @@
 Static console for `okl.orangegroupsai.online` (one Vercel deployment, no build; Root Directory blank).
 
 - `index.html` - landing page and the **single sign-in** (email + password, forced change of the default PIN, change password, sign out). Shows a tile per console; Users only for admins.
-- `employees/` - Employees console in three sections: Overview (dashboard: headcount, top skills), People (employee directory with active/inactive status and join/left dates; training sessions that add skills to attendees, skills matrix and downloadable skills card) and Attendance (overtime submission, overtime list; attendance is a placeholder).
+- `employees/` - Employees console in three sections: Overview (dashboard: headcount, top skills), People (employee directory with active/inactive status and join/left dates; training sessions that add skills to attendees, skills matrix and downloadable skills card) and Attendance (overtime: department tiles that open the hosted overtime form, plus a log to correct or void entries; attendance is a placeholder).
 - `qsync/` - QC console (requests, reports, products/specs, audit trail). People who can only read see no "New Test Request" or edit buttons.
 - `procurement/` - requisition log, approver directory and spares stock. "New Request" lists every department and opens that department's hosted requisition form.
 - `users/` - Users (admins only): all people, add person, edit access, reset, unlock, deactivate, activity.
