@@ -42,8 +42,16 @@ const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<'
 const clamp = (n,a,b) => Math.max(a, Math.min(b, n));
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-function fmtDateTime(ts){ if(!ts) return '--'; const d=new Date(ts);
-  return `${String(d.getDate()).padStart(2,'0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+// All times are shown in WAT (West Africa Time, Africa/Lagos), whatever the viewing device's timezone is.
+const WAT_FMT = new Intl.DateTimeFormat('en-GB', { timeZone:'Africa/Lagos', hourCycle:'h23',
+  year:'numeric', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
+function watParts(ts){
+  const d = new Date(ts); if (isNaN(d)) return null;
+  const p = {}; WAT_FMT.formatToParts(d).forEach(x => { p[x.type] = x.value; });
+  return { y:Number(p.year), m:Number(p.month), d:Number(p.day), h:p.hour, mi:p.minute };
+}
+function fmtDateTime(ts){ if(!ts) return '--'; const w=watParts(ts); if(!w) return '--';
+  return `${String(w.d).padStart(2,'0')} ${MONTHS[w.m-1]} ${w.y}, ${w.h}:${w.mi}`; }
 function fmtMonthYear(str){ if(!str) return '--'; const parts=String(str).split('-');
   if (parts.length!==2) return str; const m=parseInt(parts[1],10);
   return `${MONTHS[m-1]||parts[1]} ${parts[0]}`; }
@@ -107,7 +115,7 @@ const STAGE_OPTIONS = {
 const ALL_STAGES = Array.from(new Set([...STAGE_OPTIONS.OSD, ...STAGE_OPTIONS.OLD]));
 function yearsFromDates(items, field){
   const years = new Set();
-  items.forEach(it => { const v = it[field]; if (v){ const y = new Date(v).getFullYear(); if (!isNaN(y)) years.add(y); } });
+  items.forEach(it => { const v = it[field]; if (v){ const w = watParts(v); if (w) years.add(w.y); } });
   return Array.from(years).sort((a,b) => b-a);
 }
 function yearMonthSelectHtml(idPrefix, years, state){
@@ -544,8 +552,14 @@ function onNewReqProductChange(){
     STAGE_OPTIONS[meta.type].filter(s => !(meta.noStages || []).includes(s)).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   stageSel.disabled = false;
 }
+let newReqToken = '';
+function makeSubmissionToken(){
+  return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
 function bindNewRequest(){
   const f = $('#reqForm'); if (!f) return;
+  if (!newReqToken) newReqToken = makeSubmissionToken();
   f.onsubmit = async (e) => {
     e.preventDefault();
     clearErrors(f);
@@ -574,7 +588,9 @@ function bindNewRequest(){
         batch_size_unit: unit,
         mfg_date: mfg,
         stage,
+        submission_token: newReqToken,
       }});
+      newReqToken = '';
       toast('Request submitted', res.requestNo + ' has been raised and IPQA/QC notified.', 'ok');
       await bootstrap();
       go('/requests');
@@ -598,8 +614,8 @@ function filterRequests(){
   if (listState.product) out = out.filter(r => r.productName === listState.product);
   if (listState.stage) out = out.filter(r => r.stage === listState.stage);
   if (listState.result) out = out.filter(r => (overallResult(r) ?? 'untested') === listState.result);
-  if (listState.year) out = out.filter(r => r.createdAt && new Date(r.createdAt).getFullYear() === Number(listState.year));
-  if (listState.month) out = out.filter(r => r.createdAt && new Date(r.createdAt).getMonth()+1 === Number(listState.month));
+  if (listState.year) out = out.filter(r => r.createdAt && (watParts(r.createdAt)||{}).y === Number(listState.year));
+  if (listState.month) out = out.filter(r => r.createdAt && (watParts(r.createdAt)||{}).m === Number(listState.month));
   const sorters = {
     updated:(a,b)=> new Date(b.updatedAt) - new Date(a.updatedAt),
     created:(a,b)=> new Date(b.createdAt) - new Date(a.createdAt),
@@ -1038,8 +1054,8 @@ function viewAudit(){
   if (q) rows = rows.filter(e => [e.actor_name, e.action, e.detail, e.ref].join(' ').toLowerCase().includes(q));
   if (auditState.role) rows = rows.filter(e => e.actor_role === auditState.role);
   if (auditState.action) rows = rows.filter(e => e.action === auditState.action);
-  if (auditState.year) rows = rows.filter(e => e.at && new Date(e.at).getFullYear() === Number(auditState.year));
-  if (auditState.month) rows = rows.filter(e => e.at && new Date(e.at).getMonth()+1 === Number(auditState.month));
+  if (auditState.year) rows = rows.filter(e => e.at && (watParts(e.at)||{}).y === Number(auditState.year));
+  if (auditState.month) rows = rows.filter(e => e.at && (watParts(e.at)||{}).m === Number(auditState.month));
 
   const roleOptions = Object.entries(ROLE_LABELS).map(([k,v]) => `<option value="${k}" ${auditState.role===k?'selected':''}>${esc(v)}</option>`).join('');
   const actionOptions = Array.from(new Set(S.audit.map(e => e.action))).sort()
