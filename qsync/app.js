@@ -650,15 +650,12 @@ function viewRequests(){
             <input class="inp" id="listQ" style="padding-left:34px;border-radius:20px" placeholder="Search request, batch or product" value="${esc(listState.q)}"></div>
           <select class="inp filter-sel-status" id="listStatus"><option value="">All statuses</option>${statusOptions}</select>
           <select class="inp filter-sel-product" id="listProduct"><option value="">All products</option>${productOptions}</select>
-          <div class="spacer"></div>
-          <button class="btn btn-ghost btn-sm" onclick="exportRequestList()">${I.download} Export CSV</button>
-        </div>
-        <div class="row" style="gap:10px;margin-top:10px">
           <select class="inp" id="listStage" style="width:auto;min-width:150px"><option value="">All stages</option>${stageOptions}</select>
           <select class="inp" id="listResult" style="width:auto;min-width:130px"><option value="">All results</option>${resultOptions}</select>
           ${yearMonthSelectHtml('list', years, listState)}
-          <div class="spacer"></div>
           <select class="inp" id="listSort" style="width:auto;min-width:150px">${sortOptions}</select>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost btn-sm" onclick="exportRequestList()">${I.download} Export CSV</button>
         </div>
       </div>
       ${body}

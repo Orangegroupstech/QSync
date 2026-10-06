@@ -652,3 +652,12 @@ table.tbl tbody tr:hover td{background:var(--brand-50)}
 .btn-ghost{border-color:var(--ink-600);color:var(--ink)}
 .btn-ghost:hover{background:var(--ink-50)}
 input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
+
+/* Compact, tightly grouped filter bars (desktop/tablet) */
+@media (min-width:821px){
+  .filter-bar > .row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .filter-bar .inp{width:auto;min-width:0 !important;height:34px;padding-top:5px;padding-bottom:5px;font-size:12.5px}
+  .filter-bar .search{flex:1 1 220px;max-width:280px}
+  .filter-bar .search .inp{width:100%}
+  .filter-bar .spacer{flex:1 1 0}
+}

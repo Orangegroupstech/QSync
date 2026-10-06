@@ -36,6 +36,26 @@ const $  = (s, r) => (r||document).querySelector(s);
 const $$ = (s, r) => Array.from((r||document).querySelectorAll(s));
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms||220); }; }
+/* Multi-select dropdown (departments): the popover stays open across the page re-render that follows a change. */
+let msOpenId = null;
+document.addEventListener('click', ev => {
+  if (msOpenId && !ev.target.closest('.ms')) { const p = document.querySelector('#' + msOpenId + ' .ms-pop'); if (p) p.classList.add('hide'); msOpenId = null; }
+});
+function msRender(id, allLabel, opts, sel, onChange){
+  const box = document.getElementById(id); if (!box) return;
+  const label = !sel.length ? allLabel : sel.length === 1 ? ((opts.find(o => o.v === sel[0]) || { l:sel[0] }).l) : sel.length + ' departments';
+  box.classList.add('ms');
+  box.innerHTML = `<button type="button" class="inp ms-btn" aria-haspopup="true">${esc(label)} <span class="ms-caret">&#9662;</span></button>
+    <div class="ms-pop ${msOpenId === id ? '' : 'hide'}">${opts.map(o => `<label class="ms-opt"><input type="checkbox" value="${esc(o.v)}" ${sel.includes(o.v) ? 'checked' : ''}> <span>${esc(o.l)}</span></label>`).join('')}
+      <div class="ms-foot"><button type="button" class="btn btn-ghost btn-sm" data-ms-clear>Clear</button></div></div>`;
+  const pop = box.querySelector('.ms-pop');
+  box.querySelector('.ms-btn').onclick = () => { const open = pop.classList.contains('hide'); pop.classList.toggle('hide', !open); msOpenId = open ? id : null; };
+  const change = next => { msOpenId = id; onChange(next); msRender(id, allLabel, opts, next, onChange); };
+  box.querySelectorAll('input[type=checkbox]').forEach(c => c.onchange = () => change(Array.from(box.querySelectorAll('input:checked')).map(x => x.value)));
+  box.querySelector('[data-ms-clear]').onclick = () => change([]);
+}
+const deptPick = (sel, d) => !sel.length || sel.includes(d || '__none');
+const deptOpts = (list, withNone) => list.map(d => ({ v:d, l:d })).concat(withNone ? [{ v:'__none', l:'No department' }] : []);
 function properName(v){
   return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase()
     .replace(/(^|[\s\-.(])([a-z\u00e0-\u00ff])/g, (m, a, b) => a + b.toUpperCase());
@@ -440,7 +460,7 @@ route('/dashboard', () => viewDashboard());
    to everyone who attended. Only people currently employed are listed.
    ============================================================ */
 let trainTab = 'sessions';
-let matrixDept = '';
+let matrixDept = [];
 let trainings = null; // null = not loaded yet
 let expandedTraining = null;
 function setTrainTab(t){ trainTab = t; render(); }
@@ -475,15 +495,16 @@ function trainCatalogueTab(){
   </tbody></table></div></div>`;
 }
 
+function depts_mx(){ return [...new Set(activeEmps().map(e => e.department).filter(Boolean))].sort(); }
 function trainMatrixTab(){
   const pool = activeEmps();
   const depts = [...new Set(pool.map(e => e.department).filter(Boolean))].sort();
   const cols = skillStats(pool, 'current_competencies').slice(0, 14);
-  const emps = pool.filter(e => !matrixDept || e.department === matrixDept)
+  const emps = pool.filter(e => deptPick(matrixDept, e.department))
     .filter(e => cols.some(c => hasSkill(e, 'current_competencies', c.key)));
   const legend = `<div class="small muted">&#10003; = has the skill &middot; click a name to see all their skills and download their card</div>`;
   const filter = depts.length ? `<div class="row filter-bar" style="margin-bottom:14px">
-      <select class="inp filter-sel-status" id="mxDept"><option value="">All departments</option>${depts.map(d => `<option value="${esc(d)}" ${matrixDept===d?'selected':''}>${esc(d)}</option>`).join('')}</select>${legend}</div>`
+      <div id="mxDept"></div>${legend}</div>`
     : `<div style="margin-bottom:14px">${legend}</div>`;
   if (!emps.length) return filter + `<div class="card"><div class="card-b">${emptyState('award', 'Nothing to show yet', 'People appear here once they have competencies recorded.')}</div></div>`;
   return filter + `<div class="card"><div class="tbl-wrap"><table class="tbl no-stack" style="min-width:${200 + cols.length * 90}px"><thead><tr><th style="min-width:180px">Employee</th>
@@ -503,7 +524,7 @@ function viewTraining(){
     title:'Training & Competencies', crumb:'People',
     html: pageHead('Training & competencies', 'Who has which skills. Recording a training adds its skill to everyone who attended.', actions) + tabBar + body,
     bind(){
-      const sel = $('#mxDept'); if (sel) sel.onchange = e => { matrixDept = e.target.value; render(); };
+      msRender('mxDept', 'All departments', deptOpts(depts_mx()), matrixDept, v => { matrixDept = v; render(); });
       if (trainTab === 'sessions' && trainings === null) {
         api('/webhook/employees/api/trainings').then(r => r.trainings || []).catch(() => [])
           .then(list => { trainings = list; if (currentPath().split('?')[0] === '/training' && trainTab === 'sessions') render(); });
@@ -515,12 +536,12 @@ route('/training', () => viewTraining());
 
 /* ---- Add a training session ---- */
 function openAddTraining(){
-  const st = { q:'', type:'', dept:'', checked:new Set() };
+  const st = { q:'', type:'', dept:[], checked:new Set() };
   const pool = activeEmps();
   const depts = [...new Set(pool.map(e => e.department).filter(Boolean))].sort();
   const skillOpts = skillStats(S.employees, 'current_competencies').map(k => `<option value="${esc(k.name)}"></option>`).join('');
   const shown = () => { const q = st.q.trim().toLowerCase();
-    return pool.filter(e => (!st.type || e.employment_type === st.type) && (!st.dept || e.department === st.dept)
+    return pool.filter(e => (!st.type || e.employment_type === st.type) && deptPick(st.dept, e.department)
       && (!q || e.name.toLowerCase().includes(q) || String(e.enroll_id).toLowerCase().includes(q))); };
   openModal({
     title:'Add training session', size:'wide', sub:'Everyone ticked gets the skill added to their record.',
@@ -540,7 +561,7 @@ function openAddTraining(){
         <div class="row filter-bar" style="margin-bottom:8px">
           <div class="search filter-search"><span class="ic">${I.search}</span><input class="inp" id="trQ" placeholder="Search name or enroll ID"></div>
           <select class="inp filter-sel-status" id="trType"><option value="">Staff and casual</option><option value="staff">Staff</option><option value="casual">Casual</option></select>
-          ${depts.length ? `<select class="inp filter-sel-status" id="trDept"><option value="">All departments</option>${depts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>` : ''}
+          ${depts.length ? `<div id="trDept"></div>` : ''}
         </div>
         <div class="row" style="gap:8px;margin-bottom:8px"><button class="btn btn-ghost btn-sm" type="button" id="trAll">Tick all shown</button>
           <button class="btn btn-ghost btn-sm" type="button" id="trNone">Clear</button><div class="small muted" id="trCount"></div></div>
@@ -560,7 +581,7 @@ function openAddTraining(){
       };
       $('#trQ', w).oninput = e => { st.q = e.target.value; paint(); };
       $('#trType', w).onchange = e => { st.type = e.target.value; paint(); };
-      const dsel = $('#trDept', w); if (dsel) dsel.onchange = e => { st.dept = e.target.value; paint(); };
+      msRender('trDept', 'All departments', deptOpts(depts), st.dept, v => { st.dept = v; paint(); });
       $('#trAll', w).onclick = () => { shown().forEach(e => st.checked.add(e.enroll_id)); paint(); };
       $('#trNone', w).onclick = () => { st.checked = new Set(); paint(); };
       paint();
@@ -656,7 +677,7 @@ async function downloadSkillCard(e){
 let employeeQuery = '';
 let employeeTypeFilter = '';
 let employeeStatusFilter = 'active';
-let employeeDeptFilter = '';
+let employeeDeptFilter = [];
 let employeeGenderFilter = '';
 let employeeSearchActive = false;
 
@@ -768,10 +789,10 @@ function viewEmployees(){
   const rows = S.employees.filter(e =>
     (!employeeTypeFilter || e.employment_type === employeeTypeFilter) &&
     (employeeStatusFilter === 'all' || (e.status || 'active') === employeeStatusFilter) &&
-    (!employeeDeptFilter || (employeeDeptFilter === '__none' ? !e.department : e.department === employeeDeptFilter)) &&
+    deptPick(employeeDeptFilter, e.department) &&
     (!employeeGenderFilter || (e.gender || '') === employeeGenderFilter) && matchesEmployeeQuery(e, q));
   const depts = [...new Set([...(S.departments || []), ...S.employees.map(e => e.department).filter(Boolean)])].sort();
-  const filtering = !!(q || employeeTypeFilter || employeeDeptFilter || employeeGenderFilter || employeeStatusFilter !== 'active');
+  const filtering = !!(q || employeeTypeFilter || employeeDeptFilter.length || employeeGenderFilter || employeeStatusFilter !== 'active');
   const canEdit = S.me.permission === 'editor';
   const cols = canEdit ? 9 : 8;
 
@@ -786,11 +807,7 @@ function viewEmployees(){
         <span class="ic">${I.search}</span>
         <input class="inp" id="empSearch" placeholder="Search name, ID, role, workstation..." value="${esc(employeeQuery)}">
       </div>
-      <select class="inp" id="empDeptFilter" aria-label="Department">
-        <option value="">All departments</option>
-        ${depts.map(d => `<option value="${esc(d)}" ${employeeDeptFilter===d?'selected':''}>${esc(d)}</option>`).join('')}
-        <option value="__none" ${employeeDeptFilter==='__none'?'selected':''}>No department</option>
-      </select>
+      <div id="empDeptFilter"></div>
       <select class="inp" id="empTypeFilter" aria-label="Employment type">
         <option value="">Staff and casual</option>
         <option value="staff" ${employeeTypeFilter==='staff'?'selected':''}>Staff</option>
@@ -842,9 +859,9 @@ function viewEmployees(){
       if (employeeSearchActive) { employeeSearchActive = false; $('#empSearch').focus({ preventScroll:true }); $('#empSearch').setSelectionRange(employeeQuery.length, employeeQuery.length); }
       $('#empTypeFilter').onchange = (e) => { employeeTypeFilter = e.target.value; render(); };
       $('#empStatusFilter').onchange = (e) => { employeeStatusFilter = e.target.value; render(); };
-      $('#empDeptFilter').onchange = (e) => { employeeDeptFilter = e.target.value; render(); };
+      msRender('empDeptFilter', 'All departments', deptOpts(depts, true), employeeDeptFilter, v => { employeeDeptFilter = v; render(); });
       $('#empGenderFilter').onchange = (e) => { employeeGenderFilter = e.target.value; render(); };
-      const clr = $('#empClear'); if (clr) clr.onclick = () => { employeeQuery = ''; employeeTypeFilter = ''; employeeDeptFilter = ''; employeeGenderFilter = ''; employeeStatusFilter = 'active'; render(); };
+      const clr = $('#empClear'); if (clr) clr.onclick = () => { employeeQuery = ''; employeeTypeFilter = ''; employeeDeptFilter = []; employeeGenderFilter = ''; employeeStatusFilter = 'active'; render(); };
 
       if (canEdit) {
         const visible = rows.map(e => e.enroll_id);
@@ -926,11 +943,11 @@ function viewOvertimeSubmit(){
 route('/overtime/submit', () => viewOvertimeSubmit());
 
 /* ---- Overtime: the log ---- */
-let otListState = { preset:'last30', from:'', to:'', department:'', q:'', showVoid:false, mode:'overview', records:null };
+let otListState = { preset:'last30', from:'', to:'', department:[], day:'', q:'', showVoid:false, mode:'overview', records:null };
 function filteredOvertime(){
   const s = otListState, q = s.q.trim().toLowerCase();
   return (s.records || []).filter(r =>
-    (s.showVoid || r.status !== 'void') && (!s.department || r.department === s.department) &&
+    (s.showVoid || r.status !== 'void') && deptPick(s.department, r.department) &&
     (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q)));
 }
 function otTimes(r){ return r.start_time ? hhmm(r.start_time) + ' - ' + hhmm(r.end_time) : '--'; }
@@ -967,6 +984,25 @@ function paintOtList(){
       <div class="stack" style="gap:11px">${weeks.map(x => bar('Week of ' + fmtDayShort(x.key), fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people'), Math.round(x.hours / maxW * 100))).join('')}</div></div>`;
     return;
   }
+  if (s.mode === 'daily') {
+    const days = [...new Set(live.map(r => String(r.work_date).slice(0, 10)))].sort().reverse();
+    if (!days.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No overtime recorded in this period.</div>`; return; }
+    if (!days.includes(s.day)) s.day = days[0];
+    const k = days.indexOf(s.day), recs = live.filter(r => String(r.work_date).slice(0, 10) === s.day).sort((a, b) => a.name.localeCompare(b.name));
+    const dayTotal = recs.reduce((t, r) => t + Number(r.hours || 0), 0);
+    box.innerHTML = `<div class="card-b row between" style="flex-wrap:wrap;gap:10px">
+        <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" id="odPrev" ${k >= days.length - 1 ? 'disabled' : ''} aria-label="Previous day">${I.chevL}</button>
+          <select class="inp" id="odDay" style="width:auto">${days.map(d => `<option value="${d}" ${d === s.day ? 'selected' : ''}>${esc(fmtDay(d))}</option>`).join('')}</select>
+          <button class="btn btn-ghost btn-sm" id="odNext" ${k <= 0 ? 'disabled' : ''} aria-label="Next day">${I.chevR}</button></div>
+        <div class="small muted">${recs.length} ${recs.length === 1 ? 'person' : 'people'}, ${fmtHours(dayTotal)} hours</div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th></tr></thead>
+        <tbody>${recs.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${esc(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department || '--')}</td>
+          <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td><td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td></tr>`).join('')}</tbody></table></div>`;
+    $('#odDay').onchange = e => { s.day = e.target.value; paintOtList(); };
+    $('#odPrev').onclick = () => { s.day = days[k + 1]; paintOtList(); };
+    $('#odNext').onclick = () => { s.day = days[k - 1]; paintOtList(); };
+    return;
+  }
   if (s.mode === 'totals') {
     const by = new Map();
     live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0 }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); });
@@ -977,11 +1013,11 @@ function paintOtList(){
     return;
   }
   box.innerHTML = `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Date</th><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Duty</th><th>Submitted by</th><th>Status</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>Date</th><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th><th>Status</th>${canEdit ? '<th></th>' : ''}</tr></thead>
       <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}>
         <td data-label="Date">${esc(r.work_date)}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
         <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
-        <td data-label="Duty" class="small">${esc(r.duty||'--')}</td><td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>
+        <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>
         <td data-label="Status">${r.status === 'void' ? `<span class="badge b-slate" title="${esc(r.void_reason||'')}">Void</span>` : '<span class="badge b-ok">Recorded</span>'}</td>
         ${canEdit ? `<td>${r.status === 'void' ? '' : `<div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="openEditOvertime(${Number(r.id)})">${I.edit} Edit</button><button class="btn btn-ghost btn-sm" onclick="openVoidOvertime(${Number(r.id)})">Void</button></div>`}</td>` : ''}</tr>`).join('')}</tbody></table></div>${foot}`;
 }
@@ -991,17 +1027,14 @@ async function loadOtList(){
     const res = await api('/webhook/employees/api/overtime?from=' + encodeURIComponent(otListState.from) + '&to=' + encodeURIComponent(otListState.to));
     otListState.records = (res.records || []).map(r => Object.assign(r, { name: properName(r.name) }));
   } catch (err) { toast('Could not load overtime', err.message, 'err'); otListState.records = []; }
-  const sel = $('#olDept');
-  if (sel) {
-    const deps = [...new Set(otListState.records.map(r => r.department).filter(Boolean))].sort();
-    sel.innerHTML = `<option value="">All departments</option>` + deps.map(d => `<option value="${esc(d)}" ${otListState.department===d?'selected':''}>${esc(d)}</option>`).join('');
-  }
+  const deps = [...new Set(otListState.records.map(r => r.department).filter(Boolean))].sort();
+  msRender('olDept', 'All departments', deptOpts(deps), otListState.department, v => { otListState.department = v; paintOtList(); });
   paintOtList();
 }
 function exportOvertimeCSV(){
   const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  const head = ['Date','Name','Enroll ID','Department','Start','End','Hours','Duty','Submitted by','Status'];
-  const lines = [head.join(',')].concat(filteredOvertime().map(r => [r.work_date, r.name, r.enroll_id, r.department, hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.duty, r.submitted_by || r.recorded_by, r.status].map(cell).join(',')));
+  const head = ['Date','Name','Enroll ID','Department','Start','End','Hours','Submitted by','Status'];
+  const lines = [head.join(',')].concat(filteredOvertime().map(r => [r.work_date, r.name, r.enroll_id, r.department, hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by, r.status].map(cell).join(',')));
   download('okl_overtime_' + otListState.from + '_to_' + otListState.to + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
 }
 function viewOvertimeList(){
@@ -1009,18 +1042,18 @@ function viewOvertimeList(){
   const s = otListState;
   return {
     title:'Overtime', crumb:'Attendance',
-    html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, totals by person, and every entry.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
+    html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, day by day, totals by person, and every entry.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
       <div class="row filter-bar" style="margin-bottom:14px">
         ${periodFields(s, 'ol')}
-        <div class="field" style="margin:0"><label for="olDept">Department</label><select class="inp" id="olDept"><option value="">All departments</option></select></div>
+        <div class="field" style="margin:0"><label>Department</label><div id="olDept"></div></div>
         <div class="field" style="margin:0"><label for="olQ">Person</label><input class="inp" id="olQ" placeholder="Search name or ID" value="${esc(s.q)}"></div>
         <label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>
       </div>
-      <div class="tabs"><div class="tab ${s.mode==='overview'?'on':''}" data-mode="overview">Overview</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">By person</div><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div></div>
+      <div class="tabs"><div class="tab ${s.mode==='overview'?'on':''}" data-mode="overview">Overview</div><div class="tab ${s.mode==='daily'?'on':''}" data-mode="daily">Daily</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">By person</div><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div></div>
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
       bindPeriodFields(otListState, 'ol', loadOtList);
-      $('#olDept').onchange = e => { otListState.department = e.target.value; paintOtList(); };
+      msRender('olDept', 'All departments', [], otListState.department, () => {});
       $('#olQ').oninput = debounce(e => { otListState.q = e.target.value; paintOtList(); }, 150);
       $('#olVoid').onchange = e => { otListState.showVoid = e.target.checked; paintOtList(); };
       $('#olCsv').onclick = exportOvertimeCSV;
@@ -1040,7 +1073,6 @@ function openEditOvertime(id){
     body:`<div class="grid g2">
         <div class="field"><label for="eoStart">Start time</label><input class="inp" type="time" id="eoStart" value="${esc(hhmm(r.start_time))}"></div>
         <div class="field"><label for="eoEnd">End time</label><input class="inp" type="time" id="eoEnd" value="${esc(hhmm(r.end_time))}"></div></div>
-      <div class="field"><label for="eoDuty">Duty</label><input class="inp" id="eoDuty" maxlength="150" value="${esc(r.duty||'')}"></div>
       <div class="small muted" id="eoHours"></div><div class="err-msg hide" data-err="eoStart"></div>
       ${r.start_time ? '' : `<div class="hint">${I.info}<span>This entry was recorded with hours only (${esc(fmtHours(r.hours))} h). Enter start and end times to replace it.</span></div>`}`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
@@ -1053,8 +1085,8 @@ function openEditOvertime(id){
         if (calc(start, end) == null) return setErr('eoStart', 'End must be after start.', w);
         const btn = $('[data-save]', w); btn.disabled = true;
         try {
-          const res = await api('/webhook/employees/api/overtime/update', { method:'POST', body:{ id: r.id, start, end, duty: $('#eoDuty', w).value.trim() } });
-          r.start_time = start + ':00'; r.end_time = end + ':00'; r.duty = $('#eoDuty', w).value.trim() || null; r.hours = res.hours != null ? res.hours : calc(start, end);
+          const res = await api('/webhook/employees/api/overtime/update', { method:'POST', body:{ id: r.id, start, end } });
+          r.start_time = start + ':00'; r.end_time = end + ':00'; r.hours = res.hours != null ? res.hours : calc(start, end);
           close(); paintOtList(); toast('Overtime updated', r.name + ' now has ' + fmtHours(r.hours) + ' h on ' + r.work_date + '.', 'ok');
         } catch (err) { setErr('eoStart', err.message, w); btn.disabled = false; }
       };
@@ -1089,7 +1121,7 @@ async function openVoidOvertime(id){
    ============================================================ */
 const LATE_DEFAULT = '08:30';
 const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-const att = { preset:'last30', from:'', to:'', dept:'', type:'', q:'', day:'', chip:'all', sort:'name', data:null, key:'', tab:'' };
+const att = { preset:'last30', from:'', to:'', dept:[], type:'', q:'', day:'', chip:'all', sort:'name', data:null, key:'', tab:'' };
 const attMins = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : 0; };
 const attHHMM = n => { n = Math.round(n); return String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0'); };
 const isoWeekday = iso => new Date(iso + 'T12:00:00Z').getUTCDay();          // 0 = Sunday
@@ -1151,7 +1183,7 @@ function attCompute(){
   const idx = new Map();
   (d.rows || []).forEach(r => { let m = idx.get(r[0]); if (!m) idx.set(r[0], m = new Map()); m.set(String(r[1]).slice(0, 10), { i:r[2], o:r[3], n:Number(r[4]) }); });
   const q = att.q.trim().toLowerCase();
-  const emps = S.employees.filter(e => (!att.dept || e.department === att.dept) && (!att.type || e.employment_type === att.type)
+  const emps = S.employees.filter(e => deptPick(att.dept, e.department) && (!att.type || e.employment_type === att.type)
     && (!q || String(e.name).toLowerCase().includes(q) || String(e.enroll_id).toLowerCase().includes(q))
     && (isActiveEmp(e) || idx.has(e.enroll_id)));
   const expected = (e, day) => {
@@ -1207,7 +1239,7 @@ function attTabs(tab){
 }
 function attFilterBar(withQ){
   return `<div class="row filter-bar" style="margin-bottom:14px">${periodFields(att, 'af')}
-    <div class="field" style="margin:0"><label for="afDept">Department</label><select class="inp" id="afDept">${deptOptionsHtml(att.dept)}</select></div>
+    <div class="field" style="margin:0"><label>Department</label><div id="afDept"></div></div>
     <div class="field" style="margin:0"><label for="afType">Type</label><select class="inp" id="afType"><option value="">Staff and casual</option><option value="staff" ${att.type === 'staff' ? 'selected' : ''}>Staff</option><option value="casual" ${att.type === 'casual' ? 'selected' : ''}>Casual</option></select></div>
     ${withQ ? `<div class="field" style="margin:0"><label for="afQ">Person</label><input class="inp" id="afQ" placeholder="Search name or ID" value="${esc(att.q)}"></div>` : ''}</div>`;
 }
@@ -1222,7 +1254,7 @@ function viewAttendance(tab){
       if (filtered) {
         const again = () => attLoad(tab);
         bindPeriodFields(att, 'af', again);
-        $('#afDept').onchange = e => { att.dept = e.target.value; paintAtt(tab); };
+        msRender('afDept', 'All departments', deptOpts(S.departments || [], true), att.dept, v => { att.dept = v; paintAtt(tab); });
         $('#afType').onchange = e => { att.type = e.target.value; paintAtt(tab); };
         const q = $('#afQ'); if (q) q.oninput = debounce(e => { att.q = e.target.value; paintAtt(tab); }, 150);
       }
