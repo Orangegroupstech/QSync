@@ -943,12 +943,50 @@ function viewOvertimeSubmit(){
 route('/overtime/submit', () => viewOvertimeSubmit());
 
 /* ---- Overtime: the log ---- */
-let otListState = { preset:'last30', from:'', to:'', department:[], day:'', q:'', showVoid:false, mode:'overview', records:null };
+/* Shared page pattern for the HR pages (Overtime, Attendance): header with Export CSV, tabs, one filter strip. */
+function hrTabs(tabs, active){
+  return `<div class="tabs">${tabs.map(([k, l, p]) => `<a class="tab ${active === k ? 'on' : ''}" href="#${p}" style="text-decoration:none">${l}</a>`).join('')}</div>`;
+}
+function hrFilterBar(s, p, extras){      // p = element id prefix; s needs preset/from/to/type/q (department is a multi-select in #pDept)
+  return `<div class="row filter-bar" style="margin-bottom:14px">${periodFields(s, p)}
+    <div class="field" style="margin:0"><label>Department</label><div id="${p}Dept"></div></div>
+    <div class="field" style="margin:0"><label for="${p}Type">Type</label><select class="inp" id="${p}Type"><option value="">Staff and casual</option><option value="staff" ${s.type === 'staff' ? 'selected' : ''}>Staff</option><option value="casual" ${s.type === 'casual' ? 'selected' : ''}>Casual</option></select></div>
+    <div class="field" style="margin:0"><label for="${p}Q">Person</label><input class="inp" id="${p}Q" placeholder="Search name or ID" value="${esc(s.q)}"></div>${extras || ''}</div>`;
+}
+function bindHrFilters(s, p, onRange, onChange){
+  bindPeriodFields(s, p, onRange);
+  $('#' + p + 'Type').onchange = e => { s.type = e.target.value; onChange(); };
+  $('#' + p + 'Q').oninput = debounce(e => { s.q = e.target.value; onChange(); }, 150);
+}
+const typeLabel = t => t === 'casual' ? 'Casual' : 'Staff';
+function empTypeMap(){ return new Map(S.employees.map(e => [e.enroll_id, e.employment_type])); }
+
+let otListState = { preset:'last30', from:'', to:'', department:[], day:'', q:'', type:'', showVoid:false, mode:'overview', records:null, key:'' };
 function filteredOvertime(){
-  const s = otListState, q = s.q.trim().toLowerCase();
+  const s = otListState, q = s.q.trim().toLowerCase(), types = empTypeMap();
   return (s.records || []).filter(r =>
-    (s.showVoid || r.status !== 'void') && deptPick(s.department, r.department) &&
+    (s.showVoid || r.status !== 'void') && deptPick(s.department, r.department) && (!s.type || types.get(r.enroll_id) === s.type) &&
     (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q)));
+}
+function otPersonTotals(live){
+  const by = new Map();
+  live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0 }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); });
+  return [...by.values()].sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+}
+function otIdLine(id){ const t = empTypeMap().get(id); return esc(id) + (t ? ' - ' + typeLabel(t) : ''); }
+function openOtPerson(id){
+  const rows = filteredOvertime().filter(r => r.enroll_id === id).sort((a, b) => String(a.work_date) < String(b.work_date) ? 1 : -1);
+  if (!rows.length) return;
+  const live = rows.filter(r => r.status !== 'void'), total = live.reduce((t, r) => t + Number(r.hours || 0), 0), s = otListState;
+  openModal({
+    title: rows[0].name, size:'wide', sub: [...new Set(rows.map(r => r.department).filter(Boolean))].join(', ') + (rows.some(r => r.department) ? ' - ' : '') + s.from + ' to ' + s.to,
+    body: `<div class="grid g3" style="margin-bottom:12px">${[['Days of overtime', live.length], ['Total hours', fmtHours(total)], ['Average per day', fmtHours(live.length ? total / live.length : 0)]].map(([l, v]) => `<div class="stat"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Time</th><th>Hours</th><th>Submitted by</th>${rows.length !== live.length ? '<th>Status</th>' : ''}</tr></thead>
+      <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}><td data-label="Date" class="strong">${esc(fmtDayShort(String(r.work_date).slice(0, 10)))}</td><td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
+        <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>${rows.length !== live.length ? `<td data-label="Status">${r.status === 'void' ? '<span class="badge b-slate">Void</span>' : '<span class="badge b-ok">Recorded</span>'}</td>` : ''}</tr>`).join('')}
+        <tr><td class="strong">Total</td><td></td><td class="tnum strong">${fmtHours(total)}</td><td></td>${rows.length !== live.length ? '<td></td>' : ''}</tr></tbody></table></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Close</button>`,
+  });
 }
 function otTimes(r){ return r.start_time ? hhmm(r.start_time) + ' - ' + hhmm(r.end_time) : '--'; }
 function paintOtList(){
@@ -996,7 +1034,7 @@ function paintOtList(){
           <button class="btn btn-ghost btn-sm" id="odNext" ${k <= 0 ? 'disabled' : ''} aria-label="Next day">${I.chevR}</button></div>
         <div class="small muted">${recs.length} ${recs.length === 1 ? 'person' : 'people'}, ${fmtHours(dayTotal)} hours</div></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th></tr></thead>
-        <tbody>${recs.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${esc(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department || '--')}</td>
+        <tbody>${recs.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department || '--')}</td>
           <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td><td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td></tr>`).join('')}</tbody></table></div>`;
     $('#odDay').onchange = e => { s.day = e.target.value; paintOtList(); };
     $('#odPrev').onclick = () => { s.day = days[k + 1]; paintOtList(); };
@@ -1004,65 +1042,73 @@ function paintOtList(){
     return;
   }
   if (s.mode === 'totals') {
-    const by = new Map();
-    live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0 }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); });
-    const list = [...by.values()].sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
-    box.innerHTML = `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days</th><th>Hours</th></tr></thead>
-      <tbody>${list.map(x => `<tr><td data-label="Name"><div class="strong">${esc(x.name)}</div><div class="tiny muted mono">${esc(x.id)}</div></td>
+    const list = otPersonTotals(live);
+    box.innerHTML = `<div class="small muted" style="padding:12px 14px 0">Click a name to see the days and hours behind the total.</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days</th><th>Hours</th></tr></thead>
+      <tbody>${list.map(x => `<tr class="clickable" onclick="openOtPerson('${esc(x.id)}')"><td data-label="Name"><div class="strong">${esc(x.name)}</div><div class="tiny muted mono">${otIdLine(x.id)}</div></td>
         <td data-label="Department">${esc([...x.depts].filter(Boolean).join(', ') || '--')}</td><td data-label="Days" class="tnum">${x.days}</td><td data-label="Hours" class="tnum strong">${fmtHours(x.hours)}</td></tr>`).join('')}</tbody></table></div>${foot}`;
     return;
   }
   box.innerHTML = `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Date</th><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th><th>Status</th>${canEdit ? '<th></th>' : ''}</tr></thead>
       <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}>
-        <td data-label="Date">${esc(r.work_date)}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
+        <td data-label="Date">${esc(r.work_date)}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
         <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
         <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>
         <td data-label="Status">${r.status === 'void' ? `<span class="badge b-slate" title="${esc(r.void_reason||'')}">Void</span>` : '<span class="badge b-ok">Recorded</span>'}</td>
         ${canEdit ? `<td>${r.status === 'void' ? '' : `<div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="openEditOvertime(${Number(r.id)})">${I.edit} Edit</button><button class="btn btn-ghost btn-sm" onclick="openVoidOvertime(${Number(r.id)})">Void</button></div>`}</td>` : ''}</tr>`).join('')}</tbody></table></div>${foot}`;
 }
 async function loadOtList(){
-  otListState.records = null; paintOtList();
+  const s = otListState, key = s.from + '|' + s.to;
+  s.records = null; paintOtList();
   try {
-    const res = await api('/webhook/employees/api/overtime?from=' + encodeURIComponent(otListState.from) + '&to=' + encodeURIComponent(otListState.to));
-    otListState.records = (res.records || []).map(r => Object.assign(r, { name: properName(r.name) }));
-  } catch (err) { toast('Could not load overtime', err.message, 'err'); otListState.records = []; }
-  const deps = [...new Set(otListState.records.map(r => r.department).filter(Boolean))].sort();
+    const res = await api('/webhook/employees/api/overtime?from=' + encodeURIComponent(s.from) + '&to=' + encodeURIComponent(s.to));
+    s.records = (res.records || []).map(r => Object.assign(r, { name: properName(r.name) })); s.key = key;
+  } catch (err) { toast('Could not load overtime', err.message, 'err'); s.records = []; s.key = ''; }
+  paintOtDept(); paintOtList();
+}
+function paintOtDept(){
+  const deps = [...new Set((otListState.records || []).map(r => r.department).filter(Boolean))].sort();
   msRender('olDept', 'All departments', deptOpts(deps), otListState.department, v => { otListState.department = v; paintOtList(); });
-  paintOtList();
 }
 function exportOvertimeCSV(){
   const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  const head = ['Date','Name','Enroll ID','Department','Start','End','Hours','Submitted by','Status'];
-  const lines = [head.join(',')].concat(filteredOvertime().map(r => [r.work_date, r.name, r.enroll_id, r.department, hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by, r.status].map(cell).join(',')));
-  download('okl_overtime_' + otListState.from + '_to_' + otListState.to + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
+  const s = otListState, types = empTypeMap(), rows = filteredOvertime(), live = rows.filter(r => r.status !== 'void');
+  let head, data, tag = '';
+  if (s.mode === 'entries') {
+    head = ['Date','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by','Status'];
+    data = rows.map(r => [r.work_date, r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by, r.status]);
+  } else if (s.mode === 'daily') {
+    tag = '_' + s.day;
+    head = ['Date','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by'];
+    data = live.filter(r => String(r.work_date).slice(0, 10) === s.day).map(r => [r.work_date, r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by]);
+  } else {
+    head = ['Enroll ID','Name','Department','Type','Days','Hours'];
+    data = otPersonTotals(live).map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), types.get(x.id), x.days, fmtHours(x.hours)]);
+  }
+  download('okl_overtime_' + (s.mode === 'entries' ? 'entries' : s.mode === 'daily' ? 'day' : 'by_person') + '_' + s.from + '_to_' + s.to + tag + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
 }
-function viewOvertimeList(){
+function viewOvertimeList(mode){
   if (!otListState.to) { const r = presetRange(otListState.preset); otListState.from = r[0]; otListState.to = r[1]; }
-  const s = otListState;
+  const s = otListState; s.mode = mode;
   return {
     title:'Overtime', crumb:'Attendance',
     html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, day by day, totals by person, and every entry.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
-      <div class="row filter-bar" style="margin-bottom:14px">
-        ${periodFields(s, 'ol')}
-        <div class="field" style="margin:0"><label>Department</label><div id="olDept"></div></div>
-        <div class="field" style="margin:0"><label for="olQ">Person</label><input class="inp" id="olQ" placeholder="Search name or ID" value="${esc(s.q)}"></div>
-        <label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>
-      </div>
-      <div class="tabs"><div class="tab ${s.mode==='overview'?'on':''}" data-mode="overview">Overview</div><div class="tab ${s.mode==='daily'?'on':''}" data-mode="daily">Daily</div><div class="tab ${s.mode==='totals'?'on':''}" data-mode="totals">By person</div><div class="tab ${s.mode==='entries'?'on':''}" data-mode="entries">Entries</div></div>
+      ${hrTabs([['overview', 'Overview', '/overtime/records'], ['daily', 'Daily', '/overtime/records/daily'], ['totals', 'By person', '/overtime/records/people'], ['entries', 'Entries', '/overtime/records/entries']], mode)}
+      ${hrFilterBar(s, 'ol', `<label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>`)}
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
-      bindPeriodFields(otListState, 'ol', loadOtList);
-      msRender('olDept', 'All departments', [], otListState.department, () => {});
-      $('#olQ').oninput = debounce(e => { otListState.q = e.target.value; paintOtList(); }, 150);
-      $('#olVoid').onchange = e => { otListState.showVoid = e.target.checked; paintOtList(); };
+      bindHrFilters(s, 'ol', loadOtList, paintOtList);
+      msRender('olDept', 'All departments', [], s.department, () => {});
+      $('#olVoid').onchange = e => { s.showVoid = e.target.checked; paintOtList(); };
       $('#olCsv').onclick = exportOvertimeCSV;
-      $$('.tab[data-mode]').forEach(t => t.onclick = () => { otListState.mode = t.dataset.mode; $$('.tab[data-mode]').forEach(x => x.classList.toggle('on', x === t)); paintOtList(); });
-      loadOtList();
+      if (s.records && s.key === s.from + '|' + s.to) { paintOtDept(); paintOtList(); } else loadOtList();
     },
   };
 }
-route('/overtime/records', () => viewOvertimeList());
+route('/overtime/records', () => viewOvertimeList('overview'));
+route('/overtime/records/daily', () => viewOvertimeList('daily'));
+route('/overtime/records/people', () => viewOvertimeList('totals'));
+route('/overtime/records/entries', () => viewOvertimeList('entries'));
 
 function openEditOvertime(id){
   const r = (otListState.records || []).find(x => Number(x.id) === Number(id)); if (!r) return;
@@ -1234,29 +1280,21 @@ function attGroup(people, keyFn){
 
 /* ---- page frame ---- */
 function attTabs(tab){
-  const tabs = [['overview', 'Overview', '/attendance'], ['daily', 'Daily', '/attendance/daily'], ['people', 'By person', '/attendance/people'], ['setup', 'Upload & settings', '/attendance/upload']];
-  return `<div class="tabs">${tabs.map(([k, l, p]) => `<a class="tab ${tab === k ? 'on' : ''}" href="#${p}" style="text-decoration:none">${l}</a>`).join('')}</div>`;
-}
-function attFilterBar(withQ){
-  return `<div class="row filter-bar" style="margin-bottom:14px">${periodFields(att, 'af')}
-    <div class="field" style="margin:0"><label>Department</label><div id="afDept"></div></div>
-    <div class="field" style="margin:0"><label for="afType">Type</label><select class="inp" id="afType"><option value="">Staff and casual</option><option value="staff" ${att.type === 'staff' ? 'selected' : ''}>Staff</option><option value="casual" ${att.type === 'casual' ? 'selected' : ''}>Casual</option></select></div>
-    ${withQ ? `<div class="field" style="margin:0"><label for="afQ">Person</label><input class="inp" id="afQ" placeholder="Search name or ID" value="${esc(att.q)}"></div>` : ''}</div>`;
+  return hrTabs([['overview', 'Overview', '/attendance'], ['daily', 'Daily', '/attendance/daily'], ['people', 'By person', '/attendance/people'], ['setup', 'Upload & settings', '/attendance/upload']], tab);
 }
 function viewAttendance(tab){
   initAttPeriod(); att.tab = tab;
   const filtered = ['overview', 'daily', 'people'].includes(tab);
   return {
     title:'Attendance', crumb:'Attendance',
-    html: `${pageHead('Attendance', 'Weekday attendance, lateness and absences from the attendance machine export. Weekends count as overtime.')}${attTabs(tab)}${filtered ? attFilterBar(tab !== 'overview') : ''}
+    html: `${pageHead('Attendance', 'Weekday attendance, lateness and absences from the attendance machine export. Weekends count as overtime.', filtered ? `<button class="btn btn-ghost" id="afCsv">${I.download} Export CSV</button>` : '')}${attTabs(tab)}${filtered ? hrFilterBar(att, 'af') : ''}
       <div id="attBody"><div class="small muted" style="padding:14px">Loading...</div></div>`,
     bind(){
       if (filtered) {
         const again = () => attLoad(tab);
-        bindPeriodFields(att, 'af', again);
+        bindHrFilters(att, 'af', again, () => paintAtt(tab));
         msRender('afDept', 'All departments', deptOpts(S.departments || [], true), att.dept, v => { att.dept = v; paintAtt(tab); });
-        $('#afType').onchange = e => { att.type = e.target.value; paintAtt(tab); };
-        const q = $('#afQ'); if (q) q.oninput = debounce(e => { att.q = e.target.value; paintAtt(tab); }, 150);
+        $('#afCsv').onclick = () => { if (att.data) attExportCsv(attCompute()); };
       }
       attLoad(tab);
     },
@@ -1368,20 +1406,27 @@ function paintAttPeople(body, c){
   body.innerHTML = `
     <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:10px">
       <div class="small muted">${rows.length} ${rows.length === 1 ? 'person' : 'people'} over ${c.dayList.length} ${c.dayList.length === 1 ? 'day' : 'days'} of data. Click a name for their day-by-day record.</div>
-      <div class="row" style="gap:8px"><select class="inp" id="apSort" style="width:auto"><option value="name">Sort: name</option><option value="late" ${att.sort === 'late' ? 'selected' : ''}>Sort: most late</option><option value="absent" ${att.sort === 'absent' ? 'selected' : ''}>Sort: most absent</option><option value="present" ${att.sort === 'present' ? 'selected' : ''}>Sort: most present</option></select>
-      <button class="btn btn-ghost" id="apCsv">${I.download} Export CSV</button></div></div>
+      <div class="row" style="gap:8px"><select class="inp" id="apSort" style="width:auto"><option value="name">Sort: name</option><option value="late" ${att.sort === 'late' ? 'selected' : ''}>Sort: most late</option><option value="absent" ${att.sort === 'absent' ? 'selected' : ''}>Sort: most absent</option><option value="present" ${att.sort === 'present' ? 'selected' : ''}>Sort: most present</option></select></div></div>
     <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days present</th><th>Days late</th><th>Days absent</th><th>Avg arrival</th></tr></thead>
       <tbody>${rows.map(p => `<tr class="clickable" onclick="openAttPerson('${esc(p.e.enroll_id)}')"><td data-label="Name"><div class="strong">${esc(p.e.name)}</div><div class="tiny muted mono">${esc(p.e.enroll_id)} - ${esc(p.e.employment_type === 'casual' ? 'Casual' : 'Staff')}</div></td>
         <td data-label="Department">${esc(p.e.department || '--')}</td><td data-label="Days present" class="tnum">${p.present}</td><td data-label="Days late" class="tnum ${p.late ? 'strong' : ''}">${p.late}</td>
         <td data-label="Days absent" class="tnum ${p.absent ? 'strong' : ''}">${p.absent}</td><td data-label="Avg arrival" class="tnum">${p.arrN ? attHHMM(p.arrSum / p.arrN) : '--'}</td></tr>`).join('')}</tbody></table></div></div>`;
   $('#apSort').onchange = e => { att.sort = e.target.value; paintAtt('people'); };
-  $('#apCsv').onclick = () => attPeopleCsv(c);
 }
 function attPeopleCsv(c){
   const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
   const lines = [['Enroll ID', 'Name', 'Department', 'Type', 'Days present', 'Days late', 'Days absent', 'Missing punch days', 'Avg arrival'].join(',')].concat(attPersonRows(c).map(p =>
     [p.e.enroll_id, p.e.name, p.e.department, p.e.employment_type, p.present, p.late, p.absent, p.missing, p.arrN ? attHHMM(p.arrSum / p.arrN) : ''].map(cell).join(',')));
   download('okl_attendance_' + att.from + '_to_' + att.to + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
+}
+function attExportCsv(c){
+  if (att.tab !== 'daily') return attPeopleCsv(c);
+  const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const statusOf = r => r.absent ? 'Absent' : (r.late ? 'Late ' + r.lateMin + ' min' : 'On time') + (r.missing ? ', no ' + r.missing + ' punch' : '');
+  const recs = c.recs.filter(r => r.day === att.day).sort((a, b) => a.e.name.localeCompare(b.e.name));
+  const lines = [['Date', 'Enroll ID', 'Name', 'Department', 'Type', 'In', 'Out', 'Status'].join(',')].concat(recs.map(r =>
+    [r.day, r.e.enroll_id, r.e.name, r.e.department, r.e.employment_type, r.i || '', r.o || '', statusOf(r)].map(cell).join(',')));
+  download('okl_attendance_day_' + att.day + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
 }
 function openAttPerson(id){
   if (!att.data) return;
