@@ -605,35 +605,99 @@ function aprIssues(r){
   if (!EMAIL_OK(r.email)) out.push(['Email looks wrong', 'b-danger']);
   return out;
 }
+const aprFilter = { dept:'', role:'', q:'' };
+const aprDept = r => r.department || 'Engineering flow';
+const aprRank = { requester:0, manager:1, engineering:1, operations:2, plant_head:3 };
+function aprFiltered(){
+  const q = aprFilter.q.trim().toLowerCase();
+  return (aprState.rows || []).filter(r => (!aprFilter.dept || aprDept(r) === aprFilter.dept) && (!aprFilter.role || (r.label || r.stage) === aprFilter.role) &&
+    (!q || (String(r.name) + ' ' + String(r.email) + ' ' + String(r.employee_name || '') + ' ' + String(r.enroll_id || '')).toLowerCase().includes(q)))
+    .sort((x, y) => aprDept(x).localeCompare(aprDept(y)) || (aprRank[x.stage] - aprRank[y.stage]) || String(x.name).localeCompare(String(y.name)));
+}
+function aprPaintFilters(){
+  const rows = aprState.rows || [], f = $('#aprFilters'); if (!f) return;
+  const depts = [...new Set(rows.map(aprDept))].sort(), roles = [...new Set(rows.map(r => r.label || r.stage))].sort();
+  f.innerHTML = `<div class="field" style="margin:0"><label for="aprFDept">Department</label><select class="inp" id="aprFDept"><option value="">All departments</option>${depts.map(d => `<option ${aprFilter.dept === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select></div>
+    <div class="field" style="margin:0"><label for="aprFRole">Role</label><select class="inp" id="aprFRole"><option value="">All roles</option>${roles.map(d => `<option ${aprFilter.role === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select></div>
+    <div class="field" style="margin:0"><label for="aprFQ">Person</label><input class="inp" id="aprFQ" placeholder="Search name or email" value="${esc(aprFilter.q)}"></div>`;
+  $('#aprFDept').onchange = e => { aprFilter.dept = e.target.value; aprPaint(); };
+  $('#aprFRole').onchange = e => { aprFilter.role = e.target.value; aprPaint(); };
+  $('#aprFQ').oninput = debounce(e => { aprFilter.q = e.target.value; aprPaint(); }, 150);
+}
 function aprPaint(){
   const box = $('#aprBody'); if (!box) return;
   if (!aprState.rows) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
-  const rows = aprState.rows, problems = rows.filter(r => aprIssues(r).length).length;
-  const groups = new Map();
-  rows.forEach(r => { const k = r.flow === 'engineering' ? 'Engineering flow' : (r.department || 'No department'); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
-  const ordered = [...groups.keys()].sort((a, b) => (a === 'Engineering flow' ? -1 : b === 'Engineering flow' ? 1 : a.localeCompare(b)));
-  const rank = { requester:0, manager:1, engineering:1, operations:2, plant_head:3 };
-  box.innerHTML = `${problems ? `<div class="notice warn" style="margin:14px">${I.alert}<div><b>${problems}</b> approver${problems === 1 ? '' : 's'} need a look (see the flags below). Link each person to their employee record so Leave recognises them, and fix any email that looks wrong.</div></div>` : ''}
-    ${ordered.map(g => `<div style="padding:14px 14px 0"><div class="strong" style="margin-bottom:6px">${esc(g)}</div></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Role</th><th>Person</th><th>Employee record</th><th>Used by</th><th></th></tr></thead><tbody>
-      ${groups.get(g).sort((a, b) => (rank[a.stage] - rank[b.stage]) || String(a.name).localeCompare(String(b.name))).map(r => `<tr>
-        <td data-label="Role" class="strong">${esc(r.label || r.stage)}</td>
+  if (!$('#aprFDept')) aprPaintFilters();
+  else {      // rows arrived after the page was drawn: refresh the choices without touching the search box
+    const rr = aprState.rows, ds = [...new Set(rr.map(aprDept))].sort(), ro = [...new Set(rr.map(r => r.label || r.stage))].sort();
+    $('#aprFDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option ${aprFilter.dept === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+    $('#aprFRole').innerHTML = '<option value="">All roles</option>' + ro.map(d => `<option ${aprFilter.role === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  }
+  const all = aprState.rows, rows = aprFiltered(), unlinked = all.filter(r => !r.enroll_id).length, other = all.filter(r => r.enroll_id && aprIssues(r).length).length + all.filter(r => !r.enroll_id && !EMAIL_OK(r.email)).length;
+  const hr = r => r.flow === 'dept' && r.stage === 'manager' && /\(HR approver\)/.test(r.used_by || '');
+  box.innerHTML = `${unlinked || other ? `<div class="notice warn" style="margin:14px">${I.alert}<div>${unlinked ? `<b>${unlinked}</b> of ${all.length} approver${all.length === 1 ? ' is' : 's are'} not linked to an employee record yet. ` : ''}${other ? `<b>${other}</b> ha${other === 1 ? 's' : 've'} an email that looks wrong or an employee who has left. ` : ''}Linking lets Leave recognise the person exactly (their own leave is never sent to themselves).</div></div>` : ''}
+    ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Department</th><th>Role</th><th>Person</th><th>Employee record</th><th>Used by</th><th></th></tr></thead><tbody>
+      ${rows.map(r => `<tr>
+        <td data-label="Department" class="strong">${esc(aprDept(r))}</td>
+        <td data-label="Role">${esc(r.label || r.stage)}${hr(r) ? ' <span class="badge b-info">HR approver</span>' : ''}</td>
         <td data-label="Person"><div class="strong">${esc(r.name)}</div><div class="small muted">${esc(r.email)}</div></td>
         <td data-label="Employee record">${r.enroll_id ? `${esc(proper(r.employee_name || ''))} <span class="tiny muted mono">${esc(r.enroll_id)}</span>` : '<span class="muted">--</span>'}
           ${aprIssues(r).map(([t, c]) => `<div style="margin-top:3px"><span class="badge ${c}">${esc(t)}</span></div>`).join('')}</td>
         <td data-label="Used by" class="small">${esc(r.used_by)}</td>
         <td data-label=""><div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="aprOpen('${esc(r.role_key)}')">${I.edit} Change</button>
           ${r.flow === 'dept' ? `<button class="btn btn-ghost btn-sm" onclick="aprRemove('${esc(r.role_key)}')">${I.x} Remove</button>` : ''}</div></td></tr>`).join('')}
-      </tbody></table></div>`).join('')}
-    <div class="small muted" style="padding:14px">${rows.length} approver${rows.length === 1 ? '' : 's'}. Requesters can submit a Procurement request for their department. Managers approve Procurement requests and are the first approver for Leave. The Business Support/HR manager is also the HR approver for Leave.</div>`;
+      </tbody></table></div>` : `<div class="small muted" style="padding:14px">No approvers match these filters.</div>`}
+    <div class="small muted" style="padding:14px">${rows.length === all.length ? all.length : rows.length + ' of ' + all.length} approver${all.length === 1 ? '' : 's'}. <b>Requesters</b> can submit a Procurement request for their department. <b>Managers</b> approve Procurement requests and are the first approver for Leave.
+      <b>Business Support/HR is the HR department:</b> its manager is the HR approver for Leave, after the person's own manager.</div>`;
 }
 route('/approvers', () => ({
   title:'Approvers', crumb:'Admin',
-  html: `${pageHead('Approvers', 'Who approves requests and who can submit them. Procurement and Leave both use this list.',
-    `<button class="btn btn-ghost" onclick="aprOpen('', 'requester')">${I.plus} Add requester</button><button class="btn btn-primary" onclick="aprOpen('', 'manager')">${I.plus} Add department manager</button>`)}
-    <div class="card"><div id="aprBody"></div></div>`,
-  bind(){ aprPaint(); aprLoad(true); },
+  html: `${pageHead('Approvers', 'Who approves requests and who can submit them. Procurement and Leave both use this one list.',
+    `<button class="btn btn-ghost" onclick="aprSuggest()">${I.check} Suggest links</button><button class="btn btn-ghost" onclick="aprOpen('', 'requester')">${I.plus} Add requester</button><button class="btn btn-primary" onclick="aprOpen('', 'manager')">${I.plus} Add department manager</button>`)}
+    <div class="row filter-bar" id="aprFilters" style="margin-bottom:14px"></div><div class="card"><div id="aprBody"></div></div>`,
+  bind(){ aprPaintFilters(); aprPaint(); aprLoad(true); },
 }));
+/* ---- Suggest links: match every unlinked approver to an employee in one go ---- */
+const aprWords = v => String(v || '').toLowerCase().replace(/[^a-z\u00e0-\u00ff\s]/g, ' ').split(/\s+/).filter(w => w.length > 1);
+function aprCandidates(r){
+  const emps = aprState.employees || [], mail = String(r.email || '').trim().toLowerCase(), want = aprWords(r.name);
+  const byMail = mail ? emps.filter(e => String(e.email || '').trim().toLowerCase() === mail) : [];
+  if (byMail.length) return { kind:'email', list:byMail };
+  if (!want.length) return { kind:'none', list:[] };
+  const list = emps.filter(e => { const have = aprWords(e.name); return want.every(w => have.includes(w)); })
+    .sort((a, b) => ((b.department === r.department ? 1 : 0) - (a.department === r.department ? 1 : 0)) || aprWords(a.name).length - aprWords(b.name).length).slice(0, 8);
+  const sameDept = r.department ? list.filter(e => e.department === r.department) : [];
+  return { kind: list.length ? 'name' : 'none', list, pick: list.length === 1 ? list[0] : (sameDept.length === 1 ? sameDept[0] : null) };
+}
+function aprSuggest(){
+  const todo = (aprState.rows || []).filter(r => !r.enroll_id);
+  if (!todo.length) { toast('Nothing to link', 'Every approver is already linked to an employee.', 'ok'); return; }
+  const sug = todo.map(r => Object.assign({ r }, aprCandidates(r)));
+  const tag = x => x.kind === 'email' ? '<span class="badge b-ok">Email matches</span>' : x.kind === 'name' ? `<span class="badge b-warn">${x.pick ? 'Name matches: please check' : x.list.length + ' people share this name'}</span>` : '<span class="badge b-slate">No match: use Change</span>';
+  openModal({
+    title:'Suggested links', size:'wide', sub:'Tick the ones that are right. An employee with no work email on record gets the approver\'s email added.',
+    body:`<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Approver</th><th>Employee record</th></tr></thead><tbody>
+      ${sug.map((x, i) => `<tr><td data-label=""><input type="checkbox" data-sg="${i}" ${(x.kind === 'email' && x.list.length === 1) || x.pick ? 'checked' : ''} ${x.list.length ? '' : 'disabled'}></td>
+        <td data-label="Approver"><div class="strong">${esc(x.r.name)}</div><div class="small muted">${esc(x.r.label || x.r.stage)} - ${esc(aprDept(x.r))}<br>${esc(x.r.email)}</div></td>
+        <td data-label="Employee record">${x.list.length ? `<select class="inp" data-pick="${i}">${x.list.length > 1 && !x.pick ? '<option value="">Choose...</option>' : ''}${x.list.map(e => `<option value="${esc(e.enroll_id)}" ${x.pick && x.pick.enroll_id === e.enroll_id ? 'selected' : ''}>${esc(e.name)} - ${esc(e.enroll_id)}${e.department ? ' - ' + esc(e.department) : ''}</option>`).join('')}</select>` : ''}<div style="margin-top:4px">${tag(x)}</div></td></tr>`).join('')}
+      </tbody></table></div><div class="err-msg hide" id="sgErr" style="margin-top:8px"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Link the ticked ones</button>`,
+    onMount:(w, close) => {
+      $$('[data-pick]', w).forEach(sel => sel.onchange = () => { const box = $('[data-sg="' + sel.dataset.pick + '"]', w); if (box) box.checked = !!sel.value; });
+      $('[data-save]', w).onclick = async () => {
+        const jobs = sug.map((x, i) => ({ x, box: $('[data-sg="' + i + '"]', w), sel: $('[data-pick="' + i + '"]', w) })).filter(j => j.box && j.box.checked && j.sel && j.sel.value);
+        if (!jobs.length) { const e = $('#sgErr', w); e.textContent = 'Tick at least one, and choose the employee.'; e.classList.remove('hide'); return; }
+        const btn = $('[data-save]', w); btn.disabled = true; let ok = 0; const failed = [];
+        for (const j of jobs) {
+          try { await api('/webhook/users/api/approvers/save', { method:'POST', body:{ role_key: j.x.r.role_key, name: j.x.r.name, email: j.x.r.email, enroll_id: j.sel.value } }); ok++; }
+          catch (err) { failed.push(j.x.r.name + ': ' + err.message); }
+        }
+        if (failed.length) { const e = $('#sgErr', w); e.textContent = ok + ' linked. Not linked: ' + failed.join(' | ') + ' (fix these with Change).'; e.classList.remove('hide'); btn.disabled = false; aprLoad(true); return; }
+        close(); toast('Linked', ok + ' approver' + (ok === 1 ? '' : 's') + ' linked to their employee record.', 'ok'); aprLoad(true);
+      };
+    },
+  });
+}
 function aprOpen(roleKey, newStage){
   const row = roleKey ? (aprState.rows || []).find(r => r.role_key === roleKey) : null;
   if (roleKey && !row) return;
