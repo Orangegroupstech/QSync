@@ -27,6 +27,8 @@ const I = (() => {
     externalLink: w('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14L21 3"/>'),
     clock: w('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/>'),
     home: w('<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>'),
+    coins: w('<circle cx="9" cy="9" r="6"/><path d="M15.2 9.4A6 6 0 1 1 9.4 15.2"/><path d="M9 6.5v5M7.5 8h3"/>'),
+    calendar: w('<rect x="3" y="4.5" width="18" height="16.5" rx="2"/><path d="M3 10h18M8 2.5v4M16 2.5v4"/>'),
     award: w('<circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-3 5 3-1.5-8"/>'),
   };
 })();
@@ -41,16 +43,17 @@ let msOpenId = null;
 document.addEventListener('click', ev => {
   if (msOpenId && !ev.target.closest('.ms')) { const p = document.querySelector('#' + msOpenId + ' .ms-pop'); if (p) p.classList.add('hide'); msOpenId = null; }
 });
-function msRender(id, allLabel, opts, sel, onChange){
+function msRender(id, allLabel, opts, sel, onChange, noun){
+  noun = noun || 'departments';
   const box = document.getElementById(id); if (!box) return;
-  const label = !sel.length ? allLabel : sel.length === 1 ? ((opts.find(o => o.v === sel[0]) || { l:sel[0] }).l) : sel.length + ' departments';
+  const label = !sel.length ? allLabel : sel.length === 1 ? ((opts.find(o => o.v === sel[0]) || { l:sel[0] }).l) : sel.length + ' ' + noun;
   box.classList.add('ms');
   box.innerHTML = `<button type="button" class="inp ms-btn" aria-haspopup="true">${esc(label)} <span class="ms-caret">&#9662;</span></button>
     <div class="ms-pop ${msOpenId === id ? '' : 'hide'}">${opts.map(o => `<label class="ms-opt"><input type="checkbox" value="${esc(o.v)}" ${sel.includes(o.v) ? 'checked' : ''}> <span>${esc(o.l)}</span></label>`).join('')}
       <div class="ms-foot"><button type="button" class="btn btn-ghost btn-sm" data-ms-clear>Clear</button></div></div>`;
   const pop = box.querySelector('.ms-pop');
   box.querySelector('.ms-btn').onclick = () => { const open = pop.classList.contains('hide'); pop.classList.toggle('hide', !open); msOpenId = open ? id : null; };
-  const change = next => { msOpenId = id; onChange(next); msRender(id, allLabel, opts, next, onChange); };
+  const change = next => { msOpenId = id; onChange(next); msRender(id, allLabel, opts, next, onChange, noun); };
   box.querySelectorAll('input[type=checkbox]').forEach(c => c.onchange = () => change(Array.from(box.querySelectorAll('input:checked')).map(x => x.value)));
   box.querySelector('[data-ms-clear]').onclick = () => change([]);
 }
@@ -248,6 +251,8 @@ function navModel(){
       { path:'/overtime/records', label:'Overtime', icon:'layers' },
       { path:'/attendance', label:'Attendance', icon:'activity' },
     ] },
+    { title:'Leave', items:[ { path:'/leave', label:'Leave', icon:'calendar' } ] },
+    { title:'Salary', items:[ { path:'/salary', label:'Salary', icon:'coins' }, { path:'/holidays', label:'Public holidays', icon:'calendar' } ] },
   ];
 }
 
@@ -947,30 +952,38 @@ route('/overtime/submit', () => viewOvertimeSubmit());
 function hrTabs(tabs, active){
   return `<div class="tabs">${tabs.map(([k, l, p]) => `<a class="tab ${active === k ? 'on' : ''}" href="#${p}" style="text-decoration:none">${l}</a>`).join('')}</div>`;
 }
-function hrFilterBar(s, p, extras){      // p = element id prefix; s needs preset/from/to/type/q (department is a multi-select in #pDept)
-  return `<div class="row filter-bar" style="margin-bottom:14px">${periodFields(s, p)}
+function hrFilterBar(s, p, extras, opt){      // p = element id prefix; s needs preset/from/to/type/q (department is a multi-select in #pDept)
+  return `<div class="row filter-bar" style="margin-bottom:14px">${periodFields(s, p, opt && opt.periods)}
     <div class="field" style="margin:0"><label>Department</label><div id="${p}Dept"></div></div>
-    <div class="field" style="margin:0"><label for="${p}Type">Type</label><select class="inp" id="${p}Type"><option value="">Staff and casual</option><option value="staff" ${s.type === 'staff' ? 'selected' : ''}>Staff</option><option value="casual" ${s.type === 'casual' ? 'selected' : ''}>Casual</option></select></div>
+    ${opt && opt.noType ? '' : `<div class="field" style="margin:0"><label for="${p}Type">Type</label><select class="inp" id="${p}Type"><option value="">Staff and casual</option><option value="staff" ${s.type === 'staff' ? 'selected' : ''}>Staff</option><option value="casual" ${s.type === 'casual' ? 'selected' : ''}>Casual</option></select></div>`}
     <div class="field" style="margin:0"><label for="${p}Q">Person</label><input class="inp" id="${p}Q" placeholder="Search name or ID" value="${esc(s.q)}"></div>${extras || ''}</div>`;
 }
 function bindHrFilters(s, p, onRange, onChange){
   bindPeriodFields(s, p, onRange);
-  $('#' + p + 'Type').onchange = e => { s.type = e.target.value; onChange(); };
+  if ($('#' + p + 'Type')) $('#' + p + 'Type').onchange = e => { s.type = e.target.value; onChange(); };
   $('#' + p + 'Q').oninput = debounce(e => { s.q = e.target.value; onChange(); }, 150);
 }
 const typeLabel = t => t === 'casual' ? 'Casual' : 'Staff';
 function empTypeMap(){ return new Map(S.employees.map(e => [e.enroll_id, e.employment_type])); }
 
-let otListState = { preset:'last30', from:'', to:'', department:[], day:'', q:'', type:'', showVoid:false, mode:'overview', records:null, key:'' };
+/* Day type of an overtime entry: weekday / weekend / public holiday. The server decides it; rows from an older
+   workflow (no day_type yet) fall back to Saturday/Sunday = weekend. */
+const DAY_TYPES = [['weekday', 'Weekday'], ['weekend', 'Weekend'], ['public_holiday', 'Public holiday']];
+const dayTypeLabel = t => (DAY_TYPES.find(x => x[0] === t) || DAY_TYPES[0])[1];
+const otDayType = r => r.day_type || ([0, 6].includes(new Date(String(r.work_date).slice(0, 10) + 'T12:00:00Z').getUTCDay()) ? 'weekend' : 'weekday');
+const dayBadge = t => `<span class="badge ${t === 'public_holiday' ? 'b-warn' : t === 'weekend' ? 'b-info' : 'b-slate'}">${esc(dayTypeLabel(t))}</span>`;
+
+let otListState = { preset:'last30', from:'', to:'', department:[], dayTypes:[], day:'', q:'', type:'', showVoid:false, mode:'overview', records:null, key:'' };
 function filteredOvertime(){
   const s = otListState, q = s.q.trim().toLowerCase(), types = empTypeMap();
   return (s.records || []).filter(r =>
     (s.showVoid || r.status !== 'void') && deptPick(s.department, r.department) && (!s.type || types.get(r.enroll_id) === s.type) &&
+    (!s.dayTypes.length || s.dayTypes.includes(otDayType(r))) &&
     (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q)));
 }
 function otPersonTotals(live){
   const by = new Map();
-  live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0 }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); });
+  live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0, byType:{ weekday:0, weekend:0, public_holiday:0 } }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); x.byType[otDayType(r)] += Number(r.hours || 0); });
   return [...by.values()].sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
 }
 function otIdLine(id){ const t = empTypeMap().get(id); return esc(id) + (t ? ' - ' + typeLabel(t) : ''); }
@@ -981,10 +994,10 @@ function openOtPerson(id){
   openModal({
     title: rows[0].name, size:'wide', sub: [...new Set(rows.map(r => r.department).filter(Boolean))].join(', ') + (rows.some(r => r.department) ? ' - ' : '') + s.from + ' to ' + s.to,
     body: `<div class="grid g3" style="margin-bottom:12px">${[['Days of overtime', live.length], ['Total hours', fmtHours(total)], ['Average per day', fmtHours(live.length ? total / live.length : 0)]].map(([l, v]) => `<div class="stat"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Time</th><th>Hours</th><th>Submitted by</th>${rows.length !== live.length ? '<th>Status</th>' : ''}</tr></thead>
-      <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}><td data-label="Date" class="strong">${esc(fmtDayShort(String(r.work_date).slice(0, 10)))}</td><td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Day type</th><th>Time</th><th>Hours</th><th>Submitted by</th>${rows.length !== live.length ? '<th>Status</th>' : ''}</tr></thead>
+      <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}><td data-label="Date" class="strong">${esc(fmtDayShort(String(r.work_date).slice(0, 10)))}</td><td data-label="Day type">${dayBadge(otDayType(r))}</td><td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
         <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>${rows.length !== live.length ? `<td data-label="Status">${r.status === 'void' ? '<span class="badge b-slate">Void</span>' : '<span class="badge b-ok">Recorded</span>'}</td>` : ''}</tr>`).join('')}
-        <tr><td class="strong">Total</td><td></td><td class="tnum strong">${fmtHours(total)}</td><td></td>${rows.length !== live.length ? '<td></td>' : ''}</tr></tbody></table></div>`,
+        <tr><td class="strong">Total</td><td></td><td></td><td class="tnum strong">${fmtHours(total)}</td><td></td>${rows.length !== live.length ? '<td></td>' : ''}</tr></tbody></table></div>`,
     footer: `<button class="btn btn-ghost" data-close>Close</button>`,
   });
 }
@@ -1006,6 +1019,8 @@ function paintOtList(){
     const weeks = group(r => weekOf(r.work_date)).sort((a, b) => a.key < b.key ? 1 : -1);
     const nameOf = new Map(live.map(r => [r.enroll_id, r.name]));
     const topPeople = group(r => r.enroll_id).sort((a, b) => b.hours - a.hours).slice(0, 10);
+    const byTypeMap = group(r => otDayType(r)), typeRows = DAY_TYPES.map(([k]) => byTypeMap.find(x => x.key === k) || { key:k, hours:0, entries:0, people:new Set() });
+    const maxT = Math.max(1, ...typeRows.map(x => x.hours));
     const maxD = depts[0].hours || 1, maxW = Math.max(1, ...weeks.map(x => x.hours)), maxP = topPeople[0].hours || 1;
     const bar = (label, right, pct) => `<div><div class="row between small"><span class="strong">${esc(label)}</span><span class="muted">${right}</span></div><div class="bar" style="margin-top:4px"><i style="width:${pct}%"></i></div></div>`;
     box.innerHTML = `<div class="card-b">
@@ -1018,6 +1033,8 @@ function paintOtList(){
         <div><div class="strong" style="margin-bottom:8px">Hours by department</div><div class="stack" style="gap:11px">${depts.map(x => bar(x.key, fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people') + ' - ' + fmtHours(x.hours / x.people.size) + ' h each', Math.round(x.hours / maxD * 100))).join('')}</div></div>
         <div><div class="strong" style="margin-bottom:8px">Most overtime</div><div class="stack" style="gap:11px">${topPeople.map(x => bar(nameOf.get(x.key) || x.key, fmtHours(x.hours) + ' h - ' + x.entries + ' ' + (x.entries === 1 ? 'day' : 'days'), Math.round(x.hours / maxP * 100))).join('')}</div></div>
       </div>
+      <div class="strong" style="margin:20px 0 8px">Hours by day type</div>
+      <div class="stack" style="gap:11px">${typeRows.map(x => bar(dayTypeLabel(x.key), fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people') + ' - ' + x.entries + ' ' + (x.entries === 1 ? 'entry' : 'entries'), Math.round(x.hours / maxT * 100))).join('')}</div>
       <div class="strong" style="margin:20px 0 8px">Hours by week</div>
       <div class="stack" style="gap:11px">${weeks.map(x => bar('Week of ' + fmtDayShort(x.key), fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people'), Math.round(x.hours / maxW * 100))).join('')}</div></div>`;
     return;
@@ -1032,9 +1049,9 @@ function paintOtList(){
         <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" id="odPrev" ${k >= days.length - 1 ? 'disabled' : ''} aria-label="Previous day">${I.chevL}</button>
           <select class="inp" id="odDay" style="width:auto">${days.map(d => `<option value="${d}" ${d === s.day ? 'selected' : ''}>${esc(fmtDay(d))}</option>`).join('')}</select>
           <button class="btn btn-ghost btn-sm" id="odNext" ${k <= 0 ? 'disabled' : ''} aria-label="Next day">${I.chevR}</button></div>
-        <div class="small muted">${recs.length} ${recs.length === 1 ? 'person' : 'people'}, ${fmtHours(dayTotal)} hours</div></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th></tr></thead>
-        <tbody>${recs.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department || '--')}</td>
+        <div class="row small muted" style="gap:8px">${[...new Set(recs.map(otDayType))].map(dayBadge).join(' ')} <span>${recs.length} ${recs.length === 1 ? 'person' : 'people'}, ${fmtHours(dayTotal)} hours</span></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Day type</th><th>Time</th><th>Hours</th><th>Submitted by</th></tr></thead>
+        <tbody>${recs.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department || '--')}</td><td data-label="Day type">${dayBadge(otDayType(r))}</td>
           <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td><td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td></tr>`).join('')}</tbody></table></div>`;
     $('#odDay').onchange = e => { s.day = e.target.value; paintOtList(); };
     $('#odPrev').onclick = () => { s.day = days[k + 1]; paintOtList(); };
@@ -1043,15 +1060,16 @@ function paintOtList(){
   }
   if (s.mode === 'totals') {
     const list = otPersonTotals(live);
-    box.innerHTML = `<div class="small muted" style="padding:12px 14px 0">Click a name to see the days and hours behind the total.</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days</th><th>Hours</th></tr></thead>
+    box.innerHTML = `<div class="small muted" style="padding:12px 14px 0">Click a name to see the days and hours behind the total.</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days</th><th>Hours</th><th>Weekday h</th><th>Weekend h</th><th>Public holiday h</th></tr></thead>
       <tbody>${list.map(x => `<tr class="clickable" onclick="openOtPerson('${esc(x.id)}')"><td data-label="Name"><div class="strong">${esc(x.name)}</div><div class="tiny muted mono">${otIdLine(x.id)}</div></td>
-        <td data-label="Department">${esc([...x.depts].filter(Boolean).join(', ') || '--')}</td><td data-label="Days" class="tnum">${x.days}</td><td data-label="Hours" class="tnum strong">${fmtHours(x.hours)}</td></tr>`).join('')}</tbody></table></div>${foot}`;
+        <td data-label="Department">${esc([...x.depts].filter(Boolean).join(', ') || '--')}</td><td data-label="Days" class="tnum">${x.days}</td><td data-label="Hours" class="tnum strong">${fmtHours(x.hours)}</td>
+        <td data-label="Weekday h" class="tnum">${fmtHours(x.byType.weekday)}</td><td data-label="Weekend h" class="tnum">${fmtHours(x.byType.weekend)}</td><td data-label="Public holiday h" class="tnum">${fmtHours(x.byType.public_holiday)}</td></tr>`).join('')}</tbody></table></div>${foot}`;
     return;
   }
   box.innerHTML = `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Date</th><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th><th>Status</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>Date</th><th>Day type</th><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th><th>Status</th>${canEdit ? '<th></th>' : ''}</tr></thead>
       <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}>
-        <td data-label="Date">${esc(r.work_date)}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
+        <td data-label="Date">${esc(r.work_date)}</td><td data-label="Day type">${dayBadge(otDayType(r))}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
         <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
         <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>
         <td data-label="Status">${r.status === 'void' ? `<span class="badge b-slate" title="${esc(r.void_reason||'')}">Void</span>` : '<span class="badge b-ok">Recorded</span>'}</td>
@@ -1075,15 +1093,15 @@ function exportOvertimeCSV(){
   const s = otListState, types = empTypeMap(), rows = filteredOvertime(), live = rows.filter(r => r.status !== 'void');
   let head, data, tag = '';
   if (s.mode === 'entries') {
-    head = ['Date','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by','Status'];
-    data = rows.map(r => [r.work_date, r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by, r.status]);
+    head = ['Date','Day type','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by','Status'];
+    data = rows.map(r => [r.work_date, dayTypeLabel(otDayType(r)), r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by, r.status]);
   } else if (s.mode === 'daily') {
     tag = '_' + s.day;
-    head = ['Date','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by'];
-    data = live.filter(r => String(r.work_date).slice(0, 10) === s.day).map(r => [r.work_date, r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by]);
+    head = ['Date','Day type','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by'];
+    data = live.filter(r => String(r.work_date).slice(0, 10) === s.day).map(r => [r.work_date, dayTypeLabel(otDayType(r)), r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by]);
   } else {
-    head = ['Enroll ID','Name','Department','Type','Days','Hours'];
-    data = otPersonTotals(live).map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), types.get(x.id), x.days, fmtHours(x.hours)]);
+    head = ['Enroll ID','Name','Department','Type','Days','Hours','Weekday hours','Weekend hours','Public holiday hours'];
+    data = otPersonTotals(live).map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), types.get(x.id), x.days, fmtHours(x.hours), fmtHours(x.byType.weekday), fmtHours(x.byType.weekend), fmtHours(x.byType.public_holiday)]);
   }
   download('okl_overtime_' + (s.mode === 'entries' ? 'entries' : s.mode === 'daily' ? 'day' : 'by_person') + '_' + s.from + '_to_' + s.to + tag + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
 }
@@ -1094,11 +1112,12 @@ function viewOvertimeList(mode){
     title:'Overtime', crumb:'Attendance',
     html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, day by day, totals by person, and every entry.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
       ${hrTabs([['overview', 'Overview', '/overtime/records'], ['daily', 'Daily', '/overtime/records/daily'], ['totals', 'By person', '/overtime/records/people'], ['entries', 'Entries', '/overtime/records/entries']], mode)}
-      ${hrFilterBar(s, 'ol', `<label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>`)}
+      ${hrFilterBar(s, 'ol', `<div class="field" style="margin:0"><label>Day type</label><div id="olDay"></div></div><label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>`)}
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
       bindHrFilters(s, 'ol', loadOtList, paintOtList);
       msRender('olDept', 'All departments', [], s.department, () => {});
+      msRender('olDay', 'All day types', DAY_TYPES.map(([v, l]) => ({ v, l })), s.dayTypes, v => { s.dayTypes = v; paintOtList(); }, 'day types');
       $('#olVoid').onchange = e => { s.showVoid = e.target.checked; paintOtList(); };
       $('#olCsv').onclick = exportOvertimeCSV;
       if (s.records && s.key === s.from + '|' + s.to) { paintOtDept(); paintOtList(); } else loadOtList();
@@ -1120,9 +1139,14 @@ function openEditOvertime(id){
         <div class="field"><label for="eoStart">Start time</label><input class="inp" type="time" id="eoStart" value="${esc(hhmm(r.start_time))}"></div>
         <div class="field"><label for="eoEnd">End time</label><input class="inp" type="time" id="eoEnd" value="${esc(hhmm(r.end_time))}"></div></div>
       <div class="small muted" id="eoHours"></div><div class="err-msg hide" data-err="eoStart"></div>
+      <label class="row" style="gap:8px;margin:12px 0 0;font-weight:600"><input type="checkbox" id="eoHol" ${otDayType(r) === 'public_holiday' ? 'checked' : ''}> Tick here if date is a public holiday</label>
+      <div class="small muted" id="eoDay" style="margin-top:4px"></div>
       ${r.start_time ? '' : `<div class="hint">${I.info}<span>This entry was recorded with hours only (${esc(fmtHours(r.hours))} h). Enter start and end times to replace it.</span></div>`}`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
     onMount:(w, close) => {
+      const dayNow = () => $('#eoHol', w).checked ? 'public_holiday' : ([0, 6].includes(new Date(String(r.work_date).slice(0, 10) + 'T12:00:00Z').getUTCDay()) ? 'weekend' : 'weekday');
+      const showDay = () => { $('#eoDay', w).textContent = 'Recorded as: ' + dayTypeLabel(dayNow()); };
+      $('#eoHol', w).onchange = showDay; showDay();
       const upd = () => { const h = calc($('#eoStart', w).value, $('#eoEnd', w).value); $('#eoHours', w).textContent = h == null ? 'End must be after start.' : 'Duration: ' + fmtHours(h) + ' h'; };
       $('#eoStart', w).oninput = upd; $('#eoEnd', w).oninput = upd; upd();
       $('[data-save]', w).onclick = async () => {
@@ -1131,8 +1155,8 @@ function openEditOvertime(id){
         if (calc(start, end) == null) return setErr('eoStart', 'End must be after start.', w);
         const btn = $('[data-save]', w); btn.disabled = true;
         try {
-          const res = await api('/webhook/employees/api/overtime/update', { method:'POST', body:{ id: r.id, start, end } });
-          r.start_time = start + ':00'; r.end_time = end + ':00'; r.hours = res.hours != null ? res.hours : calc(start, end);
+          const res = await api('/webhook/employees/api/overtime/update', { method:'POST', body:{ id: r.id, start, end, holiday: $('#eoHol', w).checked } });
+          r.start_time = start + ':00'; r.end_time = end + ':00'; r.hours = res.hours != null ? res.hours : calc(start, end); r.day_type = res.day_type || dayNow();
           close(); paintOtList(); toast('Overtime updated', r.name + ' now has ' + fmtHours(r.hours) + ' h on ' + r.work_date + '.', 'ok');
         } catch (err) { setErr('eoStart', err.message, w); btn.disabled = false; }
       };
@@ -1176,6 +1200,14 @@ const fmtDay = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', {
 const fmtDayShort = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', timeZone:'UTC' });
 const fmtWhen = v => v ? new Date(v).toLocaleString('en-GB', { timeZone:'Africa/Lagos', day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '--';
 
+/* Payroll cycle: the 21st of one month to the 20th of the next. The cycle that contains the given day (back = 1: the one before). */
+function payCycle(t, back){
+  const pad = n => String(n).padStart(2, '0'); let y = +t.slice(0, 4), m = +t.slice(5, 7);
+  if (+t.slice(8, 10) < 21) { m = m === 1 ? 12 : m - 1; y = m === 12 ? y - 1 : y; }
+  for (let i = 0; i < (back || 0); i++) { m = m === 1 ? 12 : m - 1; y = m === 12 ? y - 1 : y; }
+  const em = m === 12 ? 1 : m + 1, ey = m === 12 ? y + 1 : y;
+  return [`${y}-${pad(m)}-21`, `${ey}-${pad(em)}-20`];
+}
 function presetRange(key){
   const t = todayStr(), y = +t.slice(0, 4), m = +t.slice(5, 7), pad = n => String(n).padStart(2, '0');
   const lastOf = (yy, mm) => new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
@@ -1185,14 +1217,17 @@ function presetRange(key){
     case 'last90': return [addDays(t, -89), t];
     case 'lastmonth': { const pm = m === 1 ? 12 : m - 1, py = m === 1 ? y - 1 : y; return [`${py}-${pad(pm)}-01`, lastOf(py, pm)]; }
     case 'year': return [`${y}-01-01`, t];
+    case 'fullyear': return [`${y}-01-01`, `${y}-12-31`];
+    case 'cycle': return payCycle(t, 0);
+    case 'lastcycle': return payCycle(t, 1);
   }
   return null;
 }
 function initAttPeriod(){ if (!att.from) { const r = presetRange(att.preset); att.from = r[0]; att.to = r[1]; } }
-const PERIODS = [['month','This month'],['last30','Last 30 days'],['last90','Last 90 days'],['lastmonth','Last month'],['year','This year'],['custom','Custom']];
+const PERIODS = [['month','This month'],['last30','Last 30 days'],['last90','Last 90 days'],['lastmonth','Last month'],['year','This year'],['fullyear','Whole year'],['custom','Custom']];
 
-function periodFields(s, p){      // p = element id prefix; shared by attendance and overtime
-  return `<div class="field" style="margin:0"><label for="${p}Preset">Period</label><select class="inp" id="${p}Preset">${PERIODS.map(([k, l]) => `<option value="${k}" ${s.preset === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+function periodFields(s, p, list){      // p = element id prefix; shared by attendance and overtime
+  return `<div class="field" style="margin:0"><label for="${p}Preset">Period</label><select class="inp" id="${p}Preset">${(list || PERIODS).map(([k, l]) => `<option value="${k}" ${s.preset === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     <div class="field" style="margin:0"><label for="${p}From">From</label><input class="inp" type="date" id="${p}From" value="${esc(s.from)}"></div>
     <div class="field" style="margin:0"><label for="${p}To">To</label><input class="inp" type="date" id="${p}To" value="${esc(s.to)}"></div>`;
 }
@@ -1638,6 +1673,621 @@ route('/attendance/people', () => viewAttendance('people'));
 route('/attendance/upload', () => viewAttendance('setup'));
 route('/attendance/history', () => viewAttendance('setup'));
 route('/attendance/settings', () => viewAttendance('setup'));
+
+/* ============================================================
+   Leave: requests, balances and setup; the public holidays page
+   Staff request leave on the hosted form. The department manager decides from the link in their email; HR decides
+   here (or anyone with edit access). Balances are worked out on the server: yearly days - approved - waiting.
+   ============================================================ */
+const LEAVE_FORM_URL = 'https://orangegroupsai.online/webhook/employees/leave-form';
+const LV_STATUS = { pending_manager:['Waiting for manager', 'b-warn'], pending_hr:['Waiting for HR', 'b-info'], approved:['Approved', 'b-ok'], rejected:['Rejected', 'b-danger'], cancelled:['Cancelled', 'b-slate'] };
+const lvBadge = s => { const x = LV_STATUS[s] || [s, 'b-slate']; return `<span class="badge ${x[1]}">${esc(x[0])}</span>`; };
+const lvEnc = encodeURIComponent;
+function lvPaintTest(email){
+  const b = $('#lvTest'); if (!b) return;
+  b.innerHTML = email ? `<div class="hint" style="margin-bottom:14px">${I.alert}<span><b>Test mode.</b> Every leave email (approvers and staff) goes to ${esc(email)}. Turn it off before going live (workflow/leave_test_mode.sql).</span></div>` : '';
+}
+let lv = { preset:'fullyear', from:'', to:'', department:[], leaveType:'', status:'', q:'', mode:'overview', records:null, key:'', meEmail:'', testEmail:'', types:null, bal:null, balYear:0, balEdits:{} };
+
+function lvFiltered(){
+  const s = lv, q = s.q.trim().toLowerCase();
+  return (s.records || []).filter(r => deptPick(s.department, r.department) && (!s.leaveType || r.type === s.leaveType) &&
+    (!s.status || (s.status === 'pending' ? String(r.status).startsWith('pending') : r.status === s.status)) &&
+    (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q) || String(r.request_no).toLowerCase().includes(q)));
+}
+function lvWaitingFor(r){
+  if (!String(r.status).startsWith('pending')) return '';
+  const st = (r.stages || []).find(x => x.stage === String(r.status).replace('pending_', ''));
+  return st ? st.name : '';
+}
+function lvRange(r){ return r.start_date === r.end_date ? fmtDayShort(r.start_date) : fmtDayShort(r.start_date) + ' - ' + fmtDayShort(r.end_date); }
+function lvNormalize(r){ return Object.assign(r, { name: properName(r.name), reliever: r.reliever ? properName(r.reliever) : r.reliever }); }
+
+async function lvLoad(){
+  const s = lv, key = s.from + '|' + s.to;
+  s.records = null; lvPaint();
+  try {
+    const res = await api('/webhook/employees/api/leave?from=' + lvEnc(s.from) + '&to=' + lvEnc(s.to));
+    s.records = (res.requests || []).map(lvNormalize); s.meEmail = String(res.me_email || '').toLowerCase(); s.testEmail = res.test_email || ''; s.key = key;
+  } catch (err) { toast('Could not load leave', err.message, 'err'); s.records = []; s.key = ''; }
+  lvPaintTest(s.testEmail); lvPaintFilters(); lvPaint();
+}
+function lvPaintFilters(){
+  const deps = [...new Set((lv.records || []).map(r => r.department).filter(Boolean))].sort();
+  msRender('lvDept', 'All departments', deptOpts(deps), lv.department, v => { lv.department = v; lvPaint(); });
+  const sel = $('#lvLeaveType'); if (!sel) return;
+  const types = new Map((lv.records || []).map(r => [r.type, r.type_label]));
+  sel.innerHTML = '<option value="">All leave types</option>' + [...types].map(([k, l]) => `<option value="${esc(k)}" ${lv.leaveType === k ? 'selected' : ''}>${esc(l)}</option>`).join('');
+}
+function lvCsv(){
+  const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  let head, data, name;
+  if (lv.mode === 'balances') {
+    head = ['Enroll ID', 'Name', 'Department', 'Yearly days', 'Taken', 'Waiting', 'Left'];
+    data = lvBalFiltered().map(b => [b.enroll_id, b.name, b.department, b.entitled == null ? '' : b.entitled, b.taken, b.pending, b.remaining == null ? '' : b.remaining]);
+    name = 'okl_leave_balances_' + lv.balYear;
+  } else {
+    head = ['Request', 'Enroll ID', 'Name', 'Department', 'Leave type', 'From', 'To', 'Back on', 'Working days', 'Status', 'Waiting for', 'Covered by', 'Submitted'];
+    data = lvFiltered().map(r => [r.request_no, r.enroll_id, r.name, r.department, r.type_label, r.start_date, r.end_date, r.resume_date, r.days, (LV_STATUS[r.status] || [r.status])[0], lvWaitingFor(r), r.reliever, String(r.submitted_at || '').slice(0, 10)]);
+    name = 'okl_leave_requests_' + lv.from + '_to_' + lv.to;
+  }
+  download(name + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
+}
+
+/* ---- the Leave page ---- */
+function lvTabs(mode){ return hrTabs([['overview', 'Overview', '/leave'], ['requests', 'Requests', '/leave/requests'], ['balances', 'Balances', '/leave/balances'], ['setup', 'Setup', '/leave/setup']], mode); }
+function viewLeave(mode){
+  if (!lv.to) { const r = presetRange(lv.preset); lv.from = r[0]; lv.to = r[1]; }
+  lv.mode = mode;
+  const extras = `<div class="field" style="margin:0"><label for="lvLeaveType">Leave type</label><select class="inp" id="lvLeaveType"><option value="">All leave types</option></select></div>
+    <div class="field" style="margin:0"><label for="lvStatus">Status</label><select class="inp" id="lvStatus">${[['', 'Any status'], ['pending', 'Waiting'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['cancelled', 'Cancelled']].map(([k, l]) => `<option value="${k}" ${lv.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+  const csv = mode === 'setup' ? '' : `<button class="btn btn-ghost" id="lvCsv">${I.download} Export CSV</button>`;
+  const open = `<a class="btn btn-primary" href="${esc(LEAVE_FORM_URL)}" target="_blank" rel="noopener">${I.externalLink} Request form</a>`;
+  const filters = mode === 'setup' ? '' : mode === 'balances' ? lvBalFilterBar() : hrFilterBar(lv, 'lv', extras, { noType:true });
+  return {
+    title:'Leave', crumb:'Leave',
+    html: `${pageHead('Leave', 'Staff leave requests, who is waiting to decide, and how many days everyone has left.', csv + open)}
+      <div id="lvTest"></div>${lvTabs(mode)}${filters}<div class="card"><div id="lvBody"></div></div>`,
+    bind(){
+      lvPaintTest(lv.testEmail);
+      if (mode === 'setup') { lvPaintSetup(); return; }
+      if (mode === 'balances') { lvBindBalances(); $('#lvCsv').onclick = lvCsv; return; }
+      bindHrFilters(lv, 'lv', lvLoad, lvPaint);
+      $('#lvLeaveType').onchange = e => { lv.leaveType = e.target.value; lvPaint(); };
+      $('#lvStatus').onchange = e => { lv.status = e.target.value; lvPaint(); };
+      msRender('lvDept', 'All departments', [], lv.department, () => {});
+      $('#lvCsv').onclick = lvCsv;
+      if (lv.records && lv.key === lv.from + '|' + lv.to) { lvPaintFilters(); lvPaint(); } else lvLoad();
+    },
+  };
+}
+function lvPaint(){
+  const box = $('#lvBody'); if (!box || lv.mode === 'balances' || lv.mode === 'setup') return;
+  if (!lv.records) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
+  const rows = lvFiltered(), today = todayStr();
+  if (lv.mode === 'requests') {
+    if (!rows.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No leave requests match these filters.</div>`; return; }
+    box.innerHTML = `<div class="small muted" style="padding:12px 14px 0">Click a request to see its route and decisions.</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Request</th><th>Name</th><th>Leave</th><th>Dates</th><th>Days</th><th>Status</th><th>Waiting for</th></tr></thead>
+      <tbody>${rows.map(r => `<tr class="clickable" onclick="go('/leave/review/${esc(r.request_no)}')"><td data-label="Request" class="mono small">${esc(r.request_no)}</td>
+        <td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted">${esc(r.department || '')}</div></td><td data-label="Leave">${esc(r.type_label)}</td><td data-label="Dates">${esc(lvRange(r))}</td>
+        <td data-label="Days" class="tnum strong">${esc(r.days)}</td><td data-label="Status">${lvBadge(r.status)}</td><td data-label="Waiting for" class="small">${esc(lvWaitingFor(r) || '--')}</td></tr>`).join('')}</tbody></table></div>
+      <div class="small muted" style="padding:12px 14px">${rows.length} ${rows.length === 1 ? 'request' : 'requests'}.</div>`;
+    return;
+  }
+  // overview
+  const waitHR = rows.filter(r => r.status === 'pending_hr'), waitMgr = rows.filter(r => r.status === 'pending_manager'), approved = rows.filter(r => r.status === 'approved');
+  const now = approved.filter(r => r.start_date <= today && r.end_date >= today), soon = approved.filter(r => r.start_date > today && r.start_date <= addDays(today, 30)).sort((a, b) => a.start_date < b.start_date ? -1 : 1);
+  const byType = new Map(); approved.forEach(r => byType.set(r.type_label, (byType.get(r.type_label) || 0) + r.days));
+  const typeRows = [...byType].sort((a, b) => b[1] - a[1]), maxT = Math.max(1, ...typeRows.map(x => x[1]));
+  const line = (r, extra) => `<a class="row between" href="#/leave/review/${esc(r.request_no)}" style="text-decoration:none;color:inherit;padding:8px 0;border-bottom:1px solid var(--line);gap:10px"><div style="min-width:0"><div class="strong">${esc(r.name)}</div><div class="tiny muted">${esc(r.type_label)} - ${esc(lvRange(r))}</div></div><div class="small muted" style="white-space:nowrap">${extra}</div></a>`;
+  const list = (items, empty, extra) => items.length ? items.slice(0, 8).map(r => line(r, extra(r))).join('') + (items.length > 8 ? `<div class="small muted" style="padding-top:8px">and ${items.length - 8} more in Requests</div>` : '') : `<div class="small muted">${empty}</div>`;
+  box.innerHTML = `<div class="card-b">
+    <div class="grid g4" style="margin-bottom:18px">
+      ${statCard('Waiting for HR', waitHR.length, waitHR.length ? 'needs a decision' : 'nothing waiting', 'check', waitHR.length ? 'warn' : 'ok')}
+      ${statCard('Waiting for managers', waitMgr.length, 'decided from their email', 'clock', 'info')}
+      ${statCard('On leave today', now.length, 'approved leave', 'users', 'brand')}
+      ${statCard('Starting in 30 days', soon.length, 'approved leave', 'activity', 'ok')}
+    </div>
+    <div class="grid g2">
+      <div><div class="strong" style="margin-bottom:6px">Waiting for HR</div>${list(waitHR, 'Nothing is waiting for HR.', r => esc(r.days) + ' day' + (r.days === 1 ? '' : 's'))}</div>
+      <div><div class="strong" style="margin-bottom:6px">On leave now and coming up</div>${list(now.concat(soon), 'Nobody is on leave in the next 30 days.', r => r.start_date <= today ? 'back ' + esc(fmtDayShort(r.resume_date || r.end_date)) : 'from ' + esc(fmtDayShort(r.start_date)))}</div>
+    </div>
+    <div class="strong" style="margin:20px 0 8px">Approved days by leave type</div>
+    <div class="stack" style="gap:11px">${typeRows.length ? typeRows.map(([l, n]) => `<div><div class="row between small"><span class="strong">${esc(l)}</span><span class="muted">${n} day${n === 1 ? '' : 's'}</span></div><div class="bar" style="margin-top:4px"><i style="width:${Math.round(n / maxT * 100)}%"></i></div></div>`).join('') : '<div class="small muted">No approved leave in this period.</div>'}</div></div>`;
+}
+route('/leave', () => viewLeave('overview'));
+route('/leave/requests', () => viewLeave('requests'));
+route('/leave/balances', () => viewLeave('balances'));
+route('/leave/setup', () => viewLeave('setup'));
+
+/* ---- Balances ---- */
+function lvBalFilterBar(){
+  const yr = +todayStr().slice(0, 4), year = lv.balYear || yr;
+  return `<div class="row filter-bar" style="margin-bottom:14px">
+    <div class="field" style="margin:0"><label for="lbYear">Year</label><select class="inp" id="lbYear">${[yr - 1, yr, yr + 1].map(y => `<option value="${y}" ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select></div>
+    <div class="field" style="margin:0"><label>Department</label><div id="lbDept"></div></div>
+    <div class="field" style="margin:0"><label for="lbQ">Person</label><input class="inp" id="lbQ" placeholder="Search name or ID" value="${esc(lv.q)}"></div></div>`;
+}
+function lvBalFiltered(){
+  const q = lv.q.trim().toLowerCase();
+  return (lv.bal || []).filter(b => deptPick(lv.department, b.department) && (!q || String(b.name).toLowerCase().includes(q) || String(b.enroll_id).toLowerCase().includes(q)));
+}
+async function lvLoadBalances(){
+  const box = $('#lvBody'); if (box) box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
+  lv.bal = null; lv.balEdits = {};
+  try { const res = await api('/webhook/employees/api/leave/balances?year=' + lvEnc(lv.balYear)); lv.bal = (res.rows || []).map(b => Object.assign(b, { name: properName(b.name) })); }
+  catch (err) { toast('Could not load balances', err.message, 'err'); lv.bal = []; }
+  lvPaintBalances();
+}
+function lvBindBalances(){
+  if (!lv.balYear) lv.balYear = +todayStr().slice(0, 4);
+  $('#lbYear').onchange = e => { lv.balYear = +e.target.value; lvLoadBalances(); };
+  $('#lbQ').oninput = debounce(e => { lv.q = e.target.value; lvPaintBalances(); }, 150);
+  const deps = [...new Set((lv.bal || []).map(b => b.department).filter(Boolean))].sort();
+  msRender('lbDept', 'All departments', deptOpts(deps), lv.department, v => { lv.department = v; lvPaintBalances(); });
+  if (lv.bal) lvPaintBalances(); else lvLoadBalances();
+}
+function lvPaintBalances(){
+  const box = $('#lvBody'); if (!box || lv.mode !== 'balances') return;
+  if (!lv.bal) return;
+  const deps = [...new Set(lv.bal.map(b => b.department).filter(Boolean))].sort();
+  msRender('lbDept', 'All departments', deptOpts(deps), lv.department, v => { lv.department = v; lvPaintBalances(); });
+  const rows = lvBalFiltered(), canEdit = S.me.permission === 'editor', unset = lv.bal.filter(b => b.entitled == null).length;
+  if (!rows.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No staff match these filters.</div>`; return; }
+  const dirty = Object.keys(lv.balEdits).length;
+  box.innerHTML = `<div class="card-b row between" style="flex-wrap:wrap;gap:10px"><div class="small muted">${unset ? `<b>${unset}</b> staff have no yearly days set yet, so they cannot request annual leave. ` : ''}Left = yearly days - approved - waiting. Staff only; casual workers are not listed.</div>
+      ${canEdit ? `<div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" id="lbFill">Fill empty with...</button><button class="btn btn-primary btn-sm" id="lbSave" ${dirty ? '' : 'disabled'}>${I.check} Save ${dirty ? '(' + dirty + ')' : 'changes'}</button></div>` : ''}</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Yearly days</th><th>Taken</th><th>Waiting</th><th>Left</th></tr></thead>
+    <tbody>${rows.map(b => { const ed = lv.balEdits[b.enroll_id]; const v = ed !== undefined ? ed : b.entitled; const left = v === '' || v == null ? null : Number(v) - b.taken - b.pending;
+      return `<tr><td data-label="Name"><div class="strong">${esc(b.name)}</div><div class="tiny muted mono">${esc(b.enroll_id)}</div></td><td data-label="Department">${esc(b.department || '--')}</td>
+        <td data-label="Yearly days">${canEdit ? `<input class="inp" type="number" min="0" max="366" style="width:90px" data-ent="${esc(b.enroll_id)}" value="${v == null ? '' : esc(v)}" placeholder="not set">` : (b.entitled == null ? '<span class="muted">not set</span>' : esc(b.entitled))}</td>
+        <td data-label="Taken" class="tnum">${b.taken}</td><td data-label="Waiting" class="tnum">${b.pending}</td><td data-label="Left" class="tnum strong" ${left != null && left < 0 ? 'style="color:var(--danger,#b3261e)"' : ''}>${left == null ? '--' : left}</td></tr>`; }).join('')}</tbody></table></div>`;
+  if (canEdit) {
+    $$('[data-ent]', box).forEach(inp => inp.onchange = () => {
+      const id = inp.dataset.ent, orig = (lv.bal.find(b => b.enroll_id === id) || {}).entitled, val = inp.value.trim();
+      if (String(val) === String(orig == null ? '' : orig)) delete lv.balEdits[id]; else lv.balEdits[id] = val;
+      lvPaintBalances();
+    });
+    $('#lbFill').onclick = () => lvFillEmpty();
+    $('#lbSave').onclick = lvSaveEntitlements;
+  }
+}
+function lvFillEmpty(){
+  openModal({ title:'Fill empty yearly days', size:'narrow', sub:'Only staff with nothing set are changed. You can still edit each person afterwards.',
+    body:`<div class="field"><label for="lfDays">Days per year</label><input class="inp" id="lfDays" type="number" min="0" max="366" placeholder="e.g. 20"></div><div class="err-msg hide" data-err="lfDays"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Fill</button>`,
+    onMount:(w, close) => { $('[data-save]', w).onclick = () => {
+      clearErrors(w); const n = Number($('#lfDays', w).value);
+      if ($('#lfDays', w).value.trim() === '' || !Number.isFinite(n) || n < 0 || n > 366) return setErr('lfDays', 'Enter a number between 0 and 366.', w);
+      lvBalFiltered().filter(b => b.entitled == null && lv.balEdits[b.enroll_id] === undefined).forEach(b => { lv.balEdits[b.enroll_id] = String(Math.round(n)); });
+      close(); lvPaintBalances();
+    }; } });
+}
+async function lvSaveEntitlements(){
+  const items = Object.entries(lv.balEdits).map(([enroll_id, v]) => ({ enroll_id, days: v === '' ? null : Number(v) }));
+  if (!items.length) return;
+  const btn = $('#lbSave'); btn.disabled = true;
+  try { await api('/webhook/employees/api/leave/entitlement', { method:'POST', body:{ items } }); toast('Saved', items.length + ' yearly leave value' + (items.length === 1 ? '' : 's') + ' updated.', 'ok'); await lvLoadBalances(); }
+  catch (err) { toast('Could not save', err.message, 'err'); btn.disabled = false; }
+}
+
+/* ---- Setup: leave types ---- */
+async function lvPaintSetup(){
+  const box = $('#lvBody'); if (!box) return;
+  box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
+  let setup;
+  try { setup = await api('/webhook/employees/api/leave/setup'); } catch (err) { box.innerHTML = `<div class="small muted" style="padding:14px">${esc(err.message)}</div>`; return; }
+  lv.types = (setup.types || []).map(t => Object.assign({}, t)); lv.testEmail = setup.test_email || ''; lvPaintTest(lv.testEmail);
+  const canEdit = S.me.permission === 'editor';
+  const num = v => v == null || v === '' ? '' : esc(v), dis = canEdit ? '' : 'disabled';
+  const row = (t, i) => `<tr data-i="${i}"><td data-label="Name"><input class="inp" data-f="label" value="${esc(t.label)}" maxlength="60" ${dis} style="min-width:150px"><div class="tiny muted mono" style="margin-top:3px">${t.isNew && canEdit ? `<input class="inp" data-f="key" value="${esc(t.key)}" maxlength="30" placeholder="key e.g. study" style="width:130px">` : esc(t.key)}</div></td>
+      <td data-label="Counts against yearly days"><input type="checkbox" data-f="deducts" ${t.deducts ? 'checked' : ''} ${dis}></td>
+      <td data-label="Most days in one request"><input class="inp" type="number" min="0" data-f="max_days" value="${num(t.max_days)}" ${dis} style="width:68px"></td>
+      <td data-label="Most days in a year"><input class="inp" type="number" min="0" data-f="yearly_cap" value="${num(t.yearly_cap)}" ${dis} style="width:68px"></td>
+      <td data-label="Notice (days)"><input class="inp" type="number" min="0" data-f="notice_days" value="${num(t.notice_days)}" ${dis} style="width:68px"></td>
+      <td data-label="Only after annual is used"><input type="checkbox" data-f="after_annual" ${t.after_annual ? 'checked' : ''} ${dis}></td>
+      <td data-label="Certificate"><input type="checkbox" data-f="needs_certificate" ${t.needs_certificate ? 'checked' : ''} ${dis}></td>
+      <td data-label="Active"><input type="checkbox" data-f="active" ${t.active !== false ? 'checked' : ''} ${dis}></td>
+      <td data-label="Note shown to staff"><input class="inp" data-f="note" value="${esc(t.note || '')}" maxlength="300" ${dis} style="min-width:170px"></td></tr>`;
+  box.innerHTML = `<div class="card-b"><div class="strong">Leave types and rules</div>
+    <div class="small muted" style="margin:4px 0 12px">These rules are checked when someone requests leave. Leave a number empty for no limit. A type that already has requests cannot be removed: switch it to inactive instead.${canEdit ? '' : ' Only people with edit access can change them.'}</div>
+    <div class="tbl-wrap"><table class="tbl" id="lvTypes"><thead><tr><th>Name</th><th title="Days taken come off the person's yearly leave days">Deducts</th><th title="Most working days in one request">Max per request</th><th title="Most working days in one calendar year">Max per year</th><th title="Days of notice needed before the first day">Notice days</th><th title="Only allowed once the annual leave days are used up">After annual</th><th title="Staff are reminded a medical certificate is needed">Certificate</th><th>Active</th><th>Note shown to staff</th></tr></thead>
+    <tbody>${lv.types.map(row).join('')}</tbody></table></div>
+    ${canEdit ? `<div class="row" style="gap:8px;margin-top:12px"><button class="btn btn-ghost" id="ltAdd">${I.plus} Add leave type</button><button class="btn btn-primary" id="ltSave">${I.check} Save leave types</button></div><div class="err-msg hide" id="ltErr" style="margin-top:8px"></div>` : ''}
+    <div class="small muted" style="margin-top:18px">Who approves: the department manager of the person's department, then HR (${esc(setup.hr_department || 'Business Support/HR')}). Managers' own requests go to the plant head first. Approvers are maintained in the Procurement console's roles list. Public holidays that do not count as leave days are set on the <a href="#/holidays">Public holidays</a> page.</div></div>`;
+  if (!canEdit) return;
+  const read = () => $$('#lvTypes tbody tr').map((tr, i) => {
+    const t = lv.types[i], g = f => tr.querySelector('[data-f="' + f + '"]'), n = f => g(f).value.trim() === '' ? null : Number(g(f).value);
+    return Object.assign({}, t, { label: g('label').value.trim(), key: t.isNew ? (g('key').value.trim().toLowerCase()) : t.key, deducts: g('deducts').checked, max_days: n('max_days'), yearly_cap: n('yearly_cap'), notice_days: n('notice_days'),
+      after_annual: g('after_annual').checked, needs_certificate: g('needs_certificate').checked, active: g('active').checked, note: g('note').value.trim() });
+  });
+  $('#ltAdd').onclick = () => { lv.types = read(); lv.types.push({ key:'', label:'', active:true, isNew:true }); $('#lvTypes tbody').innerHTML = lv.types.map(row).join(''); };
+  $('#ltSave').onclick = async () => {
+    const types = read().map(t => { const o = Object.assign({}, t); delete o.isNew; return o; }), err = $('#ltErr'); err.classList.add('hide');
+    const bad = types.find(t => !t.label || !/^[a-z0-9_]{2,30}$/.test(t.key));
+    if (bad) { err.textContent = 'Every leave type needs a name and a key of 2-30 letters, numbers or underscores.'; err.classList.remove('hide'); return; }
+    const btn = $('#ltSave'); btn.disabled = true;
+    try { await api('/webhook/employees/api/leave/types', { method:'POST', body:{ types } }); toast('Leave types saved', 'The new rules apply to the next request.', 'ok'); lvPaintSetup(); }
+    catch (e) { err.textContent = e.message; err.classList.remove('hide'); btn.disabled = false; }
+  };
+}
+
+/* ---- One request: route, decisions, decide, cancel, print ---- */
+let lvReview = null;
+function viewLeaveReview(p){
+  const no = decodeURIComponent(p.no || '');
+  return {
+    title:'Leave request', crumb:'Leave',
+    html: `<div class="no-print" style="margin-bottom:10px"><a class="btn btn-ghost btn-sm" href="#/leave/requests">${I.chevL} All requests</a></div><div id="lrBody"><div class="small muted">Loading...</div></div>`,
+    bind: async () => {
+      try {
+        const res = await api('/webhook/employees/api/leave?no=' + lvEnc(no));
+        lv.meEmail = String(res.me_email || '').toLowerCase();
+        lvReview = (res.requests || []).map(lvNormalize)[0] || null;
+      } catch (err) { lvReview = null; toast('Could not load the request', err.message, 'err'); }
+      lvPaintReview(no);
+    },
+  };
+}
+function lvStageState(r, st){
+  const dec = (r.decisions || []).filter(d => d.stage === st.stage).pop();
+  if (dec) return { label: dec.decision === 'approved' ? 'Approved' : 'Rejected', cls: dec.decision === 'approved' ? 'b-ok' : 'b-danger', dec };
+  if (r.status === 'pending_' + st.stage) return { label:'Waiting', cls:'b-warn' };
+  if (['rejected', 'cancelled'].includes(r.status)) return { label:'Not reached', cls:'b-slate' };
+  return { label:'Next', cls:'b-slate' };
+}
+function lvCanDecide(r){
+  if (!String(r.status).startsWith('pending')) return null;
+  const stage = String(r.status).replace('pending_', ''), st = (r.stages || []).find(x => x.stage === stage);
+  if (!st) return null;
+  const editor = S.me.permission === 'editor', mine = !!lv.meEmail && lv.meEmail === String(st.email || '').toLowerCase();
+  return (editor || mine) ? { stage, st, editor, mine } : null;
+}
+function lvPaintReview(no){
+  const box = $('#lrBody'); if (!box) return;
+  const r = lvReview;
+  if (!r) { box.innerHTML = `<div class="card"><div class="card-b">${emptyState('alert', 'Request not found', 'There is no leave request ' + esc(no) + '.', `<a class="btn btn-primary" href="#/leave/requests">All requests</a>`)}</div></div>`; return; }
+  const can = lvCanDecide(r), canCancel = S.me.permission === 'editor' && ['pending_manager', 'pending_hr', 'approved'].includes(r.status);
+  const kv = (k, v) => `<div><div class="tiny muted" style="text-transform:uppercase;letter-spacing:.03em">${k}</div><div>${v}</div></div>`;
+  box.innerHTML = `<div class="card"><div class="card-b">
+      <div class="row between" style="flex-wrap:wrap;gap:10px"><div><div class="tiny muted mono">${esc(r.request_no)}</div><h2 style="margin:2px 0 0">${esc(r.name)}</h2><div class="small muted">${esc(r.role || '')}${r.role && r.department ? ', ' : ''}${esc(r.department || '')} - ${esc(r.enroll_id)}</div></div>
+        <div class="row no-print" style="gap:8px">${lvBadge(r.status)}<button class="btn btn-ghost btn-sm" id="lrPrint">${I.download} Print</button></div></div>
+      <div class="grid g3" style="margin-top:16px;gap:14px">${kv('Leave', esc(r.type_label))}${kv('From', esc(fmtDay(r.start_date)))}${kv('To', esc(fmtDay(r.end_date)))}${kv('Working days', '<b>' + esc(r.days) + '</b>')}${kv('Back on', esc(r.resume_date ? fmtDay(r.resume_date) : '--'))}${kv('Covered by', esc(r.reliever || '--'))}${kv('Contact address', esc(r.contact_address || '--'))}${kv('Phone', esc(r.phone_number || '--'))}${kv('Submitted', esc(fmtWhen(r.submitted_at)))}</div>
+      ${r.notes ? `<div style="margin-top:14px">${kv('Notes', esc(r.notes))}</div>` : ''}</div></div>
+    <div class="card" style="margin-top:14px"><div class="card-b"><div class="strong" style="margin-bottom:10px">Approval route</div>
+      ${(r.stages || []).map(st => { const s = lvStageState(r, st); return `<div class="row between" style="gap:10px;padding:9px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"><div><div class="strong">${esc(st.name)}</div><div class="tiny muted">${esc(st.label || st.stage)}</div>${s.dec ? `<div class="small" style="margin-top:4px">${s.dec.comment ? '"' + esc(s.dec.comment) + '" - ' : ''}<span class="muted">${esc(s.dec.by || '')}, ${esc(fmtWhen(s.dec.at))}, ${s.dec.via === 'email' ? 'from email' : 'in the console'}</span></div>` : ''}</div><span class="badge ${s.cls}">${s.label}</span></div>`; }).join('')}
+      ${(r.decisions || []).filter(d => d.stage === 'cancel').map(d => `<div class="small" style="padding-top:10px"><span class="badge b-slate">Cancelled</span> ${d.comment ? esc(d.comment) + ' - ' : ''}<span class="muted">${esc(d.by || '')}, ${esc(fmtWhen(d.at))}</span></div>`).join('')}</div></div>
+    ${can || canCancel ? `<div class="card no-print" style="margin-top:14px"><div class="card-b">
+      ${can ? `<div class="strong" style="margin-bottom:4px">Your decision</div><div class="small muted" style="margin-bottom:10px">${can.mine ? 'This request is waiting for you.' : 'You are deciding on behalf of ' + esc(can.st.name) + ' (' + esc(can.st.label || can.stage) + ') because you have edit access.'}</div>
+        <div class="field"><label for="lrComment">Comment <span class="muted">(required when rejecting)</span></label><textarea class="inp" id="lrComment" rows="2" maxlength="500"></textarea></div><div class="err-msg hide" data-err="lrComment"></div>
+        <div class="row" style="gap:8px"><button class="btn btn-primary" id="lrApprove">${I.check} Approve</button><button class="btn btn-danger" id="lrReject">Reject</button></div>` : ''}
+      ${canCancel ? `<div class="${can ? 'small muted' : ''}" style="margin-top:${can ? 16 : 0}px"><button class="btn btn-ghost btn-sm" id="lrCancel">Cancel this request</button> <span class="small muted">Gives the days back. Cannot be undone.</span></div>` : ''}</div></div>` : ''}`;
+  $('#lrPrint').onclick = () => lvPrint(r);
+  if (can) {
+    const decide = async (decision) => {
+      const comment = $('#lrComment').value.trim(); clearErrors(box);
+      if (decision === 'rejected' && comment.length < 3) return setErr('lrComment', 'Please give a reason when rejecting.', box);
+      $('#lrApprove').disabled = true; $('#lrReject').disabled = true;
+      try { const res = await api('/webhook/employees/api/leave/decide', { method:'POST', body:{ request: r.request_no, stage: can.stage, decision, comment } }); toast(decision === 'approved' ? 'Approved' : 'Rejected', res.message || '', 'ok'); viewLeaveReview({ no: r.request_no }).bind(); }
+      catch (err) { setErr('lrComment', err.message, box); $('#lrApprove').disabled = false; $('#lrReject').disabled = false; }
+    };
+    $('#lrApprove').onclick = () => decide('approved'); $('#lrReject').onclick = () => decide('rejected');
+  }
+  if (canCancel) $('#lrCancel').onclick = async () => {
+    if (!await confirmDialog('Cancel this request?', 'The request stops counting and any days it used go back to ' + esc(r.name) + '.', 'Cancel request', 'danger')) return;
+    try { await api('/webhook/employees/api/leave/cancel', { method:'POST', body:{ request: r.request_no, reason: 'Cancelled in the console' } }); toast('Cancelled', r.request_no + ' was cancelled.', 'ok'); viewLeaveReview({ no: r.request_no }).bind(); }
+    catch (err) { toast('Could not cancel', err.message, 'err'); }
+  };
+}
+route('/leave/review/:no', p => viewLeaveReview(p));
+function lvPrint(r){
+  const w = window.open('', '_blank'); if (!w) { toast('Pop-up blocked', 'Allow pop-ups for this site to print.', 'err'); return; }
+  const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
+  const sig = (r.stages || []).map(st => { const s = lvStageState(r, st); return `<div class="sig"><div class="line"></div><div><b>${esc(st.name)}</b> (${esc(st.label || st.stage)})</div><div class="muted">${s.dec ? esc(s.label) + ', ' + esc(fmtWhen(s.dec.at)) + (s.dec.comment ? ' - ' + esc(s.dec.comment) : '') : esc(s.label)}</div></div>`; }).join('');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(r.request_no)}</title><style>
+    body{font-family:Arial,Helvetica,sans-serif;color:#1c2321;margin:28px;font-size:13px} h1{font-family:Georgia,serif;font-size:22px;margin:14px 0 4px} .muted{color:#565e6b} .brand{font-size:11px;font-weight:700;letter-spacing:.16em}
+    table{border-collapse:collapse;width:100%;margin:14px 0} th,td{border:1px solid #c9c2b2;padding:7px 10px;text-align:left;vertical-align:top} th{width:30%;background:#f6f4ee;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+    .sigs{display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:40px} .sig .line{border-top:1px solid #1c2321;margin-bottom:6px;height:40px} hr{border:0;border-top:3px double #1c2321;margin:10px 0}
+  </style></head><body><img src="https://okl.orangegroupsai.online/logo.png" height="52" alt=""><div class="brand">ORANGE KALBE LIMITED</div><hr><h1>Leave request ${esc(r.request_no)}</h1><div class="muted">Status: ${esc((LV_STATUS[r.status] || [r.status])[0])}</div>
+    <table>${row('Name', esc(r.name) + ' (' + esc(r.enroll_id) + ')')}${row('Department / role', esc(r.department || '') + (r.role ? ', ' + esc(r.role) : ''))}${row('Type of leave', esc(r.type_label))}${row('First day', esc(fmtDay(r.start_date)))}${row('Last day', esc(fmtDay(r.end_date)))}
+    ${row('Working days', esc(r.days))}${row('Back on', esc(r.resume_date ? fmtDay(r.resume_date) : ''))}${row('Covered by', esc(r.reliever || ''))}${row('Contact address', esc(r.contact_address || ''))}${row('Phone', esc(r.phone_number || ''))}${row('Notes', esc(r.notes || ''))}${row('Submitted', esc(fmtWhen(r.submitted_at)))}</table>
+    <div class="sigs">${sig}</div><script>window.onload=function(){window.print();}<\/script></body></html>`);
+  w.document.close();
+}
+
+/* ============================================================
+   Public holidays: one calendar, filled in by HR. Leave uses it to count working days.
+   ============================================================ */
+const HOL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const HOL_FIXED = [['01-01', "New Year's Day"], ['05-01', "Workers' Day"], ['06-12', 'Democracy Day'], ['10-01', 'Independence Day'], ['12-25', 'Christmas Day'], ['12-26', 'Boxing Day']];
+let hol = { year: 0, rows: null };
+async function holLoad(){
+  if (!hol.year) hol.year = +todayStr().slice(0, 4);
+  hol.rows = null; holPaint();
+  try { const res = await api('/webhook/employees/api/holidays?year=' + hol.year); hol.rows = new Map((res.holidays || []).map(h => [h.date, h.name])); }
+  catch (err) { toast('Could not load holidays', err.message, 'err'); hol.rows = new Map(); }
+  holPaint();
+}
+function holCsv(){
+  const cell = v => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  const rows = [...(hol.rows || new Map())].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([d, n]) => [d, new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday:'long', timeZone:'UTC' }), n]);
+  download('okl_public_holidays_' + hol.year + '.csv', [['Date', 'Day', 'Holiday'].join(',')].concat(rows.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
+}
+function viewHolidays(){
+  if (!hol.year) hol.year = +todayStr().slice(0, 4);
+  const canEdit = S.me.permission === 'editor', yr = +todayStr().slice(0, 4);
+  return {
+    title:'Public holidays', crumb:'Salary',
+    html: `${pageHead('Public holidays', 'Days that are not working days. Leave requests and the salary estimate use this calendar. Click a day to mark it.', `<button class="btn btn-ghost" id="hlCsv">${I.download} Export CSV</button>`)}
+      <div class="row filter-bar" style="margin-bottom:14px"><div class="field" style="margin:0"><label for="hlYear">Year</label><select class="inp" id="hlYear">${[yr - 1, yr, yr + 1, yr + 2].map(y => `<option value="${y}" ${y === hol.year ? 'selected' : ''}>${y}</option>`).join('')}</select></div>
+        ${canEdit ? `<div class="row" style="gap:8px;align-self:flex-end"><button class="btn btn-ghost" id="hlPeriod">${I.plus} Add a period</button><button class="btn btn-ghost" id="hlFixed">${I.plus} Add the fixed-date holidays</button></div>` : '<div class="small muted" style="align-self:flex-end">Only people with edit access can change the calendar.</div>'}</div>
+      <div class="grid g3-hol"><div id="hlCal"></div><div class="card"><div class="card-b"><div class="strong" style="margin-bottom:8px">Holidays in <span id="hlYearLbl"></span></div><div id="hlList"></div></div></div></div>`,
+    bind(){
+      $('#hlYear').onchange = e => { hol.year = +e.target.value; holLoad(); };
+      $('#hlCsv').onclick = holCsv;
+      if (canEdit) { $('#hlPeriod').onclick = holAddPeriod; $('#hlFixed').onclick = holAddFixed; }
+      holLoad();
+    },
+  };
+}
+route('/holidays', () => viewHolidays());
+function holPaint(){
+  const cal = $('#hlCal'); if (!cal) return;
+  if (!hol.rows) { cal.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
+  const canEdit = S.me.permission === 'editor', today = todayStr(), pad = n => String(n).padStart(2, '0');
+  $('#hlYearLbl').textContent = hol.year;
+  cal.innerHTML = `<div class="hol-grid">${HOL_MONTHS.map((mn, m) => {
+    const first = new Date(Date.UTC(hol.year, m, 1)), lead = (first.getUTCDay() + 6) % 7, days = new Date(Date.UTC(hol.year, m + 1, 0)).getUTCDate();
+    const cells = Array.from({ length: lead }, () => '<i></i>').concat(Array.from({ length: days }, (_, k) => {
+      const d = k + 1, iso = `${hol.year}-${pad(m + 1)}-${pad(d)}`, name = hol.rows.get(iso), wk = new Date(iso + 'T12:00:00Z').getUTCDay(), weekend = wk === 0 || wk === 6;
+      return `<button type="button" class="hol-day ${name ? 'on' : ''} ${weekend ? 'we' : ''} ${iso === today ? 'today' : ''}" data-d="${iso}" title="${name ? esc(name) : ''}" ${canEdit ? '' : 'tabindex="-1"'}>${d}</button>`;
+    }));
+    return `<div class="hol-month"><div class="hol-mh">${mn}</div><div class="hol-wd"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div><div class="hol-days">${cells.join('')}</div></div>`;
+  }).join('')}</div>`;
+  const list = [...hol.rows].sort((a, b) => a[0] < b[0] ? -1 : 1);
+  $('#hlList').innerHTML = list.length ? `<div class="tbl-wrap"><table class="tbl"><tbody>${list.map(([d, n]) => `<tr><td data-label="Date" class="strong" style="white-space:nowrap">${esc(fmtDayShort(d))}</td><td data-label="Holiday">${esc(n)}</td>${canEdit ? `<td><button class="btn btn-ghost btn-sm" data-rm="${d}" aria-label="Remove">${I.x}</button></td>` : ''}</tr>`).join('')}</tbody></table></div>` : `<div class="small muted">No holidays marked for ${hol.year} yet.${canEdit ? ' Click a day on the calendar, or add a period.' : ''}</div>`;
+  if (canEdit) {
+    $$('.hol-day', cal).forEach(b => b.onclick = () => holEditDay(b.dataset.d));
+    $$('[data-rm]', $('#hlList')).forEach(b => b.onclick = () => holSave([], [b.dataset.rm], 'Removed'));
+  }
+}
+async function holSave(add, remove, doneLabel){
+  try { await api('/webhook/employees/api/holidays/save', { method:'POST', body:{ add, remove } }); toast(doneLabel || 'Saved', '', 'ok'); await holLoad(); return true; }
+  catch (err) { toast('Could not save', err.message, 'err'); return false; }
+}
+function holEditDay(iso){
+  const name = hol.rows.get(iso) || '';
+  openModal({ title: fmtDay(iso), size:'narrow', sub: name ? 'Rename or remove this public holiday.' : 'Mark this day as a public holiday.',
+    body:`<div class="field"><label for="hdName">Holiday name</label><input class="inp" id="hdName" maxlength="100" value="${esc(name)}" placeholder="e.g. Independence Day"></div><div class="err-msg hide" data-err="hdName"></div>`,
+    footer:`${name ? `<button class="btn btn-danger" data-rm style="margin-right:auto">Remove</button>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
+    onMount:(w, close) => {
+      $('[data-save]', w).onclick = async () => { clearErrors(w); const v = $('#hdName', w).value.trim(); if (!v) return setErr('hdName', 'Enter a name.', w); if (await holSave([{ date: iso, name: v }], [], 'Holiday saved')) close(); };
+      const rm = $('[data-rm]', w); if (rm) rm.onclick = async () => { if (await holSave([], [iso], 'Holiday removed')) close(); };
+    } });
+}
+function holAddPeriod(){
+  openModal({ title:'Add a period', size:'narrow', sub:'Every day in the range is marked with this name (for example Eid, 2 days).',
+    body:`<div class="grid g2"><div class="field"><label for="hpFrom">From</label><input class="inp" type="date" id="hpFrom" value="${hol.year}-01-01"></div><div class="field"><label for="hpTo">To</label><input class="inp" type="date" id="hpTo" value="${hol.year}-01-01"></div></div>
+      <div class="field"><label for="hpName">Holiday name</label><input class="inp" id="hpName" maxlength="100" placeholder="e.g. Eid-el-Fitr"></div>
+      <label class="row" style="gap:8px;font-weight:500"><input type="checkbox" id="hpSkip" checked> Skip Saturdays and Sundays</label><div class="err-msg hide" data-err="hpName"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Add</button>`,
+    onMount:(w, close) => { $('[data-save]', w).onclick = async () => {
+      clearErrors(w); const a = $('#hpFrom', w).value, b = $('#hpTo', w).value, name = $('#hpName', w).value.trim(), skip = $('#hpSkip', w).checked;
+      if (!a || !b || b < a) return setErr('hpName', 'Pick a valid range (the last day cannot be before the first).', w);
+      if (!name) return setErr('hpName', 'Enter a name.', w);
+      const add = []; for (let d = a, n = 0; d <= b && n < 60; d = addDays(d, 1), n++) { const wk = new Date(d + 'T12:00:00Z').getUTCDay(); if (!(skip && (wk === 0 || wk === 6))) add.push({ date: d, name }); }
+      if (!add.length) return setErr('hpName', 'Those dates are all weekend days.', w);
+      if (await holSave(add, [], add.length + ' day' + (add.length === 1 ? '' : 's') + ' added')) close();
+    }; } });
+}
+function holAddFixed(){
+  const add = HOL_FIXED.map(([md, name]) => ({ date: hol.year + '-' + md, name })).filter(h => !hol.rows.has(h.date));
+  if (!add.length) { toast('Already there', 'All the fixed-date holidays for ' + hol.year + ' are on the calendar.', 'ok'); return; }
+  openModal({ title:'Add the fixed-date holidays for ' + hol.year, size:'narrow', sub:'Holidays that fall on the same date every year. Moving holidays (Easter, Eid, special days) are added by hand once announced.',
+    body:`<div class="tbl-wrap"><table class="tbl"><tbody>${add.map(h => `<tr><td class="strong">${esc(fmtDayShort(h.date))}</td><td>${esc(h.name)}</td></tr>`).join('')}</tbody></table></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Add ${add.length}</button>`,
+    onMount:(w, close) => { $('[data-save]', w).onclick = async () => { if (await holSave(add, [], 'Holidays added')) close(); }; } });
+}
+
+/* ============================================================
+   Salary estimate (advisory)
+   No salary figures are stored anywhere. Each person's estimate is shown as multiples of their monthly Basic salary and
+   monthly Transport allowance, plus a naira part (weekday transport minus lateness), so Finance can put the real amounts in.
+   Attendance, overtime, public holidays and approved leave are read from the other pages; the numbers in the formula are
+   edited on the Formula tab.
+   ============================================================ */
+const SAL_DEFAULT = { hours_per_day:9, days_per_month:20, weekday_rate:1, weekend_rate:1.5, holiday_rate:2, weekday_transport:250, transport_days:20, late_fee:500 };
+const SAL_FIELDS = [
+  ['Working time', [['hours_per_day', 'Hours in a working day', 'h', 1, 24], ['days_per_month', 'Working days in a month', 'days', 1, 31]]],
+  ['Overtime pay (times the normal hourly rate)', [['weekday_rate', 'Weekday overtime', 'x', 0, 10], ['weekend_rate', 'Weekend overtime', 'x', 0, 10], ['holiday_rate', 'Public holiday overtime', 'x', 0, 10]]],
+  ['Transport', [['weekday_transport', 'Transport per weekday overtime day', '₦', 0, 1000000], ['transport_days', 'Weekend transport: monthly Transport divided by', 'days', 1, 31]]],
+  ['Lateness', [['late_fee', 'Fee for each late day', '₦', 0, 1000000]]],
+];
+const SAL_PERIODS = [['cycle', 'This payroll cycle'], ['lastcycle', 'Previous payroll cycle'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Custom']];
+const naira = n => (n < 0 ? '-' : '') + '₦' + Math.round(Math.abs(n)).toLocaleString('en-NG');
+const f2 = n => (Math.round(n * 100) / 100).toFixed(2);
+let sal = { preset:'cycle', from:'', to:'', department:[], type:'', q:'', mode:'estimate', data:null, key:'', formula:null, formulaLoaded:false };
+
+/* Pure calculation (no page state), so it can be tested on its own.
+   p = { from, to, employees, attDays:[iso], attRows:[[id, date, in, out, n]], lateAfter, holidays:Set, overtime:[], leave:[], formula }
+   Recorded working days = days with attendance in the period that are Mon-Fri and not a public holiday. Present days =
+   days with a punch, plus approved leave days. Basic share = present / recorded working days. */
+function salaryCompute(p){
+  const f = Object.assign({}, SAL_DEFAULT, p.formula || {}), lateM = attMins(p.lateAfter || LATE_DEFAULT), hol = p.holidays || new Set();
+  const days = [...new Set((p.attDays || []).map(x => String(x).slice(0, 10)))].filter(x => x >= p.from && x <= p.to && isWorkDay(x) && !hol.has(x)).sort();
+  const punches = new Map();
+  (p.attRows || []).forEach(r => { let m = punches.get(r[0]); if (!m) punches.set(r[0], m = new Map()); m.set(String(r[1]).slice(0, 10), { i:r[2], n:Number(r[4]) }); });
+  const leaveDays = new Set();
+  (p.leave || []).filter(l => l.status === 'approved').forEach(l => { for (let d = String(l.start_date).slice(0, 10), n = 0; d <= String(l.end_date).slice(0, 10) && n < 400; d = addDays(d, 1), n++) leaveDays.add(l.enroll_id + '|' + d); });
+  const ot = new Map();
+  (p.overtime || []).filter(r => r.status !== 'void' && String(r.work_date).slice(0, 10) >= p.from && String(r.work_date).slice(0, 10) <= p.to).forEach(r => {
+    let x = ot.get(r.enroll_id); if (!x) ot.set(r.enroll_id, x = { weekday:{ h:0, d:0 }, weekend:{ h:0, d:0 }, public_holiday:{ h:0, d:0 } });
+    const t = otDayType(r); x[t].h += Number(r.hours || 0); x[t].d++;
+  });
+  const isActive = e => (e.status || 'active') !== 'inactive';
+  const expected = (e, day) => {
+    if (e.join_date && String(e.join_date).slice(0, 10) > day) return false;
+    if (!isActive(e)) { const l = String(e.left_date || '').slice(0, 10); return !!l && day <= l; }
+    return true;
+  };
+  const rows = [];
+  (p.employees || []).forEach(e => {
+    const m = punches.get(e.enroll_id), o = ot.get(e.enroll_id);
+    if (!isActive(e) && !m && !o) return;
+    let present = 0, late = 0, onLeave = 0, workdays = 0;
+    days.forEach(day => {
+      if (!expected(e, day)) return;
+      workdays++;
+      const pu = m && m.get(day);
+      if (pu) {
+        present++;
+        const i = (pu.n <= 1 && attMins(pu.i) >= 720) ? null : pu.i;      // a single late-day punch is the way out, not the way in
+        if (i && attMins(i) > lateM) late++;
+      } else if (leaveDays.has(e.enroll_id + '|' + day)) { present++; onLeave++; }
+    });
+    const w = o || { weekday:{ h:0, d:0 }, weekend:{ h:0, d:0 }, public_holiday:{ h:0, d:0 } };
+    const share = workdays ? present / workdays : null;
+    const otBasic = (w.weekday.h * f.weekday_rate + w.weekend.h * f.weekend_rate + w.public_holiday.h * f.holiday_rate) / f.hours_per_day / f.days_per_month;
+    const trT = w.weekend.d / f.transport_days, trN = w.weekday.d * f.weekday_transport, lateN = late * f.late_fee;
+    rows.push({ e, workdays, present, late, onLeave, share, wkH:w.weekday.h, weH:w.weekend.h, phH:w.public_holiday.h, wkD:w.weekday.d, weD:w.weekend.d, phD:w.public_holiday.d,
+      otH:w.weekday.h + w.weekend.h + w.public_holiday.h, otBasic, trT, trN, lateN, basic:(share || 0) + otBasic, naira:trN - lateN });
+  });
+  return { rows, days, formula:f };
+}
+function salExpr(r){
+  let s = f2(r.basic) + ' × Basic';
+  if (r.trT > 0) s += ' + ' + f2(r.trT) + ' × Transport';
+  if (Math.round(r.naira) !== 0) s += (r.naira < 0 ? ' - ' : ' + ') + naira(Math.abs(r.naira));
+  return s;
+}
+
+async function salLoad(){
+  const s = sal, key = s.from + '|' + s.to;
+  s.data = null; salPaint();
+  const q = '?from=' + lvEnc(s.from) + '&to=' + lvEnc(s.to);
+  try {
+    const [a, o, h, l, fm] = await Promise.all([
+      api('/webhook/employees/api/attendance' + q), api('/webhook/employees/api/overtime' + q), api('/webhook/employees/api/holidays').catch(() => ({ holidays: [] })),
+      api('/webhook/employees/api/leave' + q).catch(() => ({ requests: [] })), api('/webhook/employees/api/salary/formula').catch(() => ({ formula: {} })) ]);
+    s.formula = Object.assign({}, SAL_DEFAULT, fm.formula || {}); s.formulaLoaded = true;
+    s.data = { lateAfter: a.late_after || LATE_DEFAULT, attDays: (a.days || []).map(x => String(x.date).slice(0, 10)), attRows: a.rows || [], holidays: new Set((h.holidays || []).map(x => x.date)),
+      overtime: o.records || [], leave: (l.requests || []).filter(x => x.status === 'approved') };
+    s.key = key;
+  } catch (err) { toast('Could not load salary data', err.message, 'err'); s.data = { lateAfter: LATE_DEFAULT, attDays: [], attRows: [], holidays: new Set(), overtime: [], leave: [] }; s.key = ''; }
+  salPaintDept(); salPaint();
+}
+function salPaintDept(){ msRender('slDept', 'All departments', deptOpts(S.departments || [], true), sal.department, v => { sal.department = v; salPaint(); }); }
+function salFilteredEmployees(){
+  const q = sal.q.trim().toLowerCase();
+  return S.employees.filter(e => deptPick(sal.department, e.department) && (!sal.type || e.employment_type === sal.type) && (!q || String(e.name).toLowerCase().includes(q) || String(e.enroll_id).toLowerCase().includes(q)));
+}
+function salResult(){
+  const d = sal.data; if (!d) return null;
+  return salaryCompute({ from: sal.from, to: sal.to, employees: salFilteredEmployees(), attDays: d.attDays, attRows: d.attRows, lateAfter: d.lateAfter, holidays: d.holidays, overtime: d.overtime, leave: d.leave, formula: sal.formula });
+}
+function salCsv(){
+  const res = salResult(); if (!res) return;
+  const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const head = ['Enroll ID', 'Name', 'Department', 'Type', 'Total workdays', 'Present days', 'Late days', 'Overtime hours', 'Weekday hours', 'Weekend hours', 'Public holiday hours', 'Weekday overtime days', 'Weekend overtime days', 'Public holiday overtime days',
+    'Transport weekdays (NGN)', 'Transport weekends (x Transport)', 'Basic multiple', 'Transport multiple', 'Naira part', 'Estimated salary'];
+  const data = res.rows.map(r => [r.e.enroll_id, r.e.name, r.e.department, typeLabel(r.e.employment_type), r.workdays, r.present, r.late, fmtHours(r.otH), fmtHours(r.wkH), fmtHours(r.weH), fmtHours(r.phH), r.wkD, r.weD, r.phD,
+    Math.round(r.trN), f2(r.trT), f2(r.basic), f2(r.trT), Math.round(r.naira), salExpr(r)]);
+  download('okl_salary_estimate_' + sal.from + '_to_' + sal.to + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
+}
+
+function viewSalary(mode){
+  if (!sal.to) { const r = presetRange(sal.preset); sal.from = r[0]; sal.to = r[1]; }
+  sal.mode = mode;
+  return {
+    title:'Salary', crumb:'Salary',
+    html: `${pageHead('Salary', 'An estimate of pay from attendance and overtime, shown as multiples of each person\'s Basic salary and monthly Transport allowance. No pay figures are stored here.', mode === 'estimate' ? `<button class="btn btn-ghost" id="slCsv">${I.download} Export CSV</button>` : '')}
+      ${hrTabs([['estimate', 'Estimate', '/salary'], ['formula', 'Formula', '/salary/formula']], mode)}
+      ${mode === 'estimate' ? hrFilterBar(sal, 'sl', '', { periods: SAL_PERIODS }) : ''}<div class="card"><div id="slBody"></div></div>`,
+    bind(){
+      if (mode === 'formula') { salPaintFormula(); return; }
+      bindHrFilters(sal, 'sl', salLoad, salPaint);
+      msRender('slDept', 'All departments', [], sal.department, () => {});
+      $('#slCsv').onclick = salCsv;
+      if (sal.data && sal.key === sal.from + '|' + sal.to) { salPaintDept(); salPaint(); } else salLoad();
+    },
+  };
+}
+route('/salary', () => viewSalary('estimate'));
+route('/salary/formula', () => viewSalary('formula'));
+
+function salPaint(){
+  const box = $('#slBody'); if (!box || sal.mode !== 'estimate') return;
+  const res = salResult();
+  if (!res) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
+  const today = todayStr(), calDays = []; for (let d = sal.from, n = 0; d <= sal.to && d <= today && n < 400; d = addDays(d, 1), n++) if (isWorkDay(d) && !sal.data.holidays.has(d)) calDays.push(d);
+  const missing = calDays.length - res.days.length;
+  const note = !res.days.length ? `<div class="hint" style="margin:14px">${I.info}<span>No attendance has been uploaded for this period, so there are no working days to compare against. Overtime and transport are still shown.</span></div>`
+    : `<div class="small muted" style="padding:12px 14px">Based on <b>${res.days.length}</b> recorded working day${res.days.length === 1 ? '' : 's'} (${esc(fmtDayShort(res.days[0]))} to ${esc(fmtDayShort(res.days[res.days.length - 1]))}; weekends and public holidays are not counted).${missing > 0 ? ` Attendance has not been uploaded for <b>${missing}</b> other working day${missing === 1 ? '' : 's'} up to today.` : ''} Approved leave counts as present.</div>`;
+  if (!res.rows.length) { box.innerHTML = note + `<div class="small muted" style="padding:14px">Nobody matches these filters.</div>`; return; }
+  box.innerHTML = note + `<div class="small muted" style="padding:0 14px 8px">Click a name to see how the estimate is worked out.</div><div class="tbl-wrap"><table class="tbl tbl-tight"><thead><tr><th>Name</th><th title="Total workdays recorded in the period">Workdays</th><th title="Present days (punches plus approved leave)">Present</th><th>Late</th><th title="Total overtime hours">OT hours</th><th title="Weekday overtime hours">Weekday h</th><th title="Weekend overtime hours">Weekend h</th><th title="Public holiday overtime hours">Holiday h</th><th title="Transport allowance for weekday overtime">Weekday transport</th><th title="Transport allowance for weekend overtime">Weekend transport</th><th>Estimated salary</th></tr></thead>
+    <tbody>${res.rows.map(r => `<tr class="clickable" onclick="openSalPerson('${esc(r.e.enroll_id)}')"><td data-label="Name" style="min-width:150px"><div class="strong">${esc(r.e.name)}</div><div class="tiny muted mono">${otIdLine(r.e.enroll_id)}</div></td>
+      <td data-label="Workdays" class="tnum">${r.workdays || '--'}</td><td data-label="Present" class="tnum">${r.workdays ? r.present : '--'}</td><td data-label="Late" class="tnum">${r.workdays ? r.late : '--'}</td>
+      <td data-label="OT hours" class="tnum strong">${fmtHours(r.otH)}</td><td data-label="Weekday h" class="tnum">${fmtHours(r.wkH)}</td><td data-label="Weekend h" class="tnum">${fmtHours(r.weH)}</td><td data-label="Holiday h" class="tnum">${fmtHours(r.phH)}</td>
+      <td data-label="Weekday transport" class="tnum">${r.trN ? naira(r.trN) : '--'}</td><td data-label="Weekend transport" class="tnum" title="${r.weD} weekend overtime day${r.weD === 1 ? '' : 's'}">${r.trT ? f2(r.trT) + ' × T' : '--'}</td>
+      <td data-label="Estimated salary" class="strong" style="white-space:nowrap">${esc(salExpr(r))}</td></tr>`).join('')}</tbody></table></div>
+    <div class="small muted" style="padding:12px 14px">${res.rows.length} ${res.rows.length === 1 ? 'person' : 'people'}. Basic = monthly basic salary, T = monthly Transport allowance. Advisory only.</div>`;
+}
+function openSalPerson(id){
+  const res = salResult(); if (!res) return;
+  const r = res.rows.find(x => x.e.enroll_id === id); if (!r) return;
+  const f = res.formula, hpd = f.hours_per_day, dpm = f.days_per_month;
+  const line = (what, how, out) => `<tr><td data-label="Step" class="strong">${what}</td><td data-label="Working" class="small">${how}</td><td data-label="Result" class="tnum" style="white-space:nowrap">${out}</td></tr>`;
+  const ot = (label, h, rate) => line(label, `${fmtHours(h)} h × ${rate} ÷ ${hpd} ÷ ${dpm}`, f2(h * rate / hpd / dpm) + ' × Basic');
+  openModal({
+    title: r.e.name, size:'wide', sub: [r.e.department, typeLabel(r.e.employment_type), sal.from + ' to ' + sal.to].filter(Boolean).join(' - '),
+    body: `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Step</th><th>Working</th><th>Result</th></tr></thead><tbody>
+      ${line('Attendance', r.workdays ? `${r.present} of ${r.workdays} recorded working days${r.onLeave ? ` (${r.onLeave} on approved leave)` : ''}` : 'no attendance recorded', r.workdays ? f2(r.present / r.workdays) + ' × Basic' : '--')}
+      ${ot('Weekday overtime', r.wkH, f.weekday_rate)}${ot('Weekend overtime', r.weH, f.weekend_rate)}${ot('Public holiday overtime', r.phH, f.holiday_rate)}
+      ${line('Transport, weekdays', `${r.wkD} weekday overtime day${r.wkD === 1 ? '' : 's'} × ${naira(f.weekday_transport)}`, naira(r.trN))}
+      ${line('Transport, weekends', `${r.weD} weekend overtime day${r.weD === 1 ? '' : 's'} ÷ ${f.transport_days}`, f2(r.trT) + ' × Transport')}
+      ${line('Public holiday transport', `${r.phD} day${r.phD === 1 ? '' : 's'}`, 'none')}
+      ${line('Lateness', `${r.late} late day${r.late === 1 ? '' : 's'} × ${naira(f.late_fee)}`, '- ' + naira(r.lateN))}
+      <tr><td class="strong">Estimated salary</td><td></td><td class="strong" style="white-space:nowrap">${esc(salExpr(r))}</td></tr></tbody></table></div>
+      <div class="small muted" style="margin-top:10px">Basic = this person's monthly basic salary, Transport = their monthly Transport allowance. Multiply by the real amounts to get naira.</div>`,
+    footer: `<button class="btn btn-ghost" data-close>Close</button>`,
+  });
+}
+
+/* ---- Formula tab ---- */
+async function salPaintFormula(){
+  const box = $('#slBody'); if (!box) return;
+  box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
+  if (!sal.formulaLoaded) {
+    try { const fm = await api('/webhook/employees/api/salary/formula'); sal.formula = Object.assign({}, SAL_DEFAULT, fm.formula || {}); sal.formulaLoaded = true; }
+    catch (err) { box.innerHTML = `<div class="small muted" style="padding:14px">${esc(err.message)}</div>`; return; }
+  }
+  const canEdit = S.me.permission === 'editor', f = sal.formula, dis = canEdit ? '' : 'disabled';
+  box.innerHTML = `<div class="card-b"><div class="strong">Numbers used in the estimate</div>
+    <div class="small muted" style="margin:4px 0 14px">Finance can change any of these. The estimate on the Estimate tab updates straight away.${canEdit ? '' : ' Only people with edit access can change them.'}</div>
+    <div class="grid g2">${SAL_FIELDS.map(([title, fields]) => `<div class="card" style="box-shadow:none"><div class="card-b"><div class="strong" style="margin-bottom:10px">${title}</div>
+      ${fields.map(([k, label, unit, lo, hi]) => `<div class="field"><label for="sf_${k}">${label}</label><div class="row" style="gap:8px"><input class="inp" type="number" step="any" min="${lo}" max="${hi}" id="sf_${k}" data-k="${k}" value="${esc(f[k])}" ${dis} style="max-width:160px"><span class="small muted">${unit}</span></div></div>`).join('')}</div></div>`).join('')}</div>
+    <div class="card" style="box-shadow:none;margin-top:14px"><div class="card-b"><div class="strong" style="margin-bottom:8px">How it works out</div><div class="small" id="sfWords" style="line-height:1.8"></div></div></div>
+    <div class="err-msg hide" id="sfErr" style="margin-top:10px"></div>
+    ${canEdit ? `<div class="row" style="gap:8px;margin-top:12px"><button class="btn btn-primary" id="sfSave">${I.check} Save formula</button><button class="btn btn-ghost" id="sfReset">Reset to defaults</button></div>` : ''}</div>`;
+  const read = () => { const o = {}; $$('[data-k]', box).forEach(i => { o[i.dataset.k] = i.value.trim() === '' ? NaN : Number(i.value); }); return o; };
+  const words = () => {
+    const v = Object.assign({}, f, read()), n = k => Number.isFinite(v[k]) ? v[k] : '?';
+    $('#sfWords').innerHTML = `Weekday overtime = hours ÷ ${n('hours_per_day')} × Basic ÷ ${n('days_per_month')} × ${n('weekday_rate')}<br>Weekend overtime = hours ÷ ${n('hours_per_day')} × Basic ÷ ${n('days_per_month')} × ${n('weekend_rate')}<br>Public holiday overtime = hours ÷ ${n('hours_per_day')} × Basic ÷ ${n('days_per_month')} × ${n('holiday_rate')}<br>
+      Transport, weekdays = ${naira(v.weekday_transport || 0)} × weekday overtime days<br>Transport, weekends = monthly Transport ÷ ${n('transport_days')} × weekend overtime days<br>Public holiday overtime has no transport<br>Lateness = ${naira(v.late_fee || 0)} × late days<br>
+      <b>Estimated salary = Basic × present days ÷ recorded working days + overtime + transport - lateness</b>`;
+  };
+  $$('[data-k]', box).forEach(i => i.oninput = words); words();
+  if (!canEdit) return;
+  $('#sfReset').onclick = () => { Object.entries(SAL_DEFAULT).forEach(([k, v]) => { $('#sf_' + k).value = v; }); words(); };
+  $('#sfSave').onclick = async () => {
+    const formula = read(), err = $('#sfErr'); err.classList.add('hide');
+    const bad = SAL_FIELDS.flatMap(x => x[1]).find(([k, label, u, lo, hi]) => !Number.isFinite(formula[k]) || formula[k] < lo || formula[k] > hi);
+    if (bad) { err.textContent = bad[1] + ' must be a number between ' + bad[3] + ' and ' + bad[4] + '.'; err.classList.remove('hide'); return; }
+    const btn = $('#sfSave'); btn.disabled = true;
+    try { await api('/webhook/employees/api/salary/formula/save', { method:'POST', body:{ formula } }); sal.formula = Object.assign({}, SAL_DEFAULT, formula); toast('Formula saved', 'The Estimate tab now uses these numbers.', 'ok'); btn.disabled = false; }
+    catch (e) { err.textContent = e.message; err.classList.remove('hide'); btn.disabled = false; }
+  };
+}
 
 async function handleExportClick(btn){
   btn.disabled = true;

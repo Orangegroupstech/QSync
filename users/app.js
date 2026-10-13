@@ -559,7 +559,9 @@ function openManage(id){
 /* ---------------- Activity (audit) ---------------- */
 let auditRows = null;
 const ACTION_LABELS = { account_created:'Account created', grants_set:'Access changed', reset:'Password reset', unlock:'Unlocked', deactivate:'Deactivated',
-  activate:'Reactivated', make_admin:'Made admin', remove_admin:'Admin removed', password_changed:'Changed password', locked:'Locked after wrong passwords', overtime_saved:'Overtime recorded' };
+  activate:'Reactivated', make_admin:'Made admin', remove_admin:'Admin removed', password_changed:'Changed password', locked:'Locked after wrong passwords', overtime_saved:'Overtime recorded',
+  overtime_submitted:'Overtime submitted', overtime_edited:'Overtime edited', overtime_voided:'Overtime voided', leave_submitted:'Leave requested', leave_decided:'Leave decision',
+  leave_cancelled:'Leave cancelled', leave_types_saved:'Leave types changed', leave_entitlement_set:'Yearly leave days set', holidays_saved:'Public holidays changed' };
 function paintAudit(){
   const box = $('#auditBody'); if (!box) return;
   if (!auditRows){ box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
