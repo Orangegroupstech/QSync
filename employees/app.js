@@ -2228,7 +2228,7 @@ function salPaint(){
     <tbody>${res.rows.map(r => `<tr class="clickable" onclick="openSalPerson('${esc(r.e.enroll_id)}')"><td data-label="Name" style="min-width:150px"><div class="strong">${esc(r.e.name)}</div><div class="tiny muted mono">${otIdLine(r.e.enroll_id)}</div></td>
       <td data-label="Workdays" class="tnum">${r.workdays || '--'}</td><td data-label="Present" class="tnum">${r.workdays ? r.present : '--'}</td><td data-label="Late" class="tnum">${r.workdays ? r.late : '--'}</td>
       <td data-label="OT hours" class="tnum strong">${fmtHours(r.otH)}</td><td data-label="Weekday h" class="tnum">${fmtHours(r.wkH)}</td><td data-label="Weekend h" class="tnum">${fmtHours(r.weH)}</td><td data-label="Holiday h" class="tnum">${fmtHours(r.phH)}</td>
-      <td data-label="Weekday transport" class="tnum">${r.trN ? naira(r.trN) : '--'}</td><td data-label="Weekend transport" class="tnum" title="${r.weD} weekend overtime day${r.weD === 1 ? '' : 's'}">${r.trT ? f2(r.trT) + ' × T' : '--'}</td>
+      <td data-label="Weekday transport" class="tnum">${r.trN ? naira(r.trN) + ' <span class="tiny muted">' + r.wkD + ' day' + (r.wkD === 1 ? '' : 's') + '</span>' : '--'}</td><td data-label="Weekend transport" class="tnum">${r.trT ? f2(r.trT) + ' × T <span class="tiny muted">' + r.weD + ' day' + (r.weD === 1 ? '' : 's') + '</span>' : '--'}</td>
       <td data-label="Estimated salary" class="strong" style="white-space:nowrap">${esc(salExpr(r))}</td></tr>`).join('')}</tbody></table></div>
     <div class="small muted" style="padding:12px 14px">${res.rows.length} ${res.rows.length === 1 ? 'person' : 'people'}. Basic = monthly basic salary, T = monthly Transport allowance. Advisory only.</div>`;
 }
