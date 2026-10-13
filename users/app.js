@@ -204,6 +204,7 @@ function navModel(){
   return [
     { title:'Admin', items:[
       { path:'/people', label:'People', icon:'users' },
+      { path:'/approvers', label:'Approvers', icon:'key' },
       { path:'/audit', label:'Activity', icon:'activity' },
     ] },
   ];
@@ -561,7 +562,8 @@ let auditRows = null;
 const ACTION_LABELS = { account_created:'Account created', grants_set:'Access changed', reset:'Password reset', unlock:'Unlocked', deactivate:'Deactivated',
   activate:'Reactivated', make_admin:'Made admin', remove_admin:'Admin removed', password_changed:'Changed password', locked:'Locked after wrong passwords', overtime_saved:'Overtime recorded',
   overtime_submitted:'Overtime submitted', overtime_edited:'Overtime edited', overtime_voided:'Overtime voided', leave_submitted:'Leave requested', leave_decided:'Leave decision',
-  leave_cancelled:'Leave cancelled', leave_types_saved:'Leave types changed', leave_entitlement_set:'Yearly leave days set', holidays_saved:'Public holidays changed' };
+  leave_cancelled:'Leave cancelled', leave_types_saved:'Leave types changed', leave_entitlement_set:'Yearly leave days set', holidays_saved:'Public holidays changed',
+  approver_saved:'Approver saved', approver_removed:'Approver removed', salary_formula_saved:'Salary formula changed' };
 function paintAudit(){
   const box = $('#auditBody'); if (!box) return;
   if (!auditRows){ box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
@@ -576,3 +578,107 @@ route('/audit', () => ({
   bind(){ auditRows = null; paintAudit();
     api('/webhook/users/api/audit').then(r => { auditRows = r.audit || []; paintAudit(); }).catch(err => { auditRows = []; paintAudit(); toast('Could not load activity', err.message, 'err'); }); },
 }));
+
+
+/* ============================================================
+   Approvers: the one list of who approves and who can submit requests (Procurement, Leave). Admins only.
+   Each row can be linked to an employee, so the system recognises that person exactly (their own leave never goes to themselves).
+   ============================================================ */
+const proper = v => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase().replace(/(^|[\s\-.(])([a-z\u00e0-\u00ff])/g, (m, a, b) => a + b.toUpperCase());
+const EMAIL_OK = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || ''));
+let aprState = { rows:null, employees:null, departments:null, loading:false };
+async function aprLoad(force){
+  if (aprState.loading) return; if (aprState.rows && !force) return;
+  aprState.loading = true;
+  try {
+    const [a, e, d] = await Promise.all([api('/webhook/users/api/approvers'), aprState.employees ? Promise.resolve(null) : api('/webhook/employees/api/list'), aprState.departments ? Promise.resolve(null) : api('/webhook/employees/api/departments')]);
+    aprState.rows = a.approvers || [];
+    if (e) aprState.employees = (e.employees || []).filter(x => (x.status || 'active') !== 'inactive').map(x => ({ enroll_id:x.enroll_id, name:proper(x.name), department:x.department, email:x.email || x.work_email || '', type:x.employment_type })).sort((p, q) => p.name.localeCompare(q.name));
+    if (d) aprState.departments = d.departments || [];
+  } catch (err) { aprState.rows = aprState.rows || []; toast('Could not load approvers', err.message, 'err'); }
+  aprState.loading = false; aprPaint();
+}
+function aprIssues(r){
+  const out = [];
+  if (!r.enroll_id) out.push(['Not linked to an employee', 'b-warn']);
+  else if (r.employee_status === 'inactive') out.push(['Employee has left', 'b-danger']);
+  if (!EMAIL_OK(r.email)) out.push(['Email looks wrong', 'b-danger']);
+  return out;
+}
+function aprPaint(){
+  const box = $('#aprBody'); if (!box) return;
+  if (!aprState.rows) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
+  const rows = aprState.rows, problems = rows.filter(r => aprIssues(r).length).length;
+  const groups = new Map();
+  rows.forEach(r => { const k = r.flow === 'engineering' ? 'Engineering flow' : (r.department || 'No department'); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+  const ordered = [...groups.keys()].sort((a, b) => (a === 'Engineering flow' ? -1 : b === 'Engineering flow' ? 1 : a.localeCompare(b)));
+  const rank = { requester:0, manager:1, engineering:1, operations:2, plant_head:3 };
+  box.innerHTML = `${problems ? `<div class="notice warn" style="margin:14px">${I.alert}<div><b>${problems}</b> approver${problems === 1 ? '' : 's'} need a look (see the flags below). Link each person to their employee record so Leave recognises them, and fix any email that looks wrong.</div></div>` : ''}
+    ${ordered.map(g => `<div style="padding:14px 14px 0"><div class="strong" style="margin-bottom:6px">${esc(g)}</div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Role</th><th>Person</th><th>Employee record</th><th>Used by</th><th></th></tr></thead><tbody>
+      ${groups.get(g).sort((a, b) => (rank[a.stage] - rank[b.stage]) || String(a.name).localeCompare(String(b.name))).map(r => `<tr>
+        <td data-label="Role" class="strong">${esc(r.label || r.stage)}</td>
+        <td data-label="Person"><div class="strong">${esc(r.name)}</div><div class="small muted">${esc(r.email)}</div></td>
+        <td data-label="Employee record">${r.enroll_id ? `${esc(proper(r.employee_name || ''))} <span class="tiny muted mono">${esc(r.enroll_id)}</span>` : '<span class="muted">--</span>'}
+          ${aprIssues(r).map(([t, c]) => `<div style="margin-top:3px"><span class="badge ${c}">${esc(t)}</span></div>`).join('')}</td>
+        <td data-label="Used by" class="small">${esc(r.used_by)}</td>
+        <td data-label=""><div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="aprOpen('${esc(r.role_key)}')">${I.edit} Change</button>
+          ${r.flow === 'dept' ? `<button class="btn btn-ghost btn-sm" onclick="aprRemove('${esc(r.role_key)}')">${I.x} Remove</button>` : ''}</div></td></tr>`).join('')}
+      </tbody></table></div>`).join('')}
+    <div class="small muted" style="padding:14px">${rows.length} approver${rows.length === 1 ? '' : 's'}. Requesters can submit a Procurement request for their department. Managers approve Procurement requests and are the first approver for Leave. The Business Support/HR manager is also the HR approver for Leave.</div>`;
+}
+route('/approvers', () => ({
+  title:'Approvers', crumb:'Admin',
+  html: `${pageHead('Approvers', 'Who approves requests and who can submit them. Procurement and Leave both use this list.',
+    `<button class="btn btn-ghost" onclick="aprOpen('', 'requester')">${I.plus} Add requester</button><button class="btn btn-primary" onclick="aprOpen('', 'manager')">${I.plus} Add department manager</button>`)}
+    <div class="card"><div id="aprBody"></div></div>`,
+  bind(){ aprPaint(); aprLoad(true); },
+}));
+function aprOpen(roleKey, newStage){
+  const row = roleKey ? (aprState.rows || []).find(r => r.role_key === roleKey) : null;
+  if (roleKey && !row) return;
+  const emps = aprState.employees || [], deps = aprState.departments || [];
+  const body = `${row ? `<div class="small muted" style="margin-bottom:12px">${esc(row.label || row.stage)}${row.department ? ' - ' + esc(row.department) : ''}. Change who this is.</div>`
+      : `<div class="field"><label for="aprDept">Department</label><select class="inp" id="aprDept"><option value="">Choose...</option>${deps.map(d => `<option>${esc(d)}</option>`).join('')}</select><div class="err-msg hide" data-err="aprDept"></div></div>`}
+    <div class="field"><label for="aprFind">Employee record</label><input class="inp" id="aprFind" placeholder="Type to search by name, ID or department" autocomplete="off">
+      <select class="inp" id="aprEmp" size="6" style="margin-top:6px"></select><div class="small muted" style="margin-top:4px">Link the person so the system recognises them. Their name and email are filled in from the record.</div></div>
+    <div class="grid g2"><div class="field"><label for="aprName">Name shown</label><input class="inp" id="aprName" maxlength="100" value="${esc(row ? row.name : '')}"><div class="err-msg hide" data-err="aprName"></div></div>
+      <div class="field"><label for="aprEmail">Email</label><input class="inp" id="aprEmail" type="email" value="${esc(row ? row.email : '')}"><div class="err-msg hide" data-err="aprEmail"></div></div></div>`;
+  openModal({
+    title: row ? 'Change approver' : (newStage === 'manager' ? 'Add department manager' : 'Add requester'), size:'wide', body,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
+    onMount: (w, close) => {
+      let picked = row && row.enroll_id ? row.enroll_id : '';
+      const paintEmp = () => {
+        const q = $('#aprFind', w).value.trim().toLowerCase();
+        const list = emps.filter(e => !q || (e.name + ' ' + e.enroll_id + ' ' + (e.department || '')).toLowerCase().includes(q)).slice(0, 80);
+        $('#aprEmp', w).innerHTML = `<option value="">No employee (not linked)</option>` + list.map(e => `<option value="${esc(e.enroll_id)}" ${e.enroll_id === picked ? 'selected' : ''}>${esc(e.name)} - ${esc(e.enroll_id)}${e.department ? ' - ' + esc(e.department) : ''}</option>`).join('');
+      };
+      paintEmp();
+      $('#aprFind', w).oninput = debounce(paintEmp, 120);
+      $('#aprEmp', w).onchange = e => {
+        picked = e.target.value; const emp = emps.find(x => x.enroll_id === picked);
+        if (emp) { $('#aprName', w).value = emp.name; if (emp.email) $('#aprEmail', w).value = emp.email; }
+      };
+      $('[data-save]', w).onclick = async () => {
+        clearErrors(w);
+        const dept = row ? row.department : $('#aprDept', w).value, name = $('#aprName', w).value.trim(), email = $('#aprEmail', w).value.trim();
+        if (!row && !dept) return setErr('aprDept', 'Choose a department.', w);
+        if (!name && !picked) return setErr('aprName', 'Enter a name, or pick the employee.', w);
+        if (email && !EMAIL_OK(email)) return setErr('aprEmail', 'Enter a valid email address (for example name@orangegroups.ng).', w);
+        if (!email && !(emps.find(x => x.enroll_id === picked) || {}).email) return setErr('aprEmail', 'Enter an email: this employee has none on record yet.', w);
+        const btn = $('[data-save]', w); btn.disabled = true;
+        try {
+          await api('/webhook/users/api/approvers/save', { method:'POST', body:{ role_key: row ? row.role_key : '', flow:'dept', stage: row ? row.stage : newStage, department: dept, name, email, enroll_id: picked } });
+          close(); toast('Saved', (name || 'Approver') + ' saved.', 'ok'); aprLoad(true);
+        } catch (err) { setErr('aprEmail', err.message, w); btn.disabled = false; }
+      };
+    },
+  });
+}
+async function aprRemove(roleKey){
+  const row = (aprState.rows || []).find(r => r.role_key === roleKey); if (!row) return;
+  if (!await confirmDialog('Remove this approver?', `<b>${esc(row.name)}</b> (${esc(row.label || row.stage)}, ${esc(row.department || '')}) will be taken off the list.`, 'Remove', 'danger')) return;
+  try { await api('/webhook/users/api/approvers/delete', { method:'POST', body:{ role_key: roleKey } }); toast('Removed', row.name + ' was removed.', 'ok'); aprLoad(true); }
+  catch (err) { toast('Could not remove', err.message, 'err'); }
+}

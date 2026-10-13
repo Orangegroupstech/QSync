@@ -200,9 +200,6 @@ function navModel(){
       { path:'/spares/outbound', label:'Outbound', icon:'arrowUp' },
     ] },
   ];
-  if (S.me.permission === 'editor') {
-    groups.push({ title:'Admin', items:[ { path:'/admin/roles', label:'Roles', icon:'users' } ] });
-  }
   return groups;
 }
 
@@ -652,20 +649,11 @@ function viewSpares(kind, path, title, desc){
 route('/spares/inventory', () => viewSpares('inventory', 'inventory', 'Spares Inventory', 'Engineering spare parts stock, from the same sheet the requisition form looks SKUs up against.'));
 route('/spares/inbound', () => viewSpares('inbound', 'inbound', 'Spares Inbound', 'Engineering spare parts received.'));
 route('/spares/outbound', () => viewSpares('outbound', 'outbound', 'Spares Outbound', 'Engineering spare parts issued.'));
-route('/admin/roles', () => viewRoles());
 
 /* ============================================================
-   Roles admin (OKL_PROC_role_directory) - editor only.
-   Editing works for every row (Engineering + Dept, any stage).
-   Adding/deleting is intentionally scoped to dept-requester rows only -
-   every other role is looked up as exactly one row per its scope with no
-   disambiguation logic, so a second Engineering Manager (say) would just be
-   silently and arbitrarily picked between, and deleting the only manager
-   for a department breaks that department's approval routing outright.
-   Dept requesters are the one role-type built to safely hold more than one
-   person (name-matched at submission, falls back to the first if unmatched).
+   Roles list (read-only data for the New Request page). Who can submit and who approves now lives in the central
+   approvers table (OKL_AUTH_approvers) and is edited in the Users console, Approvers tab. There is no Roles page here any more.
    ============================================================ */
-const ROLE_DEPARTMENTS = ['Production', 'Quality Assurance', 'Quality Control', 'Safety/HSE', 'Warehouse', 'Business Support/HR'];
 let rolesCache = null;
 let rolesLoading = false;
 let rolesError = '';
@@ -689,180 +677,6 @@ async function loadRoles(){
 function retryRoles(){
   rolesError = '';
   loadRoles();
-}
-
-function roleFormFields(row, idPrefix, opts){
-  const showDepartment = !!(opts && opts.showDepartment);
-  const departmentField = showDepartment ? `
-    <div class="field"><label for="${idPrefix}Department">Department</label>
-      <select class="inp" id="${idPrefix}Department">
-        <option value="">Select...</option>
-        ${ROLE_DEPARTMENTS.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
-      </select>
-      <div class="err-msg hide" data-err="${idPrefix}Department"></div></div>` : '';
-  return `
-    ${departmentField}
-    <div class="field"><label for="${idPrefix}Name">Full name</label>
-      <input class="inp" id="${idPrefix}Name" value="${esc(row ? row.name : '')}">
-      <div class="err-msg hide" data-err="${idPrefix}Name"></div></div>
-    <div class="field"><label for="${idPrefix}Email">Email</label>
-      <input class="inp" id="${idPrefix}Email" type="email" value="${esc(row ? row.email : '')}">
-      <div class="err-msg hide" data-err="${idPrefix}Email"></div></div>`;
-}
-function readRoleForm(idPrefix, scope){
-  const deptEl = $('#' + idPrefix + 'Department', scope);
-  return {
-    department: deptEl ? deptEl.value : undefined,
-    name: $('#' + idPrefix + 'Name', scope).value.trim(),
-    email: $('#' + idPrefix + 'Email', scope).value.trim(),
-  };
-}
-
-function openAddRole(){
-  const body = roleFormFields(null, 'addRole', { showDepartment: true });
-  const close = openModal({
-    title: 'Add requester',
-    size: 'wide',
-    body,
-    footer: `<button class="btn btn-ghost" data-cancel>Cancel</button>
-             <button class="btn btn-primary" id="addRoleSaveBtn">${I.plus} Add</button>`,
-    onMount(wrap){
-      $('[data-cancel]', wrap).onclick = close;
-      $('#addRoleSaveBtn', wrap).onclick = async () => {
-        clearErrors(wrap);
-        const f = readRoleForm('addRole', wrap);
-        let ok = true;
-        if (!f.department) { setErr('addRoleDepartment', 'Choose a department.', wrap); ok = false; }
-        if (!f.name) { setErr('addRoleName', 'Enter a name.', wrap); ok = false; }
-        if (!f.email) { setErr('addRoleEmail', 'Enter an email.', wrap); ok = false; }
-        if (!ok) return;
-        const btn = $('#addRoleSaveBtn', wrap);
-        btn.disabled = true;
-        try {
-          const res = await api('/webhook/procurement/api/roles', { method:'POST', body: f });
-          if (!rolesCache) rolesCache = [];
-          rolesCache.push(res.role);
-          S.roles = rolesCache;
-          close();
-          render();
-          toast('Requester added', esc(res.role.name) + ' can now submit for ' + esc(res.role.department) + '.', 'ok');
-        } catch (err) {
-          toast('Could not add requester', err.message, 'err');
-          btn.disabled = false;
-        }
-      };
-    },
-  });
-}
-
-function openEditRole(roleKey){
-  const row = (rolesCache || []).find(r => r.role_key === roleKey);
-  if (!row) return;
-  const context = `
-    <div class="kv-grid" style="margin-bottom:14px">
-      <div class="kv-item"><div class="k">Flow</div><div class="v">${esc(row.flow === 'engineering' ? 'Engineering' : 'Dept')}</div></div>
-      <div class="kv-item"><div class="k">Role</div><div class="v">${esc(row.label || row.stage)}</div></div>
-      <div class="kv-item"><div class="k">Department</div><div class="v">${esc(row.department || '--')}</div></div>
-    </div>`;
-  const body = context + roleFormFields(row, 'editRole', { showDepartment: false });
-  const close = openModal({
-    title: 'Edit role',
-    sub: row.label || row.stage,
-    size: 'wide',
-    body,
-    footer: `<button class="btn btn-ghost" data-cancel>Cancel</button>
-             <button class="btn btn-primary" id="editRoleSaveBtn">${I.check} Save</button>`,
-    onMount(wrap){
-      $('[data-cancel]', wrap).onclick = close;
-      $('#editRoleSaveBtn', wrap).onclick = async () => {
-        clearErrors(wrap);
-        const f = readRoleForm('editRole', wrap);
-        let ok = true;
-        if (!f.name) { setErr('editRoleName', 'Enter a name.', wrap); ok = false; }
-        if (!f.email) { setErr('editRoleEmail', 'Enter an email.', wrap); ok = false; }
-        if (!ok) return;
-        const btn = $('#editRoleSaveBtn', wrap);
-        btn.disabled = true;
-        try {
-          const res = await api('/webhook/procurement/api/roles/' + encodeURIComponent(roleKey), { method:'PATCH', body: { name: f.name, email: f.email } });
-          Object.assign(row, res.role);
-          close();
-          render();
-          toast('Saved', esc(row.name) + ' updated.', 'ok');
-        } catch (err) {
-          toast('Could not save', err.message, 'err');
-          btn.disabled = false;
-        }
-      };
-    },
-  });
-}
-
-async function deleteRole(roleKey){
-  const row = (rolesCache || []).find(r => r.role_key === roleKey);
-  if (!row) return;
-  const yes = await confirmDialog('Delete this requester?',
-    `<b>${esc(row.name)}</b> will no longer be able to submit requests for ${esc(row.department)}.`,
-    'Delete', 'danger');
-  if (!yes) return;
-  try {
-    await api('/webhook/procurement/api/roles/' + encodeURIComponent(roleKey), { method:'DELETE' });
-    rolesCache = (rolesCache || []).filter(r => r.role_key !== roleKey);
-    S.roles = rolesCache;
-    render();
-    toast('Requester deleted', esc(row.name) + ' removed.', 'ok');
-  } catch (err) {
-    toast('Could not delete', err.message, 'err');
-  }
-}
-
-function viewRoles(){
-  const canEdit = S.me.permission === 'editor';
-  if (!canEdit) {
-    return {
-      title:'Roles', crumb:'Admin',
-      html: `${pageHead('Roles')}<div class="card"><div class="card-b">
-        <div class="notice info">${I.info}<div>You have viewer access - managing roles requires an editor account.</div></div>
-      </div></div>`,
-      bind(){},
-    };
-  }
-
-  if (!rolesCache && !rolesLoading && !rolesError) loadRoles();
-  const rows = rolesCache || [];
-
-  let bodyHtml;
-  if (rolesLoading) {
-    bodyHtml = `<div class="card"><div class="card-b">${emptyState('box', 'Loading...', 'Fetching roles.')}</div></div>`;
-  } else if (rolesError) {
-    bodyHtml = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(rolesError),
-      `<button class="btn btn-primary" onclick="retryRoles()">Retry</button>`)}</div></div>`;
-  } else if (!rows.length) {
-    bodyHtml = `<div class="card"><div class="card-b">${emptyState('box', 'No roles found', '')}</div></div>`;
-  } else {
-    bodyHtml = `<div class="card"><div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Flow</th><th>Role</th><th>Department</th><th>Name</th><th>Email</th><th></th></tr></thead>
-      <tbody>${rows.map(r => `
-        <tr>
-          <td data-label="Flow">${esc(r.flow === 'engineering' ? 'Engineering' : 'Dept')}</td>
-          <td data-label="Role">${esc(r.label || r.stage)}</td>
-          <td data-label="Department">${esc(r.department || '--')}</td>
-          <td data-label="Name">${esc(r.name)}</td>
-          <td data-label="Email">${esc(r.email)}</td>
-          <td data-label="Actions" class="no-print">
-            <button class="btn btn-ghost btn-sm" onclick="openEditRole('${esc(r.role_key)}')">${I.edit} Edit</button>
-            ${r.flow === 'dept' && r.stage === 'requester' ? `<button class="btn btn-ghost btn-sm" onclick="deleteRole('${esc(r.role_key)}')">${I.x} Delete</button>` : ''}
-          </td>
-        </tr>`).join('')}</tbody>
-    </table></div></div>`;
-  }
-
-  return {
-    title:'Roles', crumb:'Admin',
-    html: `${pageHead('Roles', 'Everyone who can submit or approve a request, across both flows.',
-      `<button class="btn btn-primary" onclick="openAddRole()">${I.plus} Add requester</button>`)}${bodyHtml}`,
-    bind(){},
-  };
 }
 
 /* ============================================================
