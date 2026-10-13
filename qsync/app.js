@@ -97,14 +97,14 @@ const STATUS = {
   rejected:          { label:'Rejected',           badge:'b-danger' },
 };
 const PRODUCTS_META = {
-  Mixagrip:       { prefix:'A', type:'OSD' },
-  Procold:        { prefix:'B', type:'OSD' },
-  'Cannon Extra': { prefix:'C', type:'OSD' },
-  'Medik 55':     { prefix:'D', type:'OSD' },
-  Cypron:         { prefix:'E', type:'OSD' },
-  Corhinza:       { prefix:'F', type:'OSD' },
-  'Cannon PM':    { prefix:'G', type:'OSD' },
-  Zaiki:          { prefix:'H', type:'OSD', noStages:['Compression'] },
+  Mixagrip:       { prefix:'A', type:'OSD', defaultBatchSize:1200000 },
+  Procold:        { prefix:'B', type:'OSD', defaultBatchSize:1200000 },
+  'Cannon Extra': { prefix:'C', type:'OSD', defaultBatchSize:1200000 },
+  'Medik 55':     { prefix:'D', type:'OSD', defaultBatchSize:1200000 },
+  Cypron:         { prefix:'E', type:'OSD', defaultBatchSize:600000 },
+  Corhinza:       { prefix:'F', type:'OSD', defaultBatchSize:600000 },
+  'Cannon PM':    { prefix:'G', type:'OSD', defaultBatchSize:500000 },
+  Zaiki:          { prefix:'H', type:'OSD', defaultBatchSize:1200000, noStages:['Compression'] },
   Mintacid:       { prefix:'I', type:'OLD' },
 };
 const UNIT_OPTIONS = { OSD: ['kg', 'tablets'], OLD: ['litres'] };
@@ -493,16 +493,21 @@ function viewNewRequest(){
             <div class="field">
               <label for="rqSize">Batch size<span class="req">*</span></label>
               <div class="inp-group">
-                <input class="inp" id="rqSize" inputmode="numeric" placeholder="e.g. 1200000">
+                <input class="inp" id="rqSize" inputmode="numeric" placeholder="e.g. 1200000" oninput="this.dataset.auto='0'">
                 <select class="inp fixed" id="rqUnit" style="max-width:130px" disabled><option value="">Unit</option></select>
               </div>
               <div class="err-msg hide" data-err="rqSize"></div>
             </div>
             <div class="field">
               <label for="rqMfg">Manufacturing date (month / year)<span class="req">*</span></label>
-              <input class="inp" id="rqMfg" type="month">
+              <input class="inp" id="rqMfg" type="month" oninput="updateNewReqExpiry()" onchange="updateNewReqExpiry()">
               <div class="err-msg hide" data-err="rqMfg"></div>
             </div>
+          </div>
+          <div class="field">
+            <label for="rqExp">Expiry date (calculated)</label>
+            <input class="inp" id="rqExp" type="text" readonly tabindex="-1" placeholder="Select a product and manufacturing date">
+            <div class="hint" id="rqExpHint"></div>
           </div>
           <div class="field">
             <label for="rqStage">Stage of manufacture<span class="req">*</span></label>
@@ -541,6 +546,13 @@ function onNewReqProductChange(){
   const meta = PRODUCTS_META[name];
   const unitSel = $('#rqUnit'), stageSel = $('#rqStage');
   $('#rqPrefix').textContent = meta ? meta.prefix : '--';
+  // pre-fill the standard batch size unless the user typed their own number
+  const sizeInp = $('#rqSize');
+  if (sizeInp && (!sizeInp.value || sizeInp.dataset.auto === '1')){
+    const std = meta && meta.defaultBatchSize ? String(meta.defaultBatchSize) : '';
+    sizeInp.value = std; sizeInp.dataset.auto = std ? '1' : '';
+  }
+  updateNewReqExpiry();
   if (!meta){
     unitSel.innerHTML = '<option value="">Unit</option>'; unitSel.disabled = true;
     stageSel.innerHTML = '<option value="">-- Select a product first --</option>'; stageSel.disabled = true;
@@ -548,9 +560,23 @@ function onNewReqProductChange(){
   }
   unitSel.innerHTML = UNIT_OPTIONS[meta.type].map(u => `<option value="${u}">${u}</option>`).join('');
   unitSel.disabled = false;
+  unitSel.value = meta.type === 'OLD' ? 'litres' : 'tablets';
   stageSel.innerHTML = '<option value="">-- Select a stage --</option>' +
     STAGE_OPTIONS[meta.type].filter(s => !(meta.noStages || []).includes(s)).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   stageSel.disabled = false;
+}
+// Same rule as the backend: expiry = manufacturing month + the product's shelf life (months)
+function updateNewReqExpiry(){
+  const out = $('#rqExp'), hint = $('#rqExpHint');
+  if (!out) return;
+  const name = $('#rqProduct').value, mfg = $('#rqMfg').value;
+  const prod = (S && S.products || []).find(p => p.name === name);
+  if (!name || !/^\d{4}-\d{2}$/.test(mfg)){ out.value = ''; hint.textContent = ''; return; }
+  const months = Number(prod && prod.shelfLifeMonths) || 60;
+  const [y, m] = mfg.split('-').map(Number);
+  const total = y * 12 + (m - 1) + months;
+  out.value = MONTHS[total % 12] + ' ' + Math.floor(total / 12);
+  hint.textContent = 'Calculated from the ' + months + '-month shelf life of ' + name + '.';
 }
 let newReqToken = '';
 function makeSubmissionToken(){
@@ -734,7 +760,6 @@ function qsyncSheetHtml(r){
       <tr><th>Batch Size</th><td>${esc(r.batchSize)} ${esc(r.batchSizeUnit||'')}</td><th>Stage</th><td>${esc(r.stage)}</td></tr>
       <tr><th>Mfg Date</th><td>${fmtMonthYear(r.mfgMonth)}</td><th>Exp Date</th><td>${fmtMonthYear(r.expMonth)}</td></tr>
       <tr><th>Sample Qty</th><td>${esc(r.sampleQty||'--')} ${esc(r.sampleQtyUnit||'')}</td><th>Test Required</th><td>${esc(r.testRequired||'--')}</td></tr>
-      <tr><th>Status</th><td colspan="3">${(STATUS[r.status]||{}).label || r.status}</td></tr>
     </table>
 
     <h4>IPQA parameters checked</h4>
@@ -743,15 +768,14 @@ function qsyncSheetHtml(r){
       ${paramRows || '<tr><td colspan="4" class="muted">No results recorded yet.</td></tr>'}
     </table>
 
-    <h4>Sign off</h4>
     <div class="sign-grid">
-      <div class="sign-box"><div class="sl">Production</div>
+      <div class="sign-box"><div class="sl">Requested by</div>
         <div class="sv">${esc(r.productionSignedBy || '--')}</div>
         <div class="ss">${r.productionSignedAt ? fmtDateTime(r.productionSignedAt) : '--'}</div></div>
-      <div class="sign-box"><div class="sl">IPQA</div>
+      <div class="sign-box"><div class="sl">Done by</div>
         <div class="sv">${esc(r.ipqaSignedBy || '--')}</div>
         <div class="ss">${r.ipqaSignedAt ? fmtDateTime(r.ipqaSignedAt) : '--'}</div></div>
-      <div class="sign-box"><div class="sl">QA Supervisor</div>
+      <div class="sign-box"><div class="sl">${r.status === 'rejected' ? 'Rejected by' : 'Approved by'}</div>
         <div class="sv">${esc(r.qaSupervisorSignedBy || '--')}</div>
         <div class="ss">${r.qaSupervisorSignedAt ? fmtDateTime(r.qaSupervisorSignedAt) : '--'}</div></div>
     </div>
