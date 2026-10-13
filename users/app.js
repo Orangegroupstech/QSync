@@ -635,6 +635,11 @@ function aprPaint(){
   }
   const all = aprState.rows, rows = aprFiltered(), unlinked = all.filter(r => !r.enroll_id).length, other = all.filter(r => r.enroll_id && aprIssues(r).length).length + all.filter(r => !r.enroll_id && !EMAIL_OK(r.email)).length;
   const hr = r => r.flow === 'dept' && r.stage === 'manager' && /\(HR approver\)/.test(r.used_by || '');
+  const hasReq = new Set(all.filter(r => r.flow === 'dept' && r.stage === 'requester').map(r => String(r.department).toLowerCase()));
+  // why a row cannot be removed (empty = it can). The server enforces the same rules.
+  const keep = r => r.flow === 'engineering' ? 'Each step of the engineering flow needs exactly one person, so it can only be changed, not removed.'
+    : hr(r) ? 'This is the HR approver for Leave. Change who it is instead of removing it.'
+    : (r.stage === 'manager' && hasReq.has(String(r.department).toLowerCase())) ? 'This department still has requesters, so it needs a manager. Change the manager instead.' : '';
   box.innerHTML = `${unlinked || other ? `<div class="notice warn" style="margin:14px">${I.alert}<div>${unlinked ? `<b>${unlinked}</b> of ${all.length} approver${all.length === 1 ? ' is' : 's are'} not linked to an employee record yet. ` : ''}${other ? `<b>${other}</b> ha${other === 1 ? 's' : 've'} an email that looks wrong or an employee who has left. ` : ''}Linking lets Leave recognise the person exactly (their own leave is never sent to themselves).</div></div>` : ''}
     ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Department</th><th>Role</th><th>Person</th><th>Employee record</th><th>Used by</th><th></th></tr></thead><tbody>
       ${rows.map(r => `<tr>
@@ -645,10 +650,11 @@ function aprPaint(){
           ${aprIssues(r).map(([t, c]) => `<div style="margin-top:3px"><span class="badge ${c}">${esc(t)}</span></div>`).join('')}</td>
         <td data-label="Used by" class="small">${esc(r.used_by)}</td>
         <td data-label=""><div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="aprOpen('${esc(r.role_key)}')">${I.edit} Change</button>
-          ${r.flow === 'dept' ? `<button class="btn btn-ghost btn-sm" onclick="aprRemove('${esc(r.role_key)}')">${I.x} Remove</button>` : ''}</div></td></tr>`).join('')}
+          ${keep(r) ? `<button class="btn btn-ghost btn-sm" disabled title="${esc(keep(r))}" aria-label="${esc(keep(r))}" style="opacity:.45;cursor:not-allowed">${I.x} Remove</button>` : `<button class="btn btn-ghost btn-sm" onclick="aprRemove('${esc(r.role_key)}')">${I.x} Remove</button>`}</div></td></tr>`).join('')}
       </tbody></table></div>` : `<div class="small muted" style="padding:14px">No approvers match these filters.</div>`}
     <div class="small muted" style="padding:14px">${rows.length === all.length ? all.length : rows.length + ' of ' + all.length} approver${all.length === 1 ? '' : 's'}. <b>Requesters</b> can submit a Procurement request for their department. <b>Managers</b> approve Procurement requests and are the first approver for Leave.
-      <b>Business Support/HR is the HR department:</b> its manager is the HR approver for Leave, after the person's own manager.</div>`;
+      <b>Business Support/HR is the HR department:</b> its manager is the HR approver for Leave, after the person's own manager.
+      <b>Remove</b> is greyed out where the system needs that person: the engineering steps, the HR approver, and a manager whose department still has requesters. Change them instead (hover the button to see why).</div>`;
 }
 route('/approvers', () => ({
   title:'Approvers', crumb:'Admin',
