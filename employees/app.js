@@ -1683,11 +1683,7 @@ const LEAVE_FORM_URL = 'https://orangegroupsai.online/webhook/employees/leave-fo
 const LV_STATUS = { pending_manager:['Waiting for manager', 'b-warn'], pending_hr:['Waiting for HR', 'b-info'], approved:['Approved', 'b-ok'], rejected:['Rejected', 'b-danger'], cancelled:['Cancelled', 'b-slate'] };
 const lvBadge = s => { const x = LV_STATUS[s] || [s, 'b-slate']; return `<span class="badge ${x[1]}">${esc(x[0])}</span>`; };
 const lvEnc = encodeURIComponent;
-function lvPaintTest(email){
-  const b = $('#lvTest'); if (!b) return;
-  b.innerHTML = email ? `<div class="hint" style="margin-bottom:14px">${I.alert}<span><b>Test mode.</b> Every leave email (approvers and staff) goes to ${esc(email)}. Turn it off before going live (workflow/leave_test_mode.sql).</span></div>` : '';
-}
-let lv = { preset:'fullyear', from:'', to:'', department:[], leaveType:'', status:'', q:'', mode:'overview', records:null, key:'', meEmail:'', testEmail:'', types:null, bal:null, balYear:0, balEdits:{} };
+let lv = { preset:'fullyear', from:'', to:'', department:[], leaveType:'', status:'', q:'', mode:'overview', records:null, key:'', meEmail:'', types:null, bal:null, balYear:0, balEdits:{} };
 
 function lvFiltered(){
   const s = lv, q = s.q.trim().toLowerCase();
@@ -1708,9 +1704,9 @@ async function lvLoad(){
   s.records = null; lvPaint();
   try {
     const res = await api('/webhook/employees/api/leave?from=' + lvEnc(s.from) + '&to=' + lvEnc(s.to));
-    s.records = (res.requests || []).map(lvNormalize); s.meEmail = String(res.me_email || '').toLowerCase(); s.testEmail = res.test_email || ''; s.key = key;
+    s.records = (res.requests || []).map(lvNormalize); s.meEmail = String(res.me_email || '').toLowerCase(); s.key = key;
   } catch (err) { toast('Could not load leave', err.message, 'err'); s.records = []; s.key = ''; }
-  lvPaintTest(s.testEmail); lvPaintFilters(); lvPaint();
+  lvPaintFilters(); lvPaint();
 }
 function lvPaintFilters(){
   const deps = [...new Set((lv.records || []).map(r => r.department).filter(Boolean))].sort();
@@ -1747,9 +1743,8 @@ function viewLeave(mode){
   return {
     title:'Leave', crumb:'Leave',
     html: `${pageHead('Leave', 'Staff leave requests, who is waiting to decide, and how many days everyone has left.', csv + open)}
-      <div id="lvTest"></div>${lvTabs(mode)}${filters}<div class="card"><div id="lvBody"></div></div>`,
+      ${lvTabs(mode)}${filters}<div class="card"><div id="lvBody"></div></div>`,
     bind(){
-      lvPaintTest(lv.testEmail);
       if (mode === 'setup') { lvPaintSetup(); return; }
       if (mode === 'balances') { lvBindBalances(); $('#lvCsv').onclick = lvCsv; return; }
       bindHrFilters(lv, 'lv', lvLoad, lvPaint);
@@ -1877,7 +1872,7 @@ async function lvPaintSetup(){
   box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
   let setup;
   try { setup = await api('/webhook/employees/api/leave/setup'); } catch (err) { box.innerHTML = `<div class="small muted" style="padding:14px">${esc(err.message)}</div>`; return; }
-  lv.types = (setup.types || []).map(t => Object.assign({}, t)); lv.testEmail = setup.test_email || ''; lvPaintTest(lv.testEmail);
+  lv.types = (setup.types || []).map(t => Object.assign({}, t));
   const canEdit = S.me.permission === 'editor';
   const num = v => v == null || v === '' ? '' : esc(v), dis = canEdit ? '' : 'disabled';
   const row = (t, i) => `<tr data-i="${i}"><td data-label="Name"><input class="inp" data-f="label" value="${esc(t.label)}" maxlength="60" ${dis} style="min-width:150px"><div class="tiny muted mono" style="margin-top:3px">${t.isNew && canEdit ? `<input class="inp" data-f="key" value="${esc(t.key)}" maxlength="30" placeholder="key e.g. study" style="width:130px">` : esc(t.key)}</div></td>
