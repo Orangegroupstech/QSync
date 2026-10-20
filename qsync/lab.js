@@ -16,7 +16,7 @@ const LAB_STATUS = {
 };
 const WS_STATUS = { in_progress:['In progress','b-warn'], submitted:['Waiting for check','b-info'], returned:['Returned for correction','b-danger'], checked:['Checked','b-ok'] };
 const TEST_TYPES = { assay:'Assay', dissolution:'Dissolution', content_uniformity:'Content uniformity', identification:'Identification', microbiology:'Microbiology' };
-const CALCULATED_TESTS = ['assay'];   // the engine calculates these today; the others follow with finished product
+const CALCULATED_TESTS = Object.keys(TEST_TYPES);   // every test type has a calculation (engine 1.1)
 
 function labRoles(){ return (S && S.lab && S.lab.roles) || []; }
 function hasLabRole(r){ return labRoles().includes(r); }
@@ -165,7 +165,12 @@ function viewLabInbox(){
 }
 
 function labReceive(id){
-  const d = labCache['/inbox'] || {};
+  // the analyst list comes with the inbox: load it first when the dialog is opened from the batch page
+  if (!labCache['/inbox'] || labCache['/inbox'].error){
+    api(LAB + '/inbox').then(dd => { labCache['/inbox'] = dd; labReceive(id); }).catch(e => toast('Could not load the analysts', e.message, 'err'));
+    return;
+  }
+  const d = labCache['/inbox'];
   const r = (d.requests || []).find(x => x.id === id) || (labCache['/request?id=' + id] || {}).request;
   const analysts = d.analysts || [];
   if (!r) return;
@@ -371,23 +376,35 @@ function wsInit(d){
   wsEnsure();
 }
 function wsEnsure(){
-  const inp = ws.inputs;
+  const inp = ws.inputs, test = ws.ctx.analysis.test_type;
   if (!inp.apis || Array.isArray(inp.apis)) inp.apis = {};
   if (!inp.values || Array.isArray(inp.values)) inp.values = {};
   if (!Array.isArray(inp.samples)) inp.samples = [];
+  const hplc = ['assay', 'dissolution', 'content_uniformity'].includes(test);
   for (const t of ws.ctx.templates){
     const P = t.parameters || {}, a = inp.apis[t.id] = inp.apis[t.id] || {};
-    const n = ((P.std_injections || {}).max) || 6;
-    if (!Array.isArray(a.std_areas)) a.std_areas = Array(n).fill('');
+    if (hplc && !Array.isArray(a.std_areas)) a.std_areas = Array(((P.std_injections || {}).max) || 6).fill('');
   }
   for (const s of inp.samples){
     const v = inp.values[s.key] = inp.values[s.key] || {};
-    if (v.avg_weight === undefined) v.avg_weight = '';
-    if (!v.preps || Array.isArray(v.preps)) v.preps = {};
+    if (test === 'assay'){
+      if (v.avg_weight === undefined) v.avg_weight = '';
+      if (!v.preps || Array.isArray(v.preps)) v.preps = {};
+    }
+    if (test === 'dissolution' || test === 'content_uniformity'){ if (!v.units || Array.isArray(v.units)) v.units = {}; }
+    if (test === 'identification'){ if (!v.rt || Array.isArray(v.rt)) v.rt = {}; }
+    if (test === 'microbiology'){ if (!v.micro || Array.isArray(v.micro)) v.micro = {}; }
     for (const t of ws.ctx.templates){
-      const P = t.parameters || {}, list = v.preps[t.id] = Array.isArray(v.preps[t.id]) ? v.preps[t.id] : [];
-      while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: Array(P.injections || 1).fill('') });
-      list.forEach(p => { if (!Array.isArray(p.areas)) p.areas = []; while (p.areas.length < (P.injections || 1)) p.areas.push(''); });
+      const P = t.parameters || {};
+      if (test === 'assay'){
+        const list = v.preps[t.id] = Array.isArray(v.preps[t.id]) ? v.preps[t.id] : [];
+        while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: Array(P.injections || 1).fill('') });
+        list.forEach(p => { if (!Array.isArray(p.areas)) p.areas = []; while (p.areas.length < (P.injections || 1)) p.areas.push(''); });
+      } else if (test === 'dissolution' || test === 'content_uniformity'){
+        const n = test === 'dissolution' ? (P.units || 6) : 10;
+        const u = v.units[t.id] = Array.isArray(v.units[t.id]) ? v.units[t.id] : [];
+        while (u.length < n) u.push('');
+      }
     }
   }
 }
@@ -403,17 +420,19 @@ function inpNum(path, attrs){
   return `<input class="inp tnum" data-k="${esc(path)}" value="${esc(v == null ? '' : v)}" inputmode="decimal" autocomplete="off" ${ro} ${attrs || ''}>`;
 }
 function stepsText(steps, firstUnit){
-  return (steps || []).map((s, i) => (i === 0 ? `weighed (${firstUnit}) to ${s[1]} mL` : (s[0] === 1 && s[1] === 1 ? null : `${s[0]} mL to ${s[1]} mL`))).filter(Boolean).join(', then ');
+  return (steps || []).map((s, i) => (i === 0 ? (firstUnit === 'caplet' ? `${s[0] || 1} caplet in ${s[1]} mL` : `weighed (${firstUnit}) to ${s[1]} mL`)
+    : (s[0] === 1 && s[1] === 1 ? null : `${s[0]} mL to ${s[1]} mL`))).filter(Boolean).join(', then ');
 }
-function wsApiPanel(t){
+function wsStandardCard(t, extraSub){
   const P = t.parameters || {}, tid = t.id, a = ws.inputs.apis[tid];
   const ro = wsEditable() ? '' : 'disabled';
   const stds = ws.ctx.standards.filter(w => !t.api || String(w.substance).toLowerCase() === String(t.api).toLowerCase());
   const stdList = stds.length ? stds : ws.ctx.standards;
   const inj = P.std_injections || {};
-  const samples = ws.inputs.samples;
+  const lim = P.limits || {};
+  const limTxt = ws.ctx.analysis.test_type === 'content_uniformity' ? `AV NMT ${P.l1 || 15}` : lim.max != null ? `limit ${lim.min}% to ${lim.max}%` : `NLT ${lim.min}%`;
   return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - standard</h3>
-      <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - label claim ${esc(P.label_claim_mg)} mg - limit ${esc((P.limits || {}).min)}% to ${esc((P.limits || {}).max)}%</div></div></div>
+      <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - label claim ${esc(P.label_claim_mg)} mg - ${esc(limTxt)}${extraSub ? ' - ' + esc(extraSub) : ''}</div></div></div>
     <div class="card-b">
       <div class="grid g3">
         <div class="field"><label>Working standard</label><select class="inp" data-k="apis.${tid}.ws_id" ${ro}><option value="">Choose...</option>
@@ -429,8 +448,13 @@ function wsApiPanel(t){
           <span class="hint">${I.info}<span>Tip: paste a column of areas from Empower into the first box.</span></span></div>` : ''}</div>
       <div class="field hide" id="just-${tid}"><label>System suitability failed: supervisor's justification (or repeat the run)</label>
         <textarea class="inp" data-k="apis.${tid}.sst_justification" rows="2" ${ro}>${esc(a.sst_justification || '')}</textarea></div>
-    </div></div>
-    ${samples.map((s, si) => {
+    </div></div>`;
+}
+function wsApiPanel(t){
+  const P = t.parameters || {}, tid = t.id, test = ws.ctx.analysis.test_type;
+  const samples = ws.inputs.samples, ro = wsEditable() ? '' : 'disabled';
+  if (test === 'assay'){
+    return wsStandardCard(t) + samples.map((s, si) => {
       const v = ws.inputs.values[s.key], preps = v.preps[tid];
       return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
           <div class="sub">${esc(stepsText((P.sample || {}).steps, 'mg'))}</div></div><div id="mean-${tid}-${si}" class="strong">--</div></div>
@@ -444,7 +468,48 @@ function wsApiPanel(t){
             <td style="text-align:right" class="tnum strong" id="pr-${tid}-${si}-${pi}">--</td></tr>`).join('')}
           </tbody></table></div>
         </div></div>`;
-    }).join('')}`;
+    }).join('');
+  }
+  if (test === 'dissolution' || test === 'content_uniformity'){
+    const diss = test === 'dissolution';
+    const sub = diss ? `${P.medium_ml || 900} mL medium${P.time_point_min ? ', ' + P.time_point_min + ' min' : ', time point per method'}` : '';
+    return wsStandardCard(t, sub) + samples.map((s, si) => {
+      const units = ws.inputs.values[s.key].units[tid];
+      return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
+          <div class="sub">${diss ? `One caplet per vessel: ${esc(stepsText((P.sample || {}).steps, 'caplet'))}` : `One caplet each: ${esc(stepsText((P.sample || {}).steps, 'caplet'))}`}
+            ${!diss ? ` - stage ${units.length === 30 ? '2 (30 caplets, k 2.0)' : '1 (10 caplets, k 2.4)'}` : ''}</div></div>
+          <div id="mean-${tid}-${si}" class="strong" style="text-align:right">--</div></div>
+        <div class="card-b">
+          <div class="lab-units" data-group="values.${s.key}.units.${tid}">${units.map((x, ui) => `<div class="lab-unit"><div class="tiny muted">Caplet ${ui + 1}</div>
+            ${inpNum(`values.${s.key}.units.${tid}.${ui}`, 'placeholder="area"')}<div class="tiny tnum strong" id="u-${tid}-${si}-${ui}">--</div></div>`).join('')}</div>
+          ${!diss && wsEditable() ? `<div class="row" style="margin-top:10px">${units.length === 10
+            ? `<button class="btn btn-ghost btn-sm" onclick="wsCuStage('${esc(s.key)}',${tid},30)">${I.plus} Stage 2: add 20 caplets</button>`
+            : `<button class="btn btn-ghost btn-sm" onclick="wsCuStage('${esc(s.key)}',${tid},10)">${I.x} Back to stage 1 (10 caplets)</button>`}</div>` : ''}
+          <div class="hint" style="margin-top:8px">${I.info}<span>Tip: paste the column of caplet areas from Empower into the first box.</span></div>
+        </div></div>`;
+    }).join('');
+  }
+  if (test === 'identification'){
+    return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - identification (HPLC)</h3>
+        <div class="sub">Template v${esc(t.version)} - the sample peak's retention time must be within ${esc(P.tolerance_pct)}% of the standard's</div></div></div>
+      <div class="card-b"><div class="grid g3">
+        <div class="field"><label>Standard retention time (min)</label>${inpNum(`apis.${tid}.std_rt`)}</div>
+        ${samples.map((s, si) => `<div class="field"><label>Sample ${esc(s.label)} retention time (min)</label>${inpNum(`values.${s.key}.rt.${tid}`)}
+          <div class="small" id="mean-${tid}-${si}" style="margin-top:6px">--</div></div>`).join('')}
+      </div></div></div>`;
+  }
+  if (test === 'microbiology'){
+    const L = P.limits || {};
+    return samples.map((s, si) => `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Microbiology - sample ${esc(s.label)}</h3>
+        <div class="sub">Template v${esc(t.version)} - leave a field blank while it is incubating (you can save; you can submit once everything is in)</div></div>
+        <div id="mean-${tid}-${si}" class="strong">--</div></div>
+      <div class="card-b"><div class="grid g3">
+        ${(L.counts || []).map(c => `<div class="field"><label>${esc(c.label)} (cfu/g, NMT ${esc(c.max)})</label>${inpNum(`values.${s.key}.micro.${c.key}`)}</div>`).join('')}
+        ${(L.absent || []).map(o => `<div class="field"><label>${esc(o.label)} (must be absent)</label><select class="inp" data-k="values.${s.key}.micro.${o.key}" ${ro}>
+          ${[['', 'Awaiting result'], ['absent', 'Absent'], ['present', 'Present']].map(([k, l]) => `<option value="${k}" ${(ws.inputs.values[s.key].micro || {})[o.key] === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')}
+      </div></div></div>`).join('');
+  }
+  return emptyState('alert', 'Unknown test', '');
 }
 function viewLabWorksheet(id){
   const d = labGet('/worksheet?id=' + id);
@@ -499,7 +564,7 @@ function viewLabWorksheet(id){
         el.addEventListener(ev, () => { wsSet(el.dataset.k, el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || /label$/.test(el.dataset.k) ? el.value : el.value.replace(/,/g, '').trim()); ws.dirty = true; wsCalcSoon(); });
       });
       $$('[data-r]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { ws.run[el.dataset.r] = el.value; ws.dirty = true; }));
-      $$('.lab-areas').forEach(g => g.addEventListener('paste', e => {
+      $$('.lab-areas, .lab-units').forEach(g => g.addEventListener('paste', e => {
         const text = (e.clipboardData || window.clipboardData).getData('text');
         const vals = String(text).split(/[\s;\t]+/).map(x => x.replace(/,/g, '')).filter(x => x !== '' && !isNaN(Number(x)));
         if (vals.length < 2 || !wsEditable()) return;
@@ -519,6 +584,11 @@ function wsTab(tid){ ws.tab = tid; render(); }
 function wsInj(tid, delta){
   const a = ws.inputs.apis[tid];
   if (delta > 0) a.std_areas.push(''); else a.std_areas.pop();
+  ws.dirty = true; render(); wsCalcSoon(0);
+}
+function wsCuStage(key, tid, n){
+  const u = ws.inputs.values[key].units[tid];
+  if (n === 30) while (u.length < 30) u.push(''); else u.length = 10;
   ws.dirty = true; render(); wsCalcSoon(0);
 }
 function wsSample(arg, delta){
@@ -551,6 +621,7 @@ function wsPaint(){
   const eng = $('#wsEngine'); if (eng && c) eng.textContent = c.engine_version || '';
   const box = $('#wsResults'); if (!box) return;
   if (!c){ box.innerHTML = emptyState('chart', 'Nothing calculated yet', 'Enter the values above.'); return; }
+  const test = ws.ctx.analysis.test_type;
   for (const t of ws.ctx.templates){
     const r = (c.apis || {})[t.id];
     const sst = $('#sst-' + t.id), just = $('#just-' + t.id);
@@ -559,10 +630,28 @@ function wsPaint(){
     ws.inputs.samples.forEach((s, si) => {
       const rs = r && r.samples ? r.samples[si] : null;
       const m = $(`#mean-${t.id}-${si}`);
-      if (m) m.innerHTML = rs ? `<span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}` : '--';
-      ((ws.inputs.values[s.key] || {}).preps || {})[t.id] && ws.inputs.values[s.key].preps[t.id].forEach((p, pi) => {
-        const el = $(`#pr-${t.id}-${si}-${pi}`); if (el) el.textContent = rs && rs.preparations[pi] ? num1(rs.preparations[pi].pct_reported) + '%' : '--';
-      });
+      const v = ws.inputs.values[s.key] || {};
+      if (test === 'assay'){
+        if (m) m.innerHTML = rs ? `<span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}` : '--';
+        ((v.preps || {})[t.id] || []).forEach((p, pi) => {
+          const el = $(`#pr-${t.id}-${si}-${pi}`); if (el) el.textContent = rs && rs.preparations[pi] ? num1(rs.preparations[pi].pct_reported) + '%' : '--';
+        });
+      } else if (test === 'dissolution' || test === 'content_uniformity'){
+        const below = rs && rs.units_below ? rs.units_below : [];
+        if (m) m.innerHTML = !rs || !rs.units ? '--' : test === 'dissolution'
+          ? `mean <span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}${below.length ? ` <span class="badge b-danger">caplet ${below.join(', ')} below ${esc(r.samples[si].limit_text || '')}</span>` : ''}`
+          : `mean <span class="tnum">${num1(rs.mean_reported)}%</span> - AV <b class="tnum">${num1(rs.av_reported)}</b> ${rs.needs_l2 ? '<span class="badge b-warn">AV above 15: stage 2 needed</span>' : verdictBadge(rs.pass)}`;
+        ((v.units || {})[t.id] || []).forEach((u, ui) => {
+          const el = $(`#u-${t.id}-${si}-${ui}`); if (!el) return;
+          const val = rs && rs.units_reported ? rs.units_reported[ui] : null;
+          el.textContent = val == null ? '--' : num1(val) + '%';
+          el.style.color = below.includes(ui + 1) ? 'var(--danger)' : '';
+        });
+      } else if (test === 'identification'){
+        if (m) m.innerHTML = rs ? `difference <b class="tnum">${Number(rs.deviation_reported).toFixed(2)}%</b> ${verdictBadge(rs.pass)}` : '--';
+      } else if (test === 'microbiology'){
+        if (m) m.innerHTML = !rs ? '--' : r.pending ? '<span class="badge b-warn">Awaiting incubation</span>' : verdictBadge(rs.pass);
+      }
     });
   }
   const errs = (c.errors || []).map(e => `<li>${e.api ? `<b>${esc(e.api)}:</b> ` : ''}${esc(e.message)}</li>`).join('');
