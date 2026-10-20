@@ -114,6 +114,7 @@ let inboxTab = 'waiting', inboxQ = '';
 const INBOX_TABS = [
   ['waiting', 'Waiting for receipt', r => ['pending_qc_notify', 'sent_to_qc'].includes(r.status)],
   ['lab', 'In the lab', r => r.status === 'qc_received'],
+  ['check', 'Worksheets to check', r => r.status === 'qc_received' && (r.assignments || []).some(a => !a.cancelled && a.analysis_status === 'submitted')],
   ['decided', 'Waiting for QA', r => ['qc_released', 'qc_not_released'].includes(r.status)],
   ['closed', 'Closed', r => r.status === 'qa_acknowledged'],
 ];
@@ -140,7 +141,11 @@ function viewLabInbox(){
         <td data-label="OOS">${r.open_oos ? `<span class="badge b-danger">${r.open_oos} open</span>` : '<span class="muted small">--</span>'}</td>
         <td data-label="Status">${labStatusBadge(r.status)}</td>
         <td style="text-align:right;white-space:nowrap">${isSup && inboxTab === 'waiting'
-          ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();labReceive(${r.id})">Receive</button>` : I.chevR}</td>
+          ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();labReceive(${r.id})">Receive</button>`
+          : isSup && inboxTab === 'check'
+          ? [...new Set(r.assignments.filter(a => !a.cancelled && a.analysis_status === 'submitted').map(a => a.analysis_id))]
+              .map(w => `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();go('/lab/worksheet/${w}')">Check #${w}</button>`).join(' ')
+          : I.chevR}</td>
       </tr>`).join('')}</tbody></table></div>`
     : `<div class="card-b">${emptyState('inbox', 'Nothing here', 'No requests in this list.')}</div>`;
   return {
@@ -203,6 +208,31 @@ function auditLine(e){
   if (e.field === 'inputs') return `${esc(what)} #${esc(e.record)}: worksheet values changed`;
   return `${esc(what)} #${esc(e.record)}: <b>${esc(String(e.field || '').replace(/_/g, ' '))}</b> ${esc(short(e.old))} &rarr; ${esc(short(e.new))}`;
 }
+// whose turn it is on a batch, in plain words, with a button when the turn is the signed-in person's
+function labNextSteps(r){
+  const st = r.status, me = S && S.me ? S.me.id : null, out = [];
+  const step = (text, btn) => out.push(`<div class="next-step">${I.info}<span>${text}</span>${btn || ''}</div>`);
+  const btn = (label, href) => `<a class="btn btn-primary btn-sm" href="#${href}">${esc(label)}</a>`;
+  if (['pending_qc_notify', 'sent_to_qc'].includes(st)) step('Next: the <b>QC Supervisor</b> receives the sample and assigns the tests.');
+  if (st === 'qc_received'){
+    const live = r.assignments.filter(a => !a.cancelled), seen = new Set();
+    live.forEach(a => {
+      const w = a.analysis_id, mine = String(a.analyst_id) === String(me);
+      if (!w){ step(`<b>${esc(a.analyst)}</b> (analyst) starts the ${esc(TEST_TYPES[a.test_type] || a.test_type)} worksheet from My analyses.`, mine ? btn('Start it', '/lab/my') : ''); return; }
+      if (seen.has(w)) return; seen.add(w);
+      if (['in_progress', 'returned'].includes(a.analysis_status))
+        step(`<b>${esc(a.analyst)}</b> (analyst) ${a.analysis_status === 'returned' ? 'corrects the returned' : 'completes and submits'} worksheet #${w}.`, mine ? btn('Open worksheet #' + w, '/lab/worksheet/' + w) : '');
+      else if (a.analysis_status === 'submitted')
+        step(`The <b>QC Supervisor</b> checks worksheet #${w} against the chromatograms, then signs it or returns it.`, hasLabRole('qc_supervisor') && !mine ? btn('Check worksheet #' + w, '/lab/worksheet/' + w) : '');
+    });
+    const allChecked = live.length && live.every(a => a.analysis_status === 'checked');
+    if (allChecked && r.open_oos) step('Every worksheet is checked. The <b>QC Manager</b> closes the open OOS entries, then decides.', hasLabRole('qc_manager') ? btn('Open the OOS log', '/lab/oos') : '');
+    else if (allChecked) step('Every worksheet is checked. The <b>QC Manager</b> decides: Released or Not released (button at the top).');
+  }
+  if (['qc_released', 'qc_not_released'].includes(st)) step('Next: the <b>QA Manager</b> acknowledges the QC decision (button at the top).');
+  if (st === 'qa_acknowledged') step('Closed: QC decided and QA acknowledged.');
+  return out.length ? `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>What happens next</h3></div><div class="card-b">${out.join('')}</div></div>` : '';
+}
 function viewLabRequest(id){
   const d = labGet('/request?id=' + id);
   if (!d) return labWait('Batch', 'QC Laboratory');
@@ -213,7 +243,11 @@ function viewLabRequest(id){
     if (!labCache['/inbox']) labGet('/inbox');
     acts.push(`<button class="btn btn-primary" onclick="labReceive(${r.id})">Receive and assign</button>`);
   }
-  if (hasLabRole('qc_supervisor') && st === 'qc_received') acts.push(`<button class="btn btn-ghost" onclick="labChangeTests(${r.id})">${I.edit} Change tests</button>`);
+  if (hasLabRole('qc_supervisor') && st === 'qc_received'){
+    [...new Set(r.assignments.filter(a => !a.cancelled && a.analysis_status === 'submitted' && String(a.analyst_id) !== String(S.me && S.me.id)).map(a => a.analysis_id))]
+      .forEach(w => acts.push(`<a class="btn btn-primary" href="#/lab/worksheet/${w}">Check worksheet #${w}</a>`));
+    acts.push(`<button class="btn btn-ghost" onclick="labChangeTests(${r.id})">${I.edit} Change tests</button>`);
+  }
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
   acts.push(`<a class="btn btn-ghost" href="#/lab/report/${r.id}">${I.print} QC report</a>`);
@@ -233,6 +267,7 @@ function viewLabRequest(id){
           <div class="tiny muted">${r.qa_manager_signed_at ? fmtDateTime(r.qa_manager_signed_at) : ''}${r.qa_manager_comments ? ' - ' + esc(r.qa_manager_comments) : ''}</div></div>
       </div>${r.open_oos ? `<div class="notice" style="margin-top:14px;color:var(--danger)">${I.alert} ${r.open_oos} open OOS entr${r.open_oos === 1 ? 'y' : 'ies'}: the QC Manager must close ${r.open_oos === 1 ? 'it' : 'them'} (OOS log) before deciding.</div>` : ''}
       </div></div>
+      ${labNextSteps(r)}
       <div class="grid g2" style="margin-bottom:16px;align-items:start">
         <div class="card"><div class="card-h"><h3>Tests</h3></div>
           ${live.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Test</th><th>Analyst</th><th>Worksheet</th></tr></thead><tbody>

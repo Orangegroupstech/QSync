@@ -667,3 +667,7 @@ input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
 .lab-areas .inp{width:118px;padding:7px 9px}
 .lab-units{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px}
 .lab-unit .inp{width:100%;padding:7px 9px;margin:3px 0}
+.next-step{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13.5px}
+.next-step + .next-step{border-top:1px solid var(--line-2)}
+.next-step svg{flex:0 0 16px;color:var(--info)}
+.next-step span{flex:1}

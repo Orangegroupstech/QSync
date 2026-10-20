@@ -161,6 +161,9 @@
     show('loginView');
   }
   function showHome(){
+    // a console sent the person here to sign in from a link (e.g. an e-mail): go back to that page
+    var back = null; try { back = sessionStorage.getItem('okl.return'); sessionStorage.removeItem('okl.return'); } catch(e){}
+    if (back && /^\/[a-z]+\/(index\.html)?#\//.test(back)) { location.href = back; return; }
     notice('');
     $('whoName').textContent = me.user.name;
     $('usersTile').classList.toggle('hidden', !me.user.is_admin);

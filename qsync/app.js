@@ -150,6 +150,8 @@ function setToken(t){
 // One sign-in on the landing page serves every console; no token means go there.
 function toLanding(){ setToken(''); location.href = '../'; }
 function toLandingKeepToken(){ location.href = '../'; }
+// remember the page a link pointed to (e.g. an e-mail's "Open in QSync"), so the landing page returns here after sign-in
+function rememberHere(){ try { if (currentPath() !== '/') sessionStorage.setItem('okl.return', location.pathname + location.hash); } catch(e) { /* ignore */ } }
 function meFromAuth(auth, scope){
   const u = (auth && auth.user) || {};
   const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
@@ -174,6 +176,7 @@ async function api(path, opts){
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
   if (res.status === 401){
+    rememberHere();
     toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
@@ -403,7 +406,7 @@ function statusBadge(status){
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
   const auth = await api('/webhook/auth/api/me');
-  if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
+  if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
   const data = await api('/webhook/admin/api/bootstrap');
   S = data;
   S.me = meFromAuth(auth, 'qsync');
@@ -427,7 +430,7 @@ function fatalErrorHtml(err){
 function render(){
   const app = document.getElementById('app');
   try {
-    if (!S){ toLanding(); return; }
+    if (!S){ rememberHere(); toLanding(); return; }
     const path = currentPath();
     const m = matchRoute(path);
     if (!m){
@@ -455,9 +458,9 @@ window.addEventListener('hashchange', render);
 
 (async function boot(){
   try {
-    if (!getToken()){ toLanding(); return; }
+    if (!getToken()){ rememberHere(); toLanding(); return; }
     try { await bootstrap(); }
-    catch (e) { if (!getToken()) return; toLandingKeepToken(); return; }
+    catch (e) { if (!getToken()) return; rememberHere(); toLandingKeepToken(); return; }
     if (!location.hash) location.hash = '#/requests';
     render();
   } catch (err) {
@@ -578,13 +581,19 @@ function onNewReqProductChange(){
     STAGE_OPTIONS[meta.type].filter(s => !(meta.noStages || []).includes(s)).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   stageSel.disabled = false;
 }
+// this month in Lagos as yyyy-mm: the server refuses a later manufacturing month
+function thisMonthLagos(){
+  const p = {}; new Intl.DateTimeFormat('en-GB', { timeZone:'Africa/Lagos', year:'numeric', month:'2-digit' }).formatToParts(new Date()).forEach(x => { p[x.type] = x.value; });
+  return p.year + '-' + p.month;
+}
 // Same rule as the backend: expiry = manufacturing month + the product's shelf life (months)
 function updateNewReqExpiry(){
   const out = $('#rqExp'), hint = $('#rqExpHint');
   if (!out) return;
   const name = $('#rqProduct').value, mfg = $('#rqMfg').value;
   const prod = (S && S.products || []).find(p => p.name === name);
-  if (!name || !/^\d{4}-\d{2}$/.test(mfg)){ out.value = ''; hint.textContent = ''; return; }
+  const mfgEl = $('#rqMfg'); if (mfgEl) mfgEl.max = thisMonthLagos();
+  if (!name || !/^\d{4}-\d{2}$/.test(mfg) || mfg > thisMonthLagos()){ out.value = ''; hint.textContent = mfg > thisMonthLagos() ? 'The manufacturing month cannot be later than this month.' : ''; return; }
   const months = Number(prod && prod.shelfLifeMonths) || 60;
   const [y, m] = mfg.split('-').map(Number);
   const total = y * 12 + (m - 1) + months;
@@ -615,6 +624,7 @@ function bindNewRequest(){
     if (!stage) return setErr('rqStage', 'Select a stage.');
     const mfg = $('#rqMfg').value;
     if (!mfg) return setErr('rqMfg', 'Select a manufacturing month.');
+    if (mfg > thisMonthLagos()) return setErr('rqMfg', 'Manufacturing date cannot be later than the current month.');
 
     const prefixLetter = $('#rqPrefix').textContent;
     const btn = f.querySelector('button[type=submit]');
@@ -634,7 +644,8 @@ function bindNewRequest(){
       await bootstrap();
       go('/requests');
     } catch (err){
-      setErr('rqBatch', err.message || 'Could not submit this request.');
+      // the server's own reason when it gives one; a bare failure is not the batch number's fault
+      toast('Could not submit this request', err.message && err.message !== 'Something went wrong.' ? err.message : 'The server refused it. Check every field (the manufacturing month cannot be in the future) and try again.', 'err');
     } finally {
       btn.disabled = false;
     }
