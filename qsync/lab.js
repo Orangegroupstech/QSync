@@ -516,7 +516,11 @@ function viewLabWorksheet(id){
   const d = labGet('/worksheet?id=' + id);
   if (!d) return labWait('Worksheet', 'QC Laboratory');
   if (d.error) return labFail('Worksheet', 'QC Laboratory', d.error);
-  if (!ws || ws.src !== d) wsInit(d);
+  if (!ws || ws.src !== d){
+    const keep = ws && ws.id === d.analysis.id && ws.dirty ? { inputs: ws.inputs, run: ws.run, calc: ws.calc } : null;
+    wsInit(d);
+    if (keep && wsEditable()){ Object.assign(ws, keep); ws.dirty = true; wsEnsure(); }
+  }
   const a = d.analysis, edit = wsEditable();
   if (!d.templates.some(t => t.id === ws.tab)) ws.tab = (d.templates[0] || {}).id;
   const t = d.templates.find(x => x.id === ws.tab);
@@ -556,10 +560,16 @@ function viewLabWorksheet(id){
       ${t ? wsApiPanel(t) : emptyState('alert', 'No method template', '')}
       <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Results</h3><div class="sub">Calculated on the server from the values above (engine <span id="wsEngine">${esc((ws.calc || {}).engine_version || '')}</span>)</div></div>
         <span id="wsCalcState" class="small muted"></span></div><div id="wsResults" class="card-b"></div></div>
-      <div class="card"><div class="card-h"><h3>Chromatograms</h3></div><div class="card-b">
-        ${d.attachments.length ? d.attachments.map(f => `<div class="small">${I.doc} ${esc(f.file_name)} <span class="muted mono tiny">sha256 ${esc(f.sha256.slice(0, 12))}...</span></div>`).join('')
-          : `<div class="hint">${I.info}<span>Chromatogram upload (PDF, fingerprinted, stored in MinIO) is the next step of the build.</span></div>`}
-      </div></div>`,
+      <div class="card"><div class="card-h"><div><h3>Chromatograms</h3><div class="sub">PDF printouts from Empower / LabSolutions, stored in MinIO with a fingerprint (SHA-256). Files can be added, never replaced or deleted.</div></div>
+        ${(a.is_mine && a.status !== 'checked') || hasLabRole('qc_supervisor') || hasLabRole('qc_manager')
+          ? `<label class="btn btn-ghost btn-sm" style="cursor:pointer">${I.plus} Add PDF<input type="file" id="wsFile" accept="application/pdf" multiple style="display:none"></label>` : ''}</div>
+        ${d.attachments.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th>Fingerprint</th><th></th></tr></thead><tbody>
+          ${d.attachments.map(f => `<tr><td>${I.doc} ${esc(f.file_name)}</td><td class="small">${(Number(f.size_bytes || 0) / 1024).toFixed(0)} KB</td>
+            <td class="small">${esc(f.uploaded_by || '')}<div class="tiny muted">${fmtDateTime(f.uploaded_at)}</div></td>
+            <td class="mono tiny" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 16))}...<div id="att-ver-${f.id}"></div></td>
+            <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="labOpenFile(${f.id}, '${esc(f.sha256)}')">Open</button></td></tr>`).join('')}</tbody></table></div>`
+          : `<div class="card-b">${emptyState('doc', 'No chromatograms yet', 'Add the PDF printouts of this run; the checker compares the typed areas with them.')}</div>`}
+      </div>`,
     bind(){
       $$('[data-k]').forEach(el => {
         const ev = el.tagName === 'SELECT' ? 'change' : 'input';
@@ -575,6 +585,7 @@ function viewLabWorksheet(id){
         vals.forEach((v, i) => { if (boxes[start + i]){ boxes[start + i].value = v; wsSet(boxes[start + i].dataset.k, v); } });
         ws.dirty = true; wsCalcSoon(0);
       }));
+      const fi = $('#wsFile'); if (fi) fi.onchange = () => wsUpload(Array.from(fi.files || []));
       const sv = $('#wsSave'); if (sv) sv.onclick = () => wsSave();
       const sb = $('#wsSubmit'); if (sb) sb.onclick = () => wsSubmit();
       wsPaint();
@@ -723,6 +734,51 @@ function wsSendBack(){
       toast('Sent back', `Worksheet #${ws.id}`, 'ok'); labRefresh();
     }
   });
+}
+
+
+/* ---- chromatograms: upload (PDF -> server -> MinIO) and open with the fingerprint checked in the browser ---- */
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ''));
+    r.onerror = () => reject(new Error('The file could not be read.'));
+    r.readAsDataURL(file);
+  });
+}
+async function wsUpload(files){
+  if (!files.length) return;
+  const id = ws.id;
+  let done = 0;
+  for (const f of files){
+    if (f.size > 10 * 1024 * 1024){ toast('Too large', `${f.name} is larger than 10 MB.`, 'err'); continue; }
+    try {
+      toast('Uploading', f.name);
+      await labPost('/attachment/upload', { analysis_id: id, file_name: f.name, content_type: f.type || 'application/pdf', data_base64: await fileToBase64(f) });
+      done++;
+    } catch (e) { toast('Not added: ' + f.name, e.message, 'err', 7000); }
+  }
+  if (done){ toast('Chromatograms added', `${done} file(s) stored with their fingerprint.`, 'ok'); delete labCache['/worksheet?id=' + id]; render(); }
+}
+async function labOpenFile(id, expected){
+  const out = $('#att-ver-' + id);
+  try {
+    const res = await fetch(API_BASE + LAB + '/attachment?id=' + id, { headers: { Authorization: getToken() } });
+    if (!res.ok){ let m = 'Could not open the file.'; try { m = (await res.json()).error || m; } catch (e) { /* not json */ } throw new Error(m); }
+    const blob = await res.blob();
+    let verdict = '';
+    if (window.crypto && crypto.subtle){
+      const hex = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))).map(b => b.toString(16).padStart(2, '0')).join('');
+      verdict = hex === expected ? 'ok' : 'bad';
+    }
+    if (out) out.innerHTML = verdict === 'ok' ? '<span class="badge b-ok">fingerprint verified</span>'
+      : verdict === 'bad' ? '<span class="badge b-danger">FINGERPRINT MISMATCH</span>' : '';
+    if (verdict === 'bad'){ toast('Fingerprint mismatch', 'This file is not the one that was uploaded. Report it to QA.', 'err', 10000); return; }
+    const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+    const link = document.createElement('a'); link.href = url; link.target = '_blank'; link.rel = 'noopener';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { toast('Could not open the file', e.message, 'err'); }
 }
 
 /* ============================================================ OOS log ============================================================ */
