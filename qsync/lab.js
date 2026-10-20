@@ -216,6 +216,7 @@ function viewLabRequest(id){
   if (hasLabRole('qc_supervisor') && st === 'qc_received') acts.push(`<button class="btn btn-ghost" onclick="labChangeTests(${r.id})">${I.edit} Change tests</button>`);
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
+  acts.push(`<a class="btn btn-ghost" href="#/lab/report/${r.id}">${I.print} QC report</a>`);
   acts.push(`<a class="btn btn-ghost" href="#/sheet/${r.id}">${I.doc} Phase 1 sheet</a>`);
   const live = r.assignments.filter(a => !a.cancelled), cancelled = r.assignments.filter(a => a.cancelled);
   const results = r.results || [];
@@ -242,7 +243,7 @@ function viewLabRequest(id){
         </div>
         <div class="card"><div class="card-h"><h3>QC results</h3><div class="sub">Current results (corrected ones replace older ones)</div></div>
           ${results.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>API</th><th>Sample</th><th>Result</th><th>Limit</th><th></th></tr></thead><tbody>
-            ${results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="strong tnum">${num1(x.value_reported)}${esc(x.unit || '')}</td>
+            ${results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="strong tnum">${esc(resText(x))}</td>
               <td class="small muted">${esc(x.limit_text || '')}</td><td>${verdictBadge(x.pass, x.oos_status)}</td></tr>`).join('')}</tbody></table></div>`
             : `<div class="card-b">${emptyState('chart', 'No results yet', 'Results appear when the analyst submits the worksheet.')}</div>`}
         </div>
@@ -528,6 +529,7 @@ function viewLabWorksheet(id){
     acts.push(`<button class="btn btn-primary" id="wsSubmit">${I.send} Submit</button>`);
   }
   if (hasLabRole('qc_supervisor') && a.status === 'submitted' && !a.is_mine) acts.push(`<button class="btn btn-primary" onclick="wsCheck()">Check / return</button>`);
+  acts.push(`<a class="btn btn-ghost" href="#/lab/print/${a.id}">${I.print} Printable copy</a>`);
   if (hasLabRole('qc_manager') && a.status === 'checked') acts.push(`<button class="btn btn-ghost" onclick="wsSendBack()">Send back</button>`);
   return {
     title: `Worksheet #${a.id}`, crumb:'QC Laboratory',
@@ -741,7 +743,7 @@ function viewLabOos(){
         ${rows.map(e => `<tr><td class="small">${fmtDateTime(e.raised_at)}${e.superseded ? '<div class="tiny muted">replaced by a correction</div>' : ''}</td>
           <td><a class="req-no" href="#/lab/request/${e.request_id}">${esc(e.request_no)}</a><div class="tiny muted">${esc(e.product_name)} ${esc(e.batch_no)}</div></td>
           <td>${esc(e.api)}<div class="tiny muted mono">${esc(e.sample_label)}</div></td>
-          <td class="strong tnum" style="color:var(--danger)">${num1(e.value_reported)}${esc(e.unit || '')}<div class="tiny muted">${esc(e.limit_text || '')}</div></td>
+          <td class="strong tnum" style="color:var(--danger)">${esc(resText(e))}<div class="tiny muted">${esc(e.limit_text || '')}</div></td>
           <td>${e.status === 'open' ? '<span class="badge b-danger">Open</span>' : `<span class="badge b-slate">${esc(e.outcome)}</span><div class="tiny muted">${esc(e.reference || '')} - ${esc(e.closed_by || '')}</div>`}</td>
           <td style="text-align:right">${qcm && e.status === 'open' ? `<button class="btn btn-ghost btn-sm" onclick="labOosClose(${e.id})">Close</button>` : ''}</td></tr>`).join('')}
         </tbody></table></div>` : `<div class="card-b">${emptyState('checkCircle', 'No entries', oosOpenOnly ? 'No open OOS entries.' : 'No OOS entries yet.')}</div>`}</div>`,
@@ -891,6 +893,147 @@ function mdTemplate(id, mode){
     }; } });
 }
 
+/* ============================================================ Printable worksheet and batch QC report ============================================================ */
+// generated from the stored record (values typed + the server's calculation); the paper format numbers are kept for auditors
+const FORM_TITLES = {
+  'Granulation':      ['Granules Analytical Worksheet', 'QC/MOA/FP/005/F1-01', 'Granules Analysis Assessment Report', 'QC/MOA/FP/005/F3-01'],
+  'Finished Product': ['Finished Product Analytical Worksheet', 'QC/MOA/FP/005/F2-01', 'Product Analysis Assessment Report', 'QC/MOA/FP/005/F4-01'],
+};
+function formFor(stage){ return FORM_TITLES[stage] || ['Analytical Worksheet', '', 'QC Analysis Report', '']; }
+const nfix = (v, dp) => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? '--' : Number(v).toFixed(dp));
+function signBox(label, name, at){ return `<div class="sign-box"><div class="sl">${esc(label)}</div><div class="sv">${esc(name || '--')}</div><div class="ss">${at ? fmtDateTime(at) : '--'}</div></div>`; }
+function resText(x){
+  if (x.value_reported === null || x.value_reported === undefined) return x.unit ? String(x.unit).charAt(0).toUpperCase() + String(x.unit).slice(1) : '--';
+  if (x.unit === '%') return num1(x.value_reported) + '%';
+  if (x.unit === 'AV') return 'AV ' + num1(x.value_reported);
+  if (x.unit === '% RT diff') return nfix(x.value_reported, 2) + '% RT difference';
+  return `${x.value_reported} ${x.unit || ''}`.trim();
+}
+const verdictText = p => (p === true ? 'COMPLIES' : p === false ? 'DOES NOT COMPLY' : '--');
+const testOfResult = n => TEST_TYPES[n] || 'Microbiology';
+
+function printWorksheetHtml(d){
+  const a = d.analysis, c = a.calc || {}, inp = a.inputs || {}, test = a.test_type, f = formFor(a.stage);
+  const eq = d.equipment.find(q => String(q.id) === String(a.equipment_id));
+  const samples = inp.samples || [];
+  const hplc = ['assay', 'dissolution', 'content_uniformity'].includes(test);
+  const parts = d.templates.map(t => {
+    const P = t.parameters || {}, r = (c.apis || {})[t.id] || {}, x = (inp.apis || {})[t.id] || {};
+    const ws = d.standards.find(w => String(w.id) === String(x.ws_id));
+    let html = `<h4>${esc(t.api)} - template v${esc(t.version)}${t.form_ref ? ' (replaces ' + esc(t.form_ref) + ')' : ''}</h4>`;
+    if (hplc){
+      const s = r.sst || {};
+      html += `<table><tr><th>Working standard</th><th>Potency</th><th>Weight</th><th>Dilution</th><th>Standard areas</th><th>Mean</th><th>%RSD</th><th>SST</th></tr>
+        <tr><td>${esc(ws ? ws.ws_no : r.ws_no || '--')}</td><td>${esc(ws ? ws.potency_pct + '%' : '--')}</td><td>${esc(x.std_weight || '--')} mg</td>
+          <td>${esc(stepsText((P.std || {}).steps, 'mg'))}</td><td class="mono">${esc((x.std_areas || []).filter(v => v !== '').join(', '))}</td>
+          <td>${nfix(s.mean, 1)}</td><td>${nfix(s.rsd_reported, 2)}% (${esc(s.limit_text || '')})</td><td><b>${s.pass === true ? 'PASS' : s.pass === false ? 'FAIL' : '--'}</b></td></tr>
+        ${x.sst_justification ? `<tr><td colspan="8">SST justification: ${esc(x.sst_justification)}</td></tr>` : ''}</table>`;
+    }
+    if (test === 'assay'){
+      html += `<table><tr><th>Sample</th><th>Average weight</th><th>Prep</th><th>Sample weight</th><th>Areas</th><th>% of label claim</th><th>Result (mean)</th><th>Limit</th><th>Verdict</th></tr>
+        ${samples.map((sm, si) => { const v = (inp.values || {})[sm.key] || {}, preps = (v.preps || {})[t.id] || [], rs = (r.samples || [])[si] || {};
+          return preps.map((p, pi) => `<tr>${pi === 0 ? `<td rowspan="${preps.length}">${esc(sm.label)}</td><td rowspan="${preps.length}">${esc(v.avg_weight || '--')} mg</td>` : ''}
+            <td>${String.fromCharCode(97 + pi)}</td><td>${esc(p.weight || '--')} mg</td><td class="mono">${esc((p.areas || []).join(', '))}</td>
+            <td>${nfix(((rs.preparations || [])[pi] || {}).pct_reported, 1)}%</td>
+            ${pi === 0 ? `<td rowspan="${preps.length}"><b>${nfix(rs.reported, 1)}%</b><div class="tiny">${nfix(rs.mg_reported, 2)} mg</div></td><td rowspan="${preps.length}">${esc(r.limit_text || '')}</td>
+              <td rowspan="${preps.length}"><b>${verdictText(rs.pass)}</b></td>` : ''}</tr>`).join(''); }).join('')}</table>`;
+    } else if (test === 'dissolution' || test === 'content_uniformity'){
+      samples.forEach((sm, si) => {
+        const units = (((inp.values || {})[sm.key] || {}).units || {})[t.id] || [], rs = (r.samples || [])[si] || {};
+        html += `<table><tr><th>Sample ${esc(sm.label)}</th>${units.map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
+          <tr><td>Area</td>${units.map(u => `<td class="mono">${esc(u)}</td>`).join('')}</tr>
+          <tr><td>${test === 'dissolution' ? '% dissolved' : '% of label claim'}</td>${units.map((u, i) => `<td>${nfix((rs.units_reported || [])[i], 1)}</td>`).join('')}</tr></table>
+          <table><tr>${test === 'dissolution'
+            ? `<th>Mean</th><th>Min</th><th>Max</th><th>Limit</th><th>Verdict</th></tr><tr><td><b>${nfix(rs.reported, 1)}%</b></td><td>${nfix(rs.min_unit, 1)}%</td><td>${nfix(rs.max_unit, 1)}%</td>
+               <td>${esc(rs.limit_text || '')}${(rs.units_below || []).length ? ' - caplet ' + rs.units_below.join(', ') + ' below' : ''}</td><td><b>${verdictText(rs.pass)}</b></td>`
+            : `<th>Stage</th><th>Mean (X)</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr><tr><td>${esc(rs.stage || '--')}</td><td>${nfix(rs.mean_reported, 1)}%</td>
+               <td>${nfix(rs.sd, 2)}</td><td>${nfix(rs.m, 1)}</td><td>${esc(rs.k || '--')}</td><td><b>${nfix(rs.av_reported, 1)}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td>`}</tr></table>`;
+      });
+    } else if (test === 'identification'){
+      html += `<table><tr><th>Sample</th><th>Standard RT (min)</th><th>Sample RT (min)</th><th>Difference</th><th>Limit</th><th>Verdict</th></tr>
+        ${samples.map((sm, si) => { const rs = (r.samples || [])[si] || {};
+          return `<tr><td>${esc(sm.label)}</td><td>${esc(x.std_rt || '--')}</td><td>${esc((((inp.values || {})[sm.key] || {}).rt || {})[t.id] || '--')}</td>
+            <td>${nfix(rs.deviation_reported, 2)}%</td><td>${esc(r.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr>`; }).join('')}</table>`;
+    } else if (test === 'microbiology'){
+      html += `<table><tr><th>Sample</th><th>Parameter</th><th>Result</th><th>Limit</th><th>Verdict</th></tr>
+        ${samples.map((sm, si) => ((r.samples || [])[si] || { rows: [] }).rows.map((row, ri) => `<tr>${ri === 0 ? `<td rowspan="${((r.samples || [])[si] || { rows: [] }).rows.length}">${esc(sm.label)}</td>` : ''}
+          <td>${esc(row.label)}</td><td>${row.value === null ? 'awaiting' : esc(typeof row.value === 'number' ? row.value + ' cfu/g' : row.value)}</td><td>${esc(row.limit_text)}</td><td><b>${verdictText(row.pass)}</b></td></tr>`).join('')).join('')}</table>`;
+    }
+    return html;
+  }).join('');
+  return `<div class="sheet">
+    <div class="letterhead">Orange Kalbe Limited - Quality Control Department</div>
+    <div class="sheet-head"><div><h2>${esc(f[0])}</h2><div class="small">${esc(TEST_TYPES[test] || test)}</div></div>
+      <div class="doc">${esc(f[1])}<br>Worksheet #${a.id}<br>Engine ${esc(c.engine_version || a.engine_version || '--')}</div></div>
+    ${a.status !== 'checked' ? `<p><b>Status: ${esc((WS_STATUS[a.status] || [a.status])[0])}</b>${a.status === 'in_progress' ? ' - draft, not submitted' : ''}</p>` : ''}
+    <h4>Analysis details</h4>
+    <table class="kv"><tr><th>Product</th><td>${esc(a.product_name)}</td><th>Stage</th><td>${esc(a.stage)}</td></tr>
+      <tr><th>Batch(es)</th><td>${esc(d.samples.map(b => b.batch_no).join(', '))}</td><th>Requests</th><td>${esc(d.samples.map(b => b.request_no).join(', '))}</td></tr>
+      <tr><th>Instrument</th><td>${esc(eq ? eq.eq_no + ' ' + (eq.eq_type || '') : '--')}</td><th>Reagent / mobile phase lots</th><td>${esc(a.reagents || '--')}</td></tr>
+      <tr><th>Started</th><td>${fmtDate(a.started_on)}</td><th>Ended</th><td>${fmtDate(a.ended_on)}</td></tr>
+      <tr><th>Method</th><td>${esc([...new Set(d.templates.map(t => t.method_ref).filter(Boolean))].join(', ') || '--')}</td><th>Specification</th><td>${esc([...new Set(d.templates.map(t => t.spec_ref).filter(Boolean))].join(', ') || '--')}</td></tr></table>
+    ${parts}
+    ${d.attachments.length ? `<h4>Chromatograms</h4><table><tr><th>File</th><th>Fingerprint (sha256)</th><th>Uploaded</th></tr>${d.attachments.map(x => `<tr><td>${esc(x.file_name)}</td><td class="mono">${esc(x.sha256)}</td><td>${esc(x.uploaded_by)} ${fmtDateTime(x.uploaded_at)}</td></tr>`).join('')}</table>` : ''}
+    <div class="sign-grid">${signBox('Performed by (analyst)', a.performed_by, a.performed_at)}${signBox('Checked by (QC Supervisor)', a.checked_by, a.checked_at)}</div>
+    <p class="tiny" style="margin-top:14px">Generated by QSync from the stored record. Every value above was entered once; the results are those calculated and stored by the server (engine ${esc(c.engine_version || a.engine_version || '--')}). Signatures are electronic password sign-offs.</p>
+  </div>`;
+}
+function viewLabPrint(id){
+  const d = labGet('/worksheet?id=' + id);
+  if (!d) return labWait('Worksheet', 'QC Laboratory');
+  if (d.error) return labFail('Worksheet', 'QC Laboratory', d.error);
+  return { title: `Worksheet #${id} - print`, crumb: 'QC Laboratory',
+    html: `${pageHead(`Worksheet #${esc(id)} - printable copy`, '', `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+      <a class="btn btn-ghost" href="#/lab/worksheet/${esc(id)}">${I.chevL} Back to the worksheet</a>`)}${printWorksheetHtml(d)}` };
+}
+
+function labReportHtml(d){
+  const r = d.request, f = formFor(r.stage), results = r.results || [];
+  const live = r.assignments.filter(a => !a.cancelled);
+  const names = k => [...new Set(live.map(a => a[k]).filter(Boolean))].join(', ');
+  const at = k => live.map(a => a[k]).filter(Boolean).sort().slice(-1)[0];
+  const allPass = results.length && results.every(x => x.pass === true);
+  const oos = results.filter(x => x.oos_status);
+  return `<div class="sheet">
+    <div class="letterhead">Orange Kalbe Limited - Quality Control Department</div>
+    <div class="sheet-head"><div><h2>${esc(f[2])}</h2><div class="small">Includes the Test Request Form "To be filled by QC" section (OKL/QAD/038/F1-00)</div></div>
+      <div class="doc">${esc(f[3])}<br>Request No: ${esc(r.request_no)}</div></div>
+    <h4>Batch details</h4>
+    <table class="kv"><tr><th>Product</th><td>${esc(r.product_name)}</td><th>Batch No</th><td>${esc(r.batch_no)}</td></tr>
+      <tr><th>Stage</th><td>${esc(r.stage)}</td><th>Tests required</th><td>${esc(r.test_required || '--')}</td></tr>
+      <tr><th>Mfg Date</th><td>${fmtMonthYear(r.mfg_date)}</td><th>Exp Date</th><td>${fmtMonthYear(r.exp_date)}</td></tr>
+      <tr><th>Sample received</th><td>${r.qc_received_at ? fmtDateTime(r.qc_received_at) : '--'}</td><th>Quantity</th><td>${r.qc_received_qty != null ? esc(r.qc_received_qty + ' ' + (r.qc_received_qty_unit || '')) : '--'}</td></tr></table>
+    ${d.ipqa && d.ipqa.length ? `<h4>In-process (IPQA) results</h4><table><tr><th>Parameter</th><th>Observed</th><th>Specification</th><th>Status</th></tr>
+      ${d.ipqa.map(p => `<tr><td>${esc(p.parameter)}</td><td>${esc(p.value)} ${esc(p.unit || '')}</td><td>${esc(p.spec || '')}</td><td><b>${esc(String(p.status || '').toUpperCase())}</b></td></tr>`).join('')}</table>` : ''}
+    <h4>QC results</h4>
+    <table><tr><th>Test</th><th>API / parameter</th><th>Sample</th><th>Result</th><th>Specification</th><th>Verdict</th></tr>
+      ${results.length ? results.map(x => `<tr><td>${esc(testOfResult(x.result_name))}</td><td>${esc(x.api)}</td><td>${esc(x.sample_label)}</td><td><b>${esc(resText(x))}</b></td>
+        <td>${esc(x.limit_text || '')}</td><td><b>${verdictText(x.pass)}</b></td></tr>`).join('') : '<tr><td colspan="6">No results yet.</td></tr>'}</table>
+    ${oos.length ? `<h4>Out-of-specification entries</h4><table><tr><th>Result</th><th>Status</th><th>Outcome / investigation</th></tr>
+      ${oos.map(x => `<tr><td>${esc(x.api)} ${esc(x.sample_label)}: ${esc(resText(x))}</td><td>${esc(x.oos_status)}</td><td>${esc((x.oos_outcome || '') + (x.oos_reference ? ' - ' + x.oos_reference : ''))}</td></tr>`).join('')}</table>` : ''}
+    <h4>Conclusion</h4>
+    <table class="kv"><tr><th>Results</th><td><b>${results.length ? (allPass ? 'Complies with the specification' : 'Does not comply with the specification') : '--'}</b></td>
+      <th>QC decision</th><td><b>${r.qc_decision ? (r.qc_decision === 'released' ? 'Released for further processing' : 'Not released for further processing') : 'Pending'}</b>${r.qc_comments ? '<div class="tiny">' + esc(r.qc_comments) + '</div>' : ''}</td></tr></table>
+    <div class="sign-grid">
+      ${signBox('Received by (QC Supervisor)', r.qc_received_by, r.qc_received_at)}
+      ${signBox('Performed by (analyst)', names('performed_by'), at('performed_at'))}
+      ${signBox('Checked by (QC Supervisor)', names('checked_by'), at('checked_at'))}
+      ${signBox('Approved by (QC Manager)', r.qc_manager, r.qc_manager_signed_at)}
+      ${signBox('Reviewed by (QA Manager)', r.qa_manager, r.qa_manager_signed_at)}
+    </div>
+    ${r.qa_manager_comments ? `<p class="small">QA comments: ${esc(r.qa_manager_comments)}</p>` : ''}
+    <p class="tiny" style="margin-top:14px">Generated by QSync from the stored record. Signatures are electronic password sign-offs; the full history of every change is kept in QSync.</p>
+  </div>`;
+}
+function viewLabReport(id){
+  const d = labGet('/request?id=' + id);
+  if (!d) return labWait('QC report', 'QC Laboratory');
+  if (d.error) return labFail('QC report', 'QC Laboratory', d.error);
+  return { title: `QC report - ${d.request.request_no}`, crumb: 'QC Laboratory',
+    html: `${pageHead(`QC report - ${esc(d.request.request_no)}`, '', `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+      <a class="btn btn-ghost" href="#/lab/request/${esc(id)}">${I.chevL} Back to the batch</a>`)}${labReportHtml(d)}` };
+}
+
 /* ---- routes ---- */
 route('/lab/inbox', () => viewLabInbox());
 route('/lab/request/:id', p => viewLabRequest(p.id));
@@ -898,3 +1041,5 @@ route('/lab/my', () => viewLabMy());
 route('/lab/worksheet/:id', p => viewLabWorksheet(p.id));
 route('/lab/oos', () => viewLabOos());
 route('/lab/master', () => viewLabMaster());
+route('/lab/print/:id', p => viewLabPrint(p.id));
+route('/lab/report/:id', p => viewLabReport(p.id));
