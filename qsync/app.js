@@ -95,6 +95,11 @@ const STATUS = {
   pending_qa_review: { label:'Pending QA Review',  badge:'b-info' },
   sent_to_qc:        { label:'With QC',            badge:'b-ok' },
   rejected:          { label:'Rejected',           badge:'b-danger' },
+  // QC laboratory (Phase 2, lab.js)
+  qc_received:       { label:'In the QC lab',      badge:'b-warn' },
+  qc_released:       { label:'Released by QC',     badge:'b-ok' },
+  qc_not_released:   { label:'Not released',       badge:'b-danger' },
+  qa_acknowledged:   { label:'Closed (QA)',        badge:'b-slate' },
 };
 const PRODUCTS_META = {
   Mixagrip:       { prefix:'A', type:'OSD', defaultBatchSize:1200000 },
@@ -257,7 +262,8 @@ async function pollTick(){
     if (path.startsWith('/reports')) {
       reportsCache = await api('/webhook/admin/api/reports');
     } else {
-      S = await api('/webhook/admin/api/bootstrap');
+      const keep = { me: S.me, lab: S.lab };
+      S = Object.assign(await api('/webhook/admin/api/bootstrap'), keep);
     }
     render();
   } catch (e) { /* transient failure - next tick retries; a real 401 already handles itself */ }
@@ -309,6 +315,12 @@ function queryParams(){
 function navModel(){
   return [
     ...(canEdit() ? [{ title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] }] : []),
+    ...(S.lab ? [{ title:'QC Laboratory', items:[
+      { path:'/lab/inbox', label:'QC inbox', icon:'inbox' },
+      { path:'/lab/my', label:'My analyses', icon:'doc' },
+      { path:'/lab/oos', label:'OOS log', icon:'alert' },
+      { path:'/lab/master', label:'Lab master data', icon:'settings' },
+    ]}] : []),
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
       { path:'/reports', label:'Reports and Trends', icon:'chart' },
@@ -395,6 +407,7 @@ async function bootstrap(){
   const data = await api('/webhook/admin/api/bootstrap');
   S = data;
   S.me = meFromAuth(auth, 'qsync');
+  try { const lab = await api('/webhook/qsync/lab/api/my'); S.lab = { roles: lab.roles || [] }; } catch (e) { S.lab = null; }
   resetIdleTimer();
   startPolling();
 }
@@ -790,7 +803,9 @@ function viewSheet(id){
   return {
     title:`QSync sheet - ${r.requestNo}`, crumb:'Records',
     html: `${pageHead(`QSync sheet - ${esc(r.requestNo)}`, '',
-      `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+      `${S.lab && ['qc_received','qc_released','qc_not_released','qa_acknowledged','sent_to_qc','pending_qc_notify'].includes(r.status)
+          ? `<a class="btn btn-ghost" href="#/lab/request/${r.id}">${I.inbox} QC lab view</a>` : ''}
+       <button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
        <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`)}
       ${qsyncSheetHtml(r)}`
   };
@@ -898,7 +913,7 @@ function viewReports(){
    ============================================================ */
 const ROLE_LABELS = {
   production:'Production', ipqa:'IPQA', qa_supervisor:'QA Supervisor',
-  qc_supervisor:'QC Supervisor', admin:'Admin',
+  qc_supervisor:'QC Supervisor', admin:'Admin', qc_analyst:'QC Analyst', qc_manager:'QC Manager', qa_manager:'QA Manager',
 };
 
 

@@ -661,3 +661,7 @@ input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
   .filter-bar .search .inp{width:100%}
   .filter-bar .spacer{flex:1 1 0}
 }
+
+/* QC laboratory (lab.js) */
+.lab-areas{display:flex;flex-wrap:wrap;gap:6px}
+.lab-areas .inp{width:118px;padding:7px 9px}
