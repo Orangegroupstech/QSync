@@ -133,7 +133,7 @@ function viewLabInbox(){
   const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Tests</th><th>OOS</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.map(r => `<tr class="clickable" onclick="go('/lab/request/${r.id}')">
-        <td data-label="Request"><div class="req-no">${esc(r.request_no)}</div><div class="tiny muted">QA approved ${r.qa_signed_at ? relTime(r.qa_signed_at) : '--'}</div></td>
+        <td data-label="Request"><div class="req-no">${esc(r.request_no)}</div><div class="tiny muted">${r.qa_signed_at ? 'QA approved ' + relTime(r.qa_signed_at) : 'sent straight to QC (' + esc(r.stage) + ')'}</div></td>
         <td data-label="Product / Batch"><div class="strong">${esc(r.product_name)}</div><div class="tiny muted mono">${esc(r.batch_no)}</div></td>
         <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
         <td data-label="Tests">${testsCell(r)}</td>
