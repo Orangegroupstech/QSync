@@ -7,7 +7,7 @@ Static console for `okl.orangegroupsai.online` (one Vercel deployment, no build;
 - `qsync/` - QC console (requests, reports, products/specs, audit trail). People who can only read see no "New Test Request" or edit buttons.
 - `procurement/` - requisition log, approver directory and spares stock. "New Request" lists every department and opens that department's hosted requisition form.
 - `users/` - Users (admins only): all people, add person, edit access, reset, unlock, deactivate, activity, and **Approvers** - the one list of who approves and who can submit requests (Procurement requisitions, Leave), each linked to an employee record. The Procurement console no longer has a Roles page; it only reads this list.
-- `Orange2ballslogo.jpg` - the company logo; also loaded by the hosted requisition/checklist pages served from n8n.
+- `logo.png` - the company logo (transparent background). Keep this file name: the consoles and the n8n emails and hosted forms (QSync, HR, Procurement) load `https://okl.orangegroupsai.online/logo.png`, including emails already sent.
 - External tiles: Live production system, Zaiki & Mintacid dashboard.
 
 Every console reads the shared token (`sessionStorage` key `okl.token`) set at the landing page and sends it to the n8n API at `https://orangegroupsai.online/webhook/...`; no token or a 401 sends you back to the landing page.
