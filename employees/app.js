@@ -251,9 +251,8 @@ function navModel(){
       { path:'/overtime/records', label:'Overtime', icon:'layers' },
       { path:'/attendance', label:'Attendance', icon:'activity' },
     ] },
-    { title:'Leave', items:[ { path:'/leave', label:'Leave', icon:'calendar' } ] },
-    { title:'Salary', items:[ { path:'/salary', label:'Salary', icon:'coins' }, { path:'/holidays', label:'Public holidays', icon:'calendar' } ] },
-  ];
+    { title:'Leave', items:[ { path:'/leave', label:'Leave', icon:'calendar' }, { path:'/holidays', label:'Public holidays', icon:'calendar' } ] },
+  ].concat(S && S.me && S.me.is_admin ? [{ title:'Salary', items:[ { path:'/salary', label:'Salary', icon:'coins' } ] }] : []);   // Salary is for admins only for now
 }
 
 /* ---------------- Shell ---------------- */
@@ -963,6 +962,52 @@ function bindHrFilters(s, p, onRange, onChange){
   if ($('#' + p + 'Type')) $('#' + p + 'Type').onchange = e => { s.type = e.target.value; onChange(); };
   $('#' + p + 'Q').oninput = debounce(e => { s.q = e.target.value; onChange(); }, 150);
 }
+/* ---- Excel reports (Attendance and Overtime, By person): everyone, for a period chosen in a small dialog ---- */
+const reportPeriods = () => [['cycle', 'This payroll cycle'], ['lastcycle', 'Previous payroll cycle']].concat(PERIODS);     // a function: PERIODS is defined further down
+const REPORT_MAX_DAYS = 366;
+const dayName = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday:'short', timeZone:'UTC' });
+const hoursNum = n => Math.round(Number(n || 0) * 100) / 100;
+/* sheets = [{ name, head:[...], rows:[[...]], widths:[...] }] -> one .xlsx download */
+async function writeWorkbook(fileName, sheets){
+  const XLSX = await loadSheetJS(), wb = XLSX.utils.book_new();
+  sheets.forEach(sh => {
+    const ws = XLSX.utils.aoa_to_sheet([sh.head].concat(sh.rows));
+    ws['!cols'] = (sh.widths || sh.head.map(h => Math.max(10, String(h).length + 2))).map(w => ({ wch: w }));
+    if (sh.rows.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{ r:0, c:0 }, e:{ r:sh.rows.length, c:sh.head.length - 1 } }) };
+    XLSX.utils.book_append_sheet(wb, ws, sh.name);
+  });
+  XLSX.writeFile(wb, fileName);
+}
+/* o = { title, intro, start:{preset,from,to}, empty, build: async (from, to) => ({ fileName, sheets }) | null } */
+function openReportDialog(o){
+  const r = { preset: o.start.preset, from: o.start.from, to: o.start.to };
+  openModal({
+    title: o.title, size:'narrow',
+    body: `<p class="small muted" style="margin:0 0 14px">${esc(o.intro)}</p>
+      <div class="field"><label for="rpPreset">Period</label><select class="inp" id="rpPreset">${reportPeriods().map(([k, l]) => `<option value="${k}" ${r.preset === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="grid g2"><div class="field"><label for="rpFrom">From</label><input class="inp" type="date" id="rpFrom" value="${esc(r.from)}"></div>
+        <div class="field"><label for="rpTo">To</label><input class="inp" type="date" id="rpTo" value="${esc(r.to)}"></div></div>
+      <div class="err-msg hide" data-err="rpTo"></div>
+      <div class="hint">${I.info}<span>Everyone is included. You get one Excel file with a Summary sheet and a Daily detail sheet.</span></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="rpGo">${I.download} Download</button>`,
+    onMount:(w, close) => {
+      $('#rpPreset', w).onchange = e => { r.preset = e.target.value; const x = presetRange(r.preset); if (x) { r.from = x[0]; r.to = x[1]; $('#rpFrom', w).value = r.from; $('#rpTo', w).value = r.to; } };
+      $('#rpFrom', w).onchange = e => { r.from = e.target.value; r.preset = 'custom'; $('#rpPreset', w).value = 'custom'; };
+      $('#rpTo', w).onchange = e => { r.to = e.target.value; r.preset = 'custom'; $('#rpPreset', w).value = 'custom'; };
+      $('#rpGo', w).onclick = async ev => {
+        clearErrors(w);
+        if (!r.from || !r.to || r.from > r.to) return setErr('rpTo', 'Pick a period where From is on or before To.', w);
+        if ((new Date(r.to) - new Date(r.from)) / 864e5 + 1 > REPORT_MAX_DAYS) return setErr('rpTo', 'Pick a period of at most one year.', w);
+        const btn = ev.currentTarget; btn.disabled = true;
+        try {
+          const out = await o.build(r.from, r.to);
+          if (!out) { setErr('rpTo', o.empty || 'Nothing to report for this period.', w); btn.disabled = false; return; }
+          await writeWorkbook(out.fileName, out.sheets); close(); toast('Report downloaded', out.fileName, 'ok');
+        } catch (err) { setErr('rpTo', err.message, w); btn.disabled = false; }
+      };
+    },
+  });
+}
 const typeLabel = t => t === 'casual' ? 'Casual' : 'Staff';
 function empTypeMap(){ return new Map(S.employees.map(e => [e.enroll_id, e.employment_type])); }
 
@@ -1105,12 +1150,36 @@ function exportOvertimeCSV(){
   }
   download('okl_overtime_' + (s.mode === 'entries' ? 'entries' : s.mode === 'daily' ? 'day' : 'by_person') + '_' + s.from + '_to_' + s.to + tag + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
 }
+/* Overtime report: Summary (hours by day type per person) + Daily detail (one line per entry). Void entries are left out. */
+function otReportSheets(records, from, to){
+  const types = empTypeMap(), live = (records || []).filter(r => r.status !== 'void').map(r => Object.assign({}, r, { name: properName(r.name) }));
+  if (!live.length) return null;
+  const typeOf = id => types.has(id) ? typeLabel(types.get(id)) : '';
+  const people = otPersonTotals(live).sort((a, b) => a.name.localeCompare(b.name));
+  const rows = live.slice().sort((a, b) => a.name.localeCompare(b.name) || (String(a.work_date) < String(b.work_date) ? -1 : String(a.work_date) > String(b.work_date) ? 1 : 0) || String(a.start_time || '').localeCompare(String(b.start_time || '')));
+  return [
+    { name:'Summary', head:['Enroll ID', 'Name', 'Department', 'Type', 'OT weekday h', 'OT weekend h', 'OT holiday h', 'Total OT'], widths:[12, 30, 20, 9, 14, 14, 14, 10],
+      rows: people.map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), typeOf(x.id), hoursNum(x.byType.weekday), hoursNum(x.byType.weekend), hoursNum(x.byType.public_holiday), hoursNum(x.hours)]) },
+    { name:'Daily detail', head:['Enroll ID', 'Name', 'Department', 'Type', 'Date', 'Day', 'Day type', 'Start', 'End', 'Hours', 'Submitted by'], widths:[12, 30, 20, 9, 12, 6, 15, 8, 8, 8, 22],
+      rows: rows.map(r => { const d = String(r.work_date).slice(0, 10); return [r.enroll_id, r.name, r.department || '', typeOf(r.enroll_id), d, dayName(d), dayTypeLabel(otDayType(r)), hhmm(r.start_time), hhmm(r.end_time), hoursNum(r.hours), r.submitted_by || r.recorded_by || '']; }) },
+  ];
+}
+function openOtReport(){
+  const s = otListState;
+  openReportDialog({ title:'Download overtime report', intro:'Overtime hours by day type for every person with overtime, and every entry behind them.',
+    start:{ preset:s.preset, from:s.from, to:s.to }, empty:'There is no overtime in this period.',
+    async build(from, to){
+      const res = (s.records && s.key === from + '|' + to) ? { records:s.records } : await api('/webhook/employees/api/overtime?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to));
+      const sheets = otReportSheets(res.records || [], from, to);
+      return sheets && { fileName:'okl_overtime_report_' + from + '_to_' + to + '.xlsx', sheets };
+    } });
+}
 function viewOvertimeList(mode){
   if (!otListState.to) { const r = presetRange(otListState.preset); otListState.from = r[0]; otListState.to = r[1]; }
   const s = otListState; s.mode = mode;
   return {
     title:'Overtime', crumb:'Attendance',
-    html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, day by day, totals by person, and every entry.', `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`)}
+    html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, day by day, totals by person, and every entry.', (mode === 'overview' ? '' : `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`) + (mode === 'totals' ? `<button class="btn btn-primary" id="olReport">${I.download} Download report</button>` : ''))}
       ${hrTabs([['overview', 'Overview', '/overtime/records'], ['daily', 'Daily', '/overtime/records/daily'], ['totals', 'By person', '/overtime/records/people'], ['entries', 'Entries', '/overtime/records/entries']], mode)}
       ${hrFilterBar(s, 'ol', `<div class="field" style="margin:0"><label>Day type</label><div id="olDay"></div></div><label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>`)}
       <div class="card"><div id="otListBody"></div></div>`,
@@ -1119,7 +1188,8 @@ function viewOvertimeList(mode){
       msRender('olDept', 'All departments', [], s.department, () => {});
       msRender('olDay', 'All day types', DAY_TYPES.map(([v, l]) => ({ v, l })), s.dayTypes, v => { s.dayTypes = v; paintOtList(); }, 'day types');
       $('#olVoid').onchange = e => { s.showVoid = e.target.checked; paintOtList(); };
-      $('#olCsv').onclick = exportOvertimeCSV;
+      if ($('#olCsv')) $('#olCsv').onclick = exportOvertimeCSV;
+      if ($('#olReport')) $('#olReport').onclick = openOtReport;
       if (s.records && s.key === s.from + '|' + s.to) { paintOtDept(); paintOtList(); } else loadOtList();
     },
   };
@@ -1189,7 +1259,11 @@ async function openVoidOvertime(id){
    the file, days that are already in the system are skipped, and everything below is worked out
    from the raw punches (so changing the lateness time re-labels past days too).
    ============================================================ */
-const LATE_DEFAULT = '08:30';
+const LATE_DEFAULT = '08:10';            // staff
+const LATE_CASUAL_DEFAULT = '08:00';
+/* One rule for "late", used by Attendance and Salary: staff and casuals have their own time. Minutes since midnight. */
+const lateAfterFor = (e, staff, casual) => attMins(e && e.employment_type === 'casual' ? (casual || LATE_CASUAL_DEFAULT) : (staff || LATE_DEFAULT));
+const lateRuleText = (staff, casual, type) => { staff = staff || LATE_DEFAULT; casual = casual || LATE_CASUAL_DEFAULT; return type === 'casual' ? casual : type === 'staff' || staff === casual ? staff : staff + ' (staff) / ' + casual + ' (casual)'; };
 const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
 const att = { preset:'last30', from:'', to:'', dept:[], type:'', q:'', day:'', chip:'all', sort:'name', data:null, key:'', tab:'' };
 const attMins = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : 0; };
@@ -1252,19 +1326,19 @@ async function attEnsure(){
   if (att.data && att.key === key) return att.data;
   att.data = null;
   const res = await attFetchRange(att.from, att.to);
-  att.data = { late_after: res.late_after || LATE_DEFAULT, days: res.days || [], rows: res.rows || [] };
+  att.data = { late_after: res.late_after || LATE_DEFAULT, late_after_casual: res.late_after_casual || LATE_CASUAL_DEFAULT, days: res.days || [], rows: res.rows || [] };
   att.key = key;
   return att.data;
 }
 
 /* ---- the numbers ---- */
-function attCompute(){
-  const d = att.data, lateM = attMins(d.late_after || LATE_DEFAULT);
-  const days = (d.days || []).map(x => String(x.date).slice(0, 10)).filter(x => x >= att.from && x <= att.to && isWorkDay(x)).sort();   // weekends count as overtime, not attendance
+function attCompute(o){        // o = { data, from, to, dept, type, q } lets the report reuse this for any period; no argument = the page's own state
+  const A = o || att, d = o ? o.data : att.data;
+  const days = (d.days || []).map(x => String(x.date).slice(0, 10)).filter(x => x >= A.from && x <= A.to && isWorkDay(x)).sort();   // weekends count as overtime, not attendance
   const idx = new Map();
   (d.rows || []).forEach(r => { let m = idx.get(r[0]); if (!m) idx.set(r[0], m = new Map()); m.set(String(r[1]).slice(0, 10), { i:r[2], o:r[3], n:Number(r[4]) }); });
-  const q = att.q.trim().toLowerCase();
-  const emps = S.employees.filter(e => deptPick(att.dept, e.department) && (!att.type || e.employment_type === att.type)
+  const q = A.q.trim().toLowerCase();
+  const emps = S.employees.filter(e => deptPick(A.dept, e.department) && (!A.type || e.employment_type === A.type)
     && (!q || String(e.name).toLowerCase().includes(q) || String(e.enroll_id).toLowerCase().includes(q))
     && (isActiveEmp(e) || idx.has(e.enroll_id)));
   const expected = (e, day) => {
@@ -1281,7 +1355,7 @@ function attCompute(){
       if (!p) { if (expected(e, day)) recs.push({ e, day, absent:true }); return; }
       let i = p.i, o = p.o, missing = null;
       if (p.n <= 1) { if (attMins(p.i) < 720) { o = null; missing = 'out'; } else { i = null; o = p.i; missing = 'in'; } }
-      const lateMin = i ? Math.max(0, attMins(i) - lateM) : 0;
+      const lateMin = i ? Math.max(0, attMins(i) - lateAfterFor(e, d.late_after, d.late_after_casual)) : 0;
       recs.push({ e, day, i, o, missing, lateMin, late: lateMin > 0, present:true });
     });
   });
@@ -1301,7 +1375,7 @@ function attCompute(){
   const people = [...byEmp.values()];
   const arrN = sum(people, 'arrN');
   return {
-    late: d.late_after || LATE_DEFAULT, days, recs, people, dayList, emps,
+    late: lateRuleText(d.late_after, d.late_after_casual, A.type), days, recs, people, dayList, emps,
     workingDays: dayList.length, avgPresent: base.length ? sum(base, 'present') / base.length : 0, avgExpected: base.length ? sum(base, 'expected') / base.length : 0,
     lateTotal: sum(people, 'late'), latePeople: people.filter(p => p.late > 0).length, absentTotal: sum(people, 'absent'), absentPeople: people.filter(p => p.absent > 0).length, missingTotal: sum(people, 'missing'),
     lateRate: arrN ? sum(people, 'late') / arrN : 0,
@@ -1322,14 +1396,15 @@ function viewAttendance(tab){
   const filtered = ['overview', 'daily', 'people'].includes(tab);
   return {
     title:'Attendance', crumb:'Attendance',
-    html: `${pageHead('Attendance', 'Weekday attendance, lateness and absences from the attendance machine export. Weekends count as overtime.', filtered ? `<button class="btn btn-ghost" id="afCsv">${I.download} Export CSV</button>` : '')}${attTabs(tab)}${filtered ? hrFilterBar(att, 'af') : ''}
+    html: `${pageHead('Attendance', 'Weekday attendance, lateness and absences from the attendance machine export. Weekends count as overtime.', (filtered && tab !== 'overview' ? `<button class="btn btn-ghost" id="afCsv">${I.download} Export CSV</button>` : '') + (tab === 'people' ? `<button class="btn btn-primary" id="afReport">${I.download} Download report</button>` : ''))}${attTabs(tab)}${filtered ? hrFilterBar(att, 'af') : ''}
       <div id="attBody"><div class="small muted" style="padding:14px">Loading...</div></div>`,
     bind(){
       if (filtered) {
         const again = () => attLoad(tab);
         bindHrFilters(att, 'af', again, () => paintAtt(tab));
         msRender('afDept', 'All departments', deptOpts(S.departments || [], true), att.dept, v => { att.dept = v; paintAtt(tab); });
-        $('#afCsv').onclick = () => { if (att.data) attExportCsv(attCompute()); };
+        if ($('#afCsv')) $('#afCsv').onclick = () => { if (att.data) attExportCsv(attCompute()); };
+        if ($('#afReport')) $('#afReport').onclick = openAttReport;
       }
       attLoad(tab);
     },
@@ -1463,6 +1538,31 @@ function attExportCsv(c){
     [r.day, r.e.enroll_id, r.e.name, r.e.department, r.e.employment_type, r.i || '', r.o || '', statusOf(r)].map(cell).join(',')));
   download('okl_attendance_day_' + att.day + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
 }
+/* Attendance report: Summary (one line per person) + Daily detail (one line per person per working day). Built from the same
+   calculation as the page, for every employee, so the numbers match the pop-up. */
+function attReportSheets(data, from, to){
+  const c = attCompute({ data, from, to, dept:[], type:'', q:'' });
+  if (!c.days.length) return null;
+  const people = c.people.filter(p => p.present || p.absent).sort((a, b) => a.e.name.localeCompare(b.e.name));
+  const keep = new Set(people.map(p => p.e.enroll_id));
+  const statusOf = r => r.absent ? 'Absent' : (r.late ? 'Late ' + r.lateMin + ' min' : (r.i ? 'On time' : 'Present')) + (r.missing ? ', no ' + r.missing + ' punch' : '');
+  const recs = c.recs.filter(r => keep.has(r.e.enroll_id)).sort((a, b) => a.e.name.localeCompare(b.e.name) || (a.day < b.day ? -1 : 1));
+  return [
+    { name:'Summary', head:['Enroll ID', 'Name', 'Department', 'Type', 'Present', 'Late', 'Absent', 'Avg arrival'], widths:[12, 30, 20, 9, 9, 7, 8, 12],
+      rows: people.map(p => [p.e.enroll_id, p.e.name, p.e.department || '', typeLabel(p.e.employment_type), p.present, p.late, p.absent, p.arrN ? attHHMM(p.arrSum / p.arrN) : '']) },
+    { name:'Daily detail', head:['Enroll ID', 'Name', 'Department', 'Type', 'Date', 'Day', 'In', 'Out', 'Status'], widths:[12, 30, 20, 9, 12, 6, 8, 8, 28],
+      rows: recs.map(r => [r.e.enroll_id, r.e.name, r.e.department || '', typeLabel(r.e.employment_type), r.day, dayName(r.day), r.i || '', r.o || '', statusOf(r)]) },
+  ];
+}
+function openAttReport(){
+  openReportDialog({ title:'Download attendance report', intro:'Present, late and absent days for every person, and the day-by-day record behind them.',
+    start:{ preset:att.preset, from:att.from, to:att.to }, empty:'No attendance has been uploaded for this period.',
+    async build(from, to){
+      const res = (att.data && att.key === from + '|' + to) ? att.data : await attFetchRange(from, to);
+      const sheets = attReportSheets({ late_after: res.late_after || LATE_DEFAULT, late_after_casual: res.late_after_casual || LATE_CASUAL_DEFAULT, days: res.days || [], rows: res.rows || [] }, from, to);
+      return sheets && { fileName:'okl_attendance_report_' + from + '_to_' + to + '.xlsx', sheets };
+    } });
+}
 function openAttPerson(id){
   if (!att.data) return;
   const c = attCompute(), p = c.people.find(x => x.e.enroll_id === id); if (!p) return;
@@ -1479,18 +1579,20 @@ function openAttPerson(id){
 /* ---- Settings ---- */
 function paintAttSettings(body){
   if (!body || att.tab !== 'setup') return;
-  const canEdit = S.me.permission === 'editor', late = att.data.late_after || LATE_DEFAULT;
+  const canEdit = S.me.permission === 'editor', late = att.data.late_after || LATE_DEFAULT, lateC = att.data.late_after_casual || LATE_CASUAL_DEFAULT, dis = canEdit ? '' : 'disabled';
   body.innerHTML = `<div class="card"><div class="card-h"><h3>Lateness</h3></div><div class="card-b">
-    <div class="field"><label for="asLate">Late after</label><input class="inp" type="time" id="asLate" value="${esc(late)}" ${canEdit ? '' : 'disabled'}>
-      <div class="hint">${I.info}<span>A first punch after this time counts as late; exactly this time is on time. Changing it re-labels every day already uploaded.</span></div>
-      <div class="err-msg hide" data-err="asLate"></div></div>
-    ${canEdit ? `<button class="btn btn-primary" id="asSave">${I.check} Save</button>` : '<div class="small muted">Only editors can change this.</div>'}</div></div>`;
+    <div class="grid g2">
+      <div class="field"><label for="asLate">Staff late after</label><input class="inp" type="time" id="asLate" value="${esc(late)}" ${dis}><div class="err-msg hide" data-err="asLate"></div></div>
+      <div class="field"><label for="asLateC">Casual late after</label><input class="inp" type="time" id="asLateC" value="${esc(lateC)}" ${dis}><div class="err-msg hide" data-err="asLateC"></div></div></div>
+    <div class="hint">${I.info}<span>A first punch after this time counts as late; exactly this time is on time. Changing a time re-labels every day already uploaded, for that group only.</span></div>
+    ${canEdit ? `<button class="btn btn-primary" id="asSave" style="margin-top:12px">${I.check} Save</button>` : '<div class="small muted" style="margin-top:12px">Only editors can change this.</div>'}</div></div>`;
   const save = $('#asSave');
   if (save) save.onclick = async () => {
-    clearErrors(body); const v = $('#asLate').value;
-    if (!v) return setErr('asLate', 'Enter a time such as 08:30.', body);
+    clearErrors(body); const v = $('#asLate').value, vc = $('#asLateC').value;
+    if (!v) return setErr('asLate', 'Enter a time such as 08:10.', body);
+    if (!vc) return setErr('asLateC', 'Enter a time such as 08:00.', body);
     save.disabled = true;
-    try { const res = await api('/webhook/employees/api/attendance/settings', { method:'POST', body:{ late_after: v } }); att.data.late_after = res.late_after || v; toast('Lateness updated', 'Late is now after ' + att.data.late_after + '.', 'ok'); }
+    try { const res = await api('/webhook/employees/api/attendance/settings', { method:'POST', body:{ late_after: v, late_after_casual: vc } }); att.data.late_after = res.late_after || v; att.data.late_after_casual = res.late_after_casual || vc; toast('Lateness updated', 'Staff are late after ' + att.data.late_after + ', casuals after ' + att.data.late_after_casual + '.', 'ok'); }
     catch (err) { setErr('asLate', err.message, body); }
     save.disabled = false;
   };
@@ -1737,7 +1839,7 @@ function viewLeave(mode){
   lv.mode = mode;
   const extras = `<div class="field" style="margin:0"><label for="lvLeaveType">Leave type</label><select class="inp" id="lvLeaveType"><option value="">All leave types</option></select></div>
     <div class="field" style="margin:0"><label for="lvStatus">Status</label><select class="inp" id="lvStatus">${[['', 'Any status'], ['pending', 'Waiting'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['cancelled', 'Cancelled']].map(([k, l]) => `<option value="${k}" ${lv.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
-  const csv = mode === 'setup' ? '' : `<button class="btn btn-ghost" id="lvCsv">${I.download} Export CSV</button>`;
+  const csv = mode === 'setup' || mode === 'overview' ? '' : `<button class="btn btn-ghost" id="lvCsv">${I.download} Export CSV</button>`;
   const open = `<a class="btn btn-primary" href="${esc(LEAVE_FORM_URL)}" target="_blank" rel="noopener">${I.externalLink} Request form</a>`;
   const filters = mode === 'setup' ? '' : mode === 'balances' ? lvBalFilterBar() : hrFilterBar(lv, 'lv', extras, { noType:true });
   return {
@@ -1751,7 +1853,7 @@ function viewLeave(mode){
       $('#lvLeaveType').onchange = e => { lv.leaveType = e.target.value; lvPaint(); };
       $('#lvStatus').onchange = e => { lv.status = e.target.value; lvPaint(); };
       msRender('lvDept', 'All departments', [], lv.department, () => {});
-      $('#lvCsv').onclick = lvCsv;
+      if ($('#lvCsv')) $('#lvCsv').onclick = lvCsv;
       if (lv.records && lv.key === lv.from + '|' + lv.to) { lvPaintFilters(); lvPaint(); } else lvLoad();
     },
   };
@@ -2104,11 +2206,11 @@ const f2 = n => (Math.round(n * 100) / 100).toFixed(2);
 let sal = { preset:'cycle', from:'', to:'', department:[], type:'', q:'', mode:'estimate', data:null, key:'', formula:null, formulaLoaded:false };
 
 /* Pure calculation (no page state), so it can be tested on its own.
-   p = { from, to, employees, attDays:[iso], attRows:[[id, date, in, out, n]], lateAfter, holidays:Set, overtime:[], leave:[], formula }
+   p = { from, to, employees, attDays:[iso], attRows:[[id, date, in, out, n]], lateAfter, lateAfterCasual, holidays:Set, overtime:[], leave:[], formula }
    Recorded working days = days with attendance in the period that are Mon-Fri and not a public holiday. Present days =
    days with a punch, plus approved leave days. Basic share = present / recorded working days. */
 function salaryCompute(p){
-  const f = Object.assign({}, SAL_DEFAULT, p.formula || {}), lateM = attMins(p.lateAfter || LATE_DEFAULT), hol = p.holidays || new Set();
+  const f = Object.assign({}, SAL_DEFAULT, p.formula || {}), hol = p.holidays || new Set();
   const days = [...new Set((p.attDays || []).map(x => String(x).slice(0, 10)))].filter(x => x >= p.from && x <= p.to && isWorkDay(x) && !hol.has(x)).sort();
   const punches = new Map();
   (p.attRows || []).forEach(r => { let m = punches.get(r[0]); if (!m) punches.set(r[0], m = new Map()); m.set(String(r[1]).slice(0, 10), { i:r[2], n:Number(r[4]) }); });
@@ -2137,19 +2239,21 @@ function salaryCompute(p){
       if (pu) {
         present++;
         const i = (pu.n <= 1 && attMins(pu.i) >= 720) ? null : pu.i;      // a single late-day punch is the way out, not the way in
-        if (i && attMins(i) > lateM) late++;
+        if (i && attMins(i) > lateAfterFor(e, p.lateAfter, p.lateAfterCasual)) late++;
       } else if (leaveDays.has(e.enroll_id + '|' + day)) { present++; onLeave++; }
     });
     const w = o || { weekday:{ h:0, d:0 }, weekend:{ h:0, d:0 }, public_holiday:{ h:0, d:0 } };
+    const casual = e.employment_type === 'casual';        // the calculation below is the staff one; casuals have their own, not set up yet
     const share = workdays ? present / workdays : null;
-    const otBasic = (w.weekday.h * f.weekday_rate + w.weekend.h * f.weekend_rate + w.public_holiday.h * f.holiday_rate) / f.hours_per_day / f.days_per_month;
-    const trT = w.weekend.d / f.transport_days, trN = w.weekday.d * f.weekday_transport, lateN = late * f.late_fee;
+    const otBasic = casual ? 0 : (w.weekday.h * f.weekday_rate + w.weekend.h * f.weekend_rate + w.public_holiday.h * f.holiday_rate) / f.hours_per_day / f.days_per_month;
+    const trT = casual ? 0 : w.weekend.d / f.transport_days, trN = casual ? 0 : w.weekday.d * f.weekday_transport, lateN = casual ? 0 : late * f.late_fee;
     rows.push({ e, workdays, present, late, onLeave, share, wkH:w.weekday.h, weH:w.weekend.h, phH:w.public_holiday.h, wkD:w.weekday.d, weD:w.weekend.d, phD:w.public_holiday.d,
-      otH:w.weekday.h + w.weekend.h + w.public_holiday.h, otBasic, trT, trN, lateN, basic:(share || 0) + otBasic, naira:trN - lateN });
+      otH:w.weekday.h + w.weekend.h + w.public_holiday.h, otBasic, trT, trN, lateN, noEstimate:casual, basic:(share || 0) + otBasic, naira:trN - lateN });
   });
   return { rows, days, formula:f };
 }
 function salExpr(r){
+  if (r.noEstimate) return 'Casual rate not set up yet';
   let s = f2(r.basic) + ' × Basic';
   if (r.trT > 0) s += ' + ' + f2(r.trT) + ' × Transport';
   if (Math.round(r.naira) !== 0) s += (r.naira < 0 ? ' - ' : ' + ') + naira(Math.abs(r.naira));
@@ -2165,10 +2269,10 @@ async function salLoad(){
       api('/webhook/employees/api/attendance' + q), api('/webhook/employees/api/overtime' + q), api('/webhook/employees/api/holidays').catch(() => ({ holidays: [] })),
       api('/webhook/employees/api/leave' + q).catch(() => ({ requests: [] })), api('/webhook/employees/api/salary/formula').catch(() => ({ formula: {} })) ]);
     s.formula = Object.assign({}, SAL_DEFAULT, fm.formula || {}); s.formulaLoaded = true;
-    s.data = { lateAfter: a.late_after || LATE_DEFAULT, attDays: (a.days || []).map(x => String(x.date).slice(0, 10)), attRows: a.rows || [], holidays: new Set((h.holidays || []).map(x => x.date)),
+    s.data = { lateAfter: a.late_after || LATE_DEFAULT, lateAfterCasual: a.late_after_casual || LATE_CASUAL_DEFAULT, attDays: (a.days || []).map(x => String(x.date).slice(0, 10)), attRows: a.rows || [], holidays: new Set((h.holidays || []).map(x => x.date)),
       overtime: o.records || [], leave: (l.requests || []).filter(x => x.status === 'approved') };
     s.key = key;
-  } catch (err) { toast('Could not load salary data', err.message, 'err'); s.data = { lateAfter: LATE_DEFAULT, attDays: [], attRows: [], holidays: new Set(), overtime: [], leave: [] }; s.key = ''; }
+  } catch (err) { toast('Could not load salary data', err.message, 'err'); s.data = { lateAfter: LATE_DEFAULT, lateAfterCasual: LATE_CASUAL_DEFAULT, attDays: [], attRows: [], holidays: new Set(), overtime: [], leave: [] }; s.key = ''; }
   salPaintDept(); salPaint();
 }
 function salPaintDept(){ msRender('slDept', 'All departments', deptOpts(S.departments || [], true), sal.department, v => { sal.department = v; salPaint(); }); }
@@ -2178,7 +2282,7 @@ function salFilteredEmployees(){
 }
 function salResult(){
   const d = sal.data; if (!d) return null;
-  return salaryCompute({ from: sal.from, to: sal.to, employees: salFilteredEmployees(), attDays: d.attDays, attRows: d.attRows, lateAfter: d.lateAfter, holidays: d.holidays, overtime: d.overtime, leave: d.leave, formula: sal.formula });
+  return salaryCompute({ from: sal.from, to: sal.to, employees: salFilteredEmployees(), attDays: d.attDays, attRows: d.attRows, lateAfter: d.lateAfter, lateAfterCasual: d.lateAfterCasual, holidays: d.holidays, overtime: d.overtime, leave: d.leave, formula: sal.formula });
 }
 function salCsv(){
   const res = salResult(); if (!res) return;
@@ -2186,11 +2290,12 @@ function salCsv(){
   const head = ['Enroll ID', 'Name', 'Department', 'Type', 'Total workdays', 'Present days', 'Late days', 'Overtime hours', 'Weekday hours', 'Weekend hours', 'Public holiday hours', 'Weekday overtime days', 'Weekend overtime days', 'Public holiday overtime days',
     'Transport weekdays (NGN)', 'Transport weekends (x Transport)', 'Basic multiple', 'Transport multiple', 'Naira part', 'Estimated salary'];
   const data = res.rows.map(r => [r.e.enroll_id, r.e.name, r.e.department, typeLabel(r.e.employment_type), r.workdays, r.present, r.late, fmtHours(r.otH), fmtHours(r.wkH), fmtHours(r.weH), fmtHours(r.phH), r.wkD, r.weD, r.phD,
-    Math.round(r.trN), f2(r.trT), f2(r.basic), f2(r.trT), Math.round(r.naira), salExpr(r)]);
+    r.noEstimate ? '' : Math.round(r.trN), r.noEstimate ? '' : f2(r.trT), r.noEstimate ? '' : f2(r.basic), r.noEstimate ? '' : f2(r.trT), r.noEstimate ? '' : Math.round(r.naira), salExpr(r)]);
   download('okl_salary_estimate_' + sal.from + '_to_' + sal.to + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
 }
 
 function viewSalary(mode){
+  if (!(S && S.me && S.me.is_admin)) { location.hash = '#/dashboard'; return viewDashboard(); }       // admins only for now
   if (!sal.to) { const r = presetRange(sal.preset); sal.from = r[0]; sal.to = r[1]; }
   sal.mode = mode;
   return {
@@ -2223,27 +2328,27 @@ function salPaint(){
     <tbody>${res.rows.map(r => `<tr class="clickable" onclick="openSalPerson('${esc(r.e.enroll_id)}')"><td data-label="Name" style="min-width:150px"><div class="strong">${esc(r.e.name)}</div><div class="tiny muted mono">${otIdLine(r.e.enroll_id)}</div></td>
       <td data-label="Workdays" class="tnum">${r.workdays || '--'}</td><td data-label="Present" class="tnum">${r.workdays ? r.present : '--'}</td><td data-label="Late" class="tnum">${r.workdays ? r.late : '--'}</td>
       <td data-label="OT hours" class="tnum strong">${fmtHours(r.otH)}</td><td data-label="Weekday h" class="tnum">${fmtHours(r.wkH)}</td><td data-label="Weekend h" class="tnum">${fmtHours(r.weH)}</td><td data-label="Holiday h" class="tnum">${fmtHours(r.phH)}</td>
-      <td data-label="Weekday transport" class="tnum">${r.trN ? naira(r.trN) + ' <span class="tiny muted">' + r.wkD + ' day' + (r.wkD === 1 ? '' : 's') + '</span>' : '--'}</td><td data-label="Weekend transport" class="tnum">${r.trT ? f2(r.trT) + ' × T <span class="tiny muted">' + r.weD + ' day' + (r.weD === 1 ? '' : 's') + '</span>' : '--'}</td>
-      <td data-label="Estimated salary" class="strong" style="white-space:nowrap">${esc(salExpr(r))}</td></tr>`).join('')}</tbody></table></div>
-    <div class="small muted" style="padding:12px 14px">${res.rows.length} ${res.rows.length === 1 ? 'person' : 'people'}. Basic = monthly basic salary, T = monthly Transport allowance. Advisory only.</div>`;
+      <td data-label="Weekday transport" class="tnum">${r.noEstimate ? '--' : r.trN ? naira(r.trN) + ' <span class="tiny muted">' + r.wkD + ' day' + (r.wkD === 1 ? '' : 's') + '</span>' : '--'}</td><td data-label="Weekend transport" class="tnum">${r.noEstimate ? '--' : r.trT ? f2(r.trT) + ' × T <span class="tiny muted">' + r.weD + ' day' + (r.weD === 1 ? '' : 's') + '</span>' : '--'}</td>
+      <td data-label="Estimated salary" class="${r.noEstimate ? 'muted small' : 'strong'}" style="white-space:nowrap">${esc(salExpr(r))}</td></tr>`).join('')}</tbody></table></div>
+    <div class="small muted" style="padding:12px 14px">${res.rows.length} ${res.rows.length === 1 ? 'person' : 'people'}. Basic = monthly basic salary, T = monthly Transport allowance. Advisory only. The estimate is for staff; casuals are calculated differently and are not set up yet, so only their attendance and hours are shown.</div>`;
 }
 function openSalPerson(id){
   const res = salResult(); if (!res) return;
   const r = res.rows.find(x => x.e.enroll_id === id); if (!r) return;
   const f = res.formula, hpd = f.hours_per_day, dpm = f.days_per_month;
   const line = (what, how, out) => `<tr><td data-label="Step" class="strong">${what}</td><td data-label="Working" class="small">${how}</td><td data-label="Result" class="tnum" style="white-space:nowrap">${out}</td></tr>`;
-  const ot = (label, h, rate) => line(label, `${fmtHours(h)} h × ${rate} ÷ ${hpd} ÷ ${dpm}`, f2(h * rate / hpd / dpm) + ' × Basic');
+  const ot = (label, h, rate) => r.noEstimate ? line(label, `${fmtHours(h)} h`, '--') : line(label, `${fmtHours(h)} h × ${rate} ÷ ${hpd} ÷ ${dpm}`, f2(h * rate / hpd / dpm) + ' × Basic');
   openModal({
     title: r.e.name, size:'wide', sub: [r.e.department, typeLabel(r.e.employment_type), sal.from + ' to ' + sal.to].filter(Boolean).join(' - '),
     body: `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Step</th><th>Working</th><th>Result</th></tr></thead><tbody>
-      ${line('Attendance', r.workdays ? `${r.present} of ${r.workdays} recorded working days${r.onLeave ? ` (${r.onLeave} on approved leave)` : ''}` : 'no attendance recorded', r.workdays ? f2(r.present / r.workdays) + ' × Basic' : '--')}
+      ${line('Attendance', r.workdays ? `${r.present} of ${r.workdays} recorded working days${r.onLeave ? ` (${r.onLeave} on approved leave)` : ''}` : 'no attendance recorded', r.workdays && !r.noEstimate ? f2(r.present / r.workdays) + ' × Basic' : '--')}
       ${ot('Weekday overtime', r.wkH, f.weekday_rate)}${ot('Weekend overtime', r.weH, f.weekend_rate)}${ot('Public holiday overtime', r.phH, f.holiday_rate)}
-      ${line('Transport, weekdays', `${r.wkD} weekday overtime day${r.wkD === 1 ? '' : 's'} × ${naira(f.weekday_transport)}`, naira(r.trN))}
+      ${r.noEstimate ? line('Transport and lateness', `${r.wkD + r.weD + r.phD} overtime day${r.wkD + r.weD + r.phD === 1 ? '' : 's'}, ${r.late} late day${r.late === 1 ? '' : 's'}`, '--') : `${line('Transport, weekdays', `${r.wkD} weekday overtime day${r.wkD === 1 ? '' : 's'} × ${naira(f.weekday_transport)}`, naira(r.trN))}
       ${line('Transport, weekends', `${r.weD} weekend overtime day${r.weD === 1 ? '' : 's'} ÷ ${f.transport_days}`, f2(r.trT) + ' × Transport')}
       ${line('Public holiday transport', `${r.phD} day${r.phD === 1 ? '' : 's'}`, 'none')}
-      ${line('Lateness', `${r.late} late day${r.late === 1 ? '' : 's'} × ${naira(f.late_fee)}`, '- ' + naira(r.lateN))}
+      ${line('Lateness', `${r.late} late day${r.late === 1 ? '' : 's'} × ${naira(f.late_fee)}`, '- ' + naira(r.lateN))}`}
       <tr><td class="strong">Estimated salary</td><td></td><td class="strong" style="white-space:nowrap">${esc(salExpr(r))}</td></tr></tbody></table></div>
-      <div class="small muted" style="margin-top:10px">Basic = this person's monthly basic salary, Transport = their monthly Transport allowance. Multiply by the real amounts to get naira.</div>`,
+      <div class="small muted" style="margin-top:10px">Basic = this person's monthly basic salary, Transport = their monthly Transport allowance. Multiply by the real amounts to get naira.${r.noEstimate ? ' Casuals are calculated differently, so no estimate is shown for them yet.' : ''}</div>`,
     footer: `<button class="btn btn-ghost" data-close>Close</button>`,
   });
 }
@@ -2257,7 +2362,7 @@ async function salPaintFormula(){
     catch (err) { box.innerHTML = `<div class="small muted" style="padding:14px">${esc(err.message)}</div>`; return; }
   }
   const canEdit = S.me.permission === 'editor', f = sal.formula, dis = canEdit ? '' : 'disabled';
-  box.innerHTML = `<div class="card-b"><div class="strong">Numbers used in the estimate</div>
+  box.innerHTML = `<div class="card-b"><div class="strong">Numbers used in the estimate (staff)</div>
     <div class="small muted" style="margin:4px 0 14px">Finance can change any of these. The estimate on the Estimate tab updates straight away.${canEdit ? '' : ' Only people with edit access can change them.'}</div>
     <div class="grid g2">${SAL_FIELDS.map(([title, fields]) => `<div class="card" style="box-shadow:none"><div class="card-b"><div class="strong" style="margin-bottom:10px">${title}</div>
       ${fields.map(([k, label, unit, lo, hi]) => `<div class="field"><label for="sf_${k}">${label}</label><div class="row" style="gap:8px"><input class="inp" type="number" step="any" min="${lo}" max="${hi}" id="sf_${k}" data-k="${k}" value="${esc(f[k])}" ${dis} style="max-width:160px"><span class="small muted">${unit}</span></div></div>`).join('')}</div></div>`).join('')}</div>
