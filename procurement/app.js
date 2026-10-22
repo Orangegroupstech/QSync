@@ -120,7 +120,7 @@ function openModal(o){
   layers.appendChild(wrap);
   function close(){ wrap.remove(); }
   wrap.addEventListener('click', e => { if (e.target === wrap) close(); });
-  $('[data-close]', wrap).forEach(b => b.onclick = close);
+  $$('[data-close]', wrap).forEach(b => b.onclick = close);
   if (o.onMount) o.onMount(wrap, close);
   return close;
 }
@@ -464,7 +464,8 @@ function openItemDetail(id){
           const btn = form.querySelector('button[type=submit]');
           btn.disabled = true;
           try {
-            await api('/webhook/procurement/api/items/' + id, { method:'PATCH', body: payload });
+            // n8n serves a webhook with a ':id' in its path under its webhook id ("Procurement Item Patch Webhook")
+            await api('/webhook/e3705766-d634-4852-ba77-62ccfdfb0786/procurement/api/items/' + id, { method:'PATCH', body: payload });
             Object.assign(it, payload);
             render();
             toast('Changes saved', 'Procurement details updated.', 'ok');
