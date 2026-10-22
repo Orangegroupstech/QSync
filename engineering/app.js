@@ -327,7 +327,7 @@ window.addEventListener('hashchange', render);
    Readings arrive as [room_id, day, temp, status, logged_by, time, timing, note]; totals and colours are worked out here.
    Colour codes are the same as the Google Sheet and the WhatsApp notices.
    ============================================================ */
-const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1ojcv39NHPa13S7IluAeaGnumuuhRS2C78qIJdzIyaNs/edit';
+const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1ojcv39NHPa13S7IluAeaGnumuuhRS2C78qIJdzIyaNs';
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const STATUS_CLASS = { 'OK':'ok', 'Near limit':'near', 'Out of limit':'bad', 'Needs review':'rev' };
 const LINE_COLORS = ['#1B5FBF','#ED6B1F','#16794C','#8B5CF6','#B3261E','#0E7490','#B45309','#BE185D'];
