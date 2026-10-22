@@ -351,7 +351,7 @@ window.addEventListener('hashchange', render);
 /* ============================================================
    People (User Management) - admins only
    ============================================================ */
-const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' } ];
+const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' }, { key:'engineering', label:'Engineering' } ];
 const SIGNOFFS = [ { key:'signoff.production', label:'Production' }, { key:'signoff.ipqa', label:'IPQA' },
                    { key:'signoff.qa_supervisor', label:'QA Supervisor' }, { key:'signoff.qc_supervisor', label:'QC Supervisor' },
                    { key:'signoff.qc_analyst', label:'QC Analyst' }, { key:'signoff.qc_manager', label:'QC Manager' }, { key:'signoff.qa_manager', label:'QA Manager' } ];

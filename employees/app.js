@@ -978,20 +978,22 @@ async function writeWorkbook(fileName, sheets){
   });
   XLSX.writeFile(wb, fileName);
 }
-/* o = { title, intro, start:{preset,from,to}, empty, build: async (from, to) => ({ fileName, sheets }) | null } */
+/* o = { title, intro, start:{preset,from,to,type}, empty, build: async (from, to, type) => ({ fileName, sheets }) | null } */
 function openReportDialog(o){
-  const r = { preset: o.start.preset, from: o.start.from, to: o.start.to };
+  const r = { preset: o.start.preset, from: o.start.from, to: o.start.to, type: o.start.type || '' };
   openModal({
     title: o.title, size:'narrow',
     body: `<p class="small muted" style="margin:0 0 14px">${esc(o.intro)}</p>
       <div class="field"><label for="rpPreset">Period</label><select class="inp" id="rpPreset">${reportPeriods().map(([k, l]) => `<option value="${k}" ${r.preset === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="grid g2"><div class="field"><label for="rpFrom">From</label><input class="inp" type="date" id="rpFrom" value="${esc(r.from)}"></div>
         <div class="field"><label for="rpTo">To</label><input class="inp" type="date" id="rpTo" value="${esc(r.to)}"></div></div>
+      <div class="field"><label for="rpType">Staff or casual</label><select class="inp" id="rpType"><option value="">Staff and casual</option><option value="staff" ${r.type === 'staff' ? 'selected' : ''}>Staff only</option><option value="casual" ${r.type === 'casual' ? 'selected' : ''}>Casual only</option></select></div>
       <div class="err-msg hide" data-err="rpTo"></div>
-      <div class="hint">${I.info}<span>Everyone is included. You get one Excel file with a Summary sheet and a Daily detail sheet.</span></div>`,
+      <div class="hint">${I.info}<span>Everyone in the group you pick is included. ${esc(o.sheets || 'You get one Excel file with a Summary sheet and a Daily detail sheet.')}</span></div>`,
     footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="rpGo">${I.download} Download</button>`,
     onMount:(w, close) => {
       $('#rpPreset', w).onchange = e => { r.preset = e.target.value; const x = presetRange(r.preset); if (x) { r.from = x[0]; r.to = x[1]; $('#rpFrom', w).value = r.from; $('#rpTo', w).value = r.to; } };
+      $('#rpType', w).onchange = e => { r.type = e.target.value; };
       $('#rpFrom', w).onchange = e => { r.from = e.target.value; r.preset = 'custom'; $('#rpPreset', w).value = 'custom'; };
       $('#rpTo', w).onchange = e => { r.to = e.target.value; r.preset = 'custom'; $('#rpPreset', w).value = 'custom'; };
       $('#rpGo', w).onclick = async ev => {
@@ -1000,7 +1002,7 @@ function openReportDialog(o){
         if ((new Date(r.to) - new Date(r.from)) / 864e5 + 1 > REPORT_MAX_DAYS) return setErr('rpTo', 'Pick a period of at most one year.', w);
         const btn = ev.currentTarget; btn.disabled = true;
         try {
-          const out = await o.build(r.from, r.to);
+          const out = await o.build(r.from, r.to, r.type);
           if (!out) { setErr('rpTo', o.empty || 'Nothing to report for this period.', w); btn.disabled = false; return; }
           await writeWorkbook(out.fileName, out.sheets); close(); toast('Report downloaded', out.fileName, 'ok');
         } catch (err) { setErr('rpTo', err.message, w); btn.disabled = false; }
@@ -1151,8 +1153,8 @@ function exportOvertimeCSV(){
   download('okl_overtime_' + (s.mode === 'entries' ? 'entries' : s.mode === 'daily' ? 'day' : 'by_person') + '_' + s.from + '_to_' + s.to + tag + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
 }
 /* Overtime report: Summary (hours by day type per person) + Daily detail (one line per entry). Void entries are left out. */
-function otReportSheets(records, from, to){
-  const types = empTypeMap(), live = (records || []).filter(r => r.status !== 'void').map(r => Object.assign({}, r, { name: properName(r.name) }));
+function otReportSheets(records, from, to, type){
+  const types = empTypeMap(), live = (records || []).filter(r => r.status !== 'void' && (!type || types.get(r.enroll_id) === type)).map(r => Object.assign({}, r, { name: properName(r.name) }));
   if (!live.length) return null;
   const typeOf = id => types.has(id) ? typeLabel(types.get(id)) : '';
   const people = otPersonTotals(live).sort((a, b) => a.name.localeCompare(b.name));
@@ -1167,11 +1169,11 @@ function otReportSheets(records, from, to){
 function openOtReport(){
   const s = otListState;
   openReportDialog({ title:'Download overtime report', intro:'Overtime hours by day type for every person with overtime, and every entry behind them.',
-    start:{ preset:s.preset, from:s.from, to:s.to }, empty:'There is no overtime in this period.',
-    async build(from, to){
+    start:{ preset:s.preset, from:s.from, to:s.to, type:s.type }, empty:'There is no overtime in this period.',
+    async build(from, to, type){
       const res = (s.records && s.key === from + '|' + to) ? { records:s.records } : await api('/webhook/employees/api/overtime?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to));
-      const sheets = otReportSheets(res.records || [], from, to);
-      return sheets && { fileName:'okl_overtime_report_' + from + '_to_' + to + '.xlsx', sheets };
+      const sheets = otReportSheets(res.records || [], from, to, type);
+      return sheets && { fileName:'okl_overtime_report_' + from + '_to_' + to + (type ? '_' + type : '') + '.xlsx', sheets };
     } });
 }
 function viewOvertimeList(mode){
@@ -1540,8 +1542,8 @@ function attExportCsv(c){
 }
 /* Attendance report: Summary (one line per person) + Daily detail (one line per person per working day). Built from the same
    calculation as the page, for every employee, so the numbers match the pop-up. */
-function attReportSheets(data, from, to){
-  const c = attCompute({ data, from, to, dept:[], type:'', q:'' });
+function attReportSheets(data, from, to, type){
+  const c = attCompute({ data, from, to, dept:[], type: type || '', q:'' });
   if (!c.days.length) return null;
   const people = c.people.filter(p => p.present || p.absent).sort((a, b) => a.e.name.localeCompare(b.e.name));
   const keep = new Set(people.map(p => p.e.enroll_id));
@@ -1552,15 +1554,32 @@ function attReportSheets(data, from, to){
       rows: people.map(p => [p.e.enroll_id, p.e.name, p.e.department || '', typeLabel(p.e.employment_type), p.present, p.late, p.absent, p.arrN ? attHHMM(p.arrSum / p.arrN) : '']) },
     { name:'Daily detail', head:['Enroll ID', 'Name', 'Department', 'Type', 'Date', 'Day', 'In', 'Out', 'Status'], widths:[12, 30, 20, 9, 12, 6, 8, 8, 28],
       rows: recs.map(r => [r.e.enroll_id, r.e.name, r.e.department || '', typeLabel(r.e.employment_type), r.day, dayName(r.day), r.i || '', r.o || '', statusOf(r)]) },
+    attRawSheet(data, from, to, c, keep),
   ];
+}
+/* Third sheet: laid out like the machine export (one row per person, one column per calendar day), but each day shows
+   "first in to last out" (08:00 to 18:00) instead of every punch. Dept and User ID are left out (User ID = Enroll ID). */
+function attRawSheet(data, from, to, c, keep){
+  const dates = []; for (let d = from, n = 0; d <= to && n < 400; d = addDays(d, 1), n++) dates.push(d);
+  const idx = new Map();
+  (data.rows || []).forEach(r => { let m = idx.get(r[0]); if (!m) idx.set(r[0], m = new Map()); m.set(String(r[1]).slice(0, 10), { i:r[2], o:r[3], n:Number(r[4]) }); });
+  const cell = p => {
+    if (!p) return '';
+    if (p.n <= 1) return attMins(p.i) < 720 ? p.i + ' to --' : '-- to ' + p.i;       // one scan: an in punch in the morning, an out punch after noon
+    return p.i + ' to ' + p.o;
+  };
+  const people = c.emps.filter(e => keep.has(e.enroll_id) || idx.has(e.enroll_id)).sort((a, b) => a.name.localeCompare(b.name));
+  return { name:'Daily log', head:['Name', 'Enroll ID'].concat(dates.map(d => d.slice(5, 7) + '/' + d.slice(8, 10) + ' ' + dayName(d))), widths:[30, 12].concat(dates.map(() => 15)),
+    rows: people.map(e => { const m = idx.get(e.enroll_id); return [e.name, e.enroll_id].concat(dates.map(d => cell(m && m.get(d)))); }) };
 }
 function openAttReport(){
   openReportDialog({ title:'Download attendance report', intro:'Present, late and absent days for every person, and the day-by-day record behind them.',
-    start:{ preset:att.preset, from:att.from, to:att.to }, empty:'No attendance has been uploaded for this period.',
-    async build(from, to){
+    start:{ preset:att.preset, from:att.from, to:att.to, type:att.type }, empty:'No attendance has been uploaded for this period.',
+    sheets:'You get one Excel file with three sheets: Summary, Daily detail, and Daily log (like the machine export, one column per day).',
+    async build(from, to, type){
       const res = (att.data && att.key === from + '|' + to) ? att.data : await attFetchRange(from, to);
-      const sheets = attReportSheets({ late_after: res.late_after || LATE_DEFAULT, late_after_casual: res.late_after_casual || LATE_CASUAL_DEFAULT, days: res.days || [], rows: res.rows || [] }, from, to);
-      return sheets && { fileName:'okl_attendance_report_' + from + '_to_' + to + '.xlsx', sheets };
+      const sheets = attReportSheets({ late_after: res.late_after || LATE_DEFAULT, late_after_casual: res.late_after_casual || LATE_CASUAL_DEFAULT, days: res.days || [], rows: res.rows || [] }, from, to, type);
+      return sheets && { fileName:'okl_attendance_report_' + from + '_to_' + to + (type ? '_' + type : '') + '.xlsx', sheets };
     } });
 }
 function openAttPerson(id){
