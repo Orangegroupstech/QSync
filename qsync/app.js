@@ -427,6 +427,7 @@ function fatalErrorHtml(err){
         onclick="location.reload()">Reload</button>
     </div></div>`;
 }
+let renderedPath = null;   // a redraw of the same page (a value added, data loaded) keeps the scroll position
 function render(){
   const app = document.getElementById('app');
   try {
@@ -445,10 +446,12 @@ function render(){
         ${emptyState('alert','Something went wrong on this screen', esc(err.message),
           `<button class="btn btn-primary" onclick="go('/requests')">Back to requests</button>`)}</div></div>` };
     }
+    const samePage = path === renderedPath, keepY = window.scrollY;
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
-    window.scrollTo({ top:0 });
+    window.scrollTo({ top: samePage ? keepY : 0 });
+    renderedPath = path;
   } catch (err) {
     console.error(err);
     app.innerHTML = fatalErrorHtml(err);
