@@ -820,11 +820,7 @@ function viewSheet(id){
     const d = labGet('/request?id=' + r.id);
     if (d && !d.error) return {
       title:`${r.requestNo} - summary`, crumb:'Records',
-      html: `${pageHead(`${esc(r.requestNo)} - summary report`, `As complete as the current stage: ${esc(labStatusText(d.request.status))}`,
-        `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
-         <a class="btn btn-ghost" href="#/lab/detail/${r.id}">${I.doc} Detailed report</a>
-         <a class="btn btn-ghost" href="#/lab/request/${r.id}">${I.inbox} QC lab view</a>
-         <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`)}
+      html: `${pageHead(`${r.requestNo} - summary report`, `As complete as the current stage: ${esc(labStatusText(d.request.status))}`, batchNav(r.id, 'summary'))}
         ${labReportHtml(d)}`
     };
     if (!d) return labWait('Summary report', 'Records');

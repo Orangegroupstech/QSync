@@ -250,14 +250,12 @@ function viewLabRequest(id){
   }
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
-  acts.push(`<a class="btn btn-ghost" href="#/lab/report/${r.id}">${I.print} Summary report</a>`);
-  acts.push(`<a class="btn btn-ghost" href="#/lab/detail/${r.id}">${I.print} Detailed report</a>`);
-  acts.push(`<a class="btn btn-ghost" href="#/sheet/${r.id}">${I.doc} Phase 1 sheet</a>`);
+
   const live = r.assignments.filter(a => !a.cancelled), cancelled = r.assignments.filter(a => a.cancelled);
   const results = r.results || [];
   return {
     title: r.request_no, crumb:'QC Laboratory',
-    html: `${pageHead(esc(r.request_no), `${esc(r.product_name)} - batch <span class="mono">${esc(r.batch_no)}</span> - ${esc(r.stage)}`, acts.join(''))}
+    html: `${pageHead(`${r.request_no} - QC lab view`, `${esc(r.product_name)} - batch <span class="mono">${esc(r.batch_no)}</span> - ${esc(r.stage)}`, batchNav(r.id, 'lab') + acts.join(''))}
       <div class="card" style="margin-bottom:16px"><div class="card-b"><div class="kv-grid">
         <div class="kv-item"><div class="k">Status</div><div class="v">${labStatusBadge(st)}</div></div>
         <div class="kv-item"><div class="k">Received by</div><div class="v">${esc(r.qc_received_by || '--')}</div><div class="tiny muted">${r.qc_received_at ? fmtDateTime(r.qc_received_at) : ''}</div></div>
@@ -1252,9 +1250,7 @@ function viewLabReport(id){
   if (!d) return labWait('QC report', 'QC Laboratory');
   if (d.error) return labFail('QC report', 'QC Laboratory', d.error);
   return { title: `Summary report - ${d.request.request_no}`, crumb: 'QC Laboratory',
-    html: `${pageHead(`Summary report - ${esc(d.request.request_no)}`, '', `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
-      <a class="btn btn-ghost" href="#/lab/detail/${esc(id)}">${I.doc} Detailed report</a>
-      <a class="btn btn-ghost" href="#/lab/request/${esc(id)}">${I.chevL} Back to the batch</a>`)}${labReportHtml(d)}` };
+    html: `${pageHead(`${d.request.request_no} - summary report`, `As complete as the current stage: ${esc(labStatusText(d.request.status))}`, batchNav(id, 'summary'))}${labReportHtml(d)}` };
 }
 function viewLabDetail(id){
   const d = labGet('/request?id=' + id);
@@ -1266,9 +1262,17 @@ function viewLabDetail(id){
   const bad = sheets.find(x => x.error);
   if (bad) return labFail('Detailed report', 'QC Laboratory', bad.error);
   return { title: `Detailed report - ${d.request.request_no}`, crumb: 'QC Laboratory',
-    html: `${pageHead(`Detailed report - ${esc(d.request.request_no)}`, '', `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
-      <a class="btn btn-ghost" href="#/lab/report/${esc(id)}">${I.doc} Summary report</a>
-      <a class="btn btn-ghost" href="#/lab/request/${esc(id)}">${I.chevL} Back to the batch</a>`)}${labDetailHtml(d, sheets)}` };
+    html: `${pageHead(`${d.request.request_no} - detailed report`, `As complete as the current stage: ${esc(labStatusText(d.request.status))}`, batchNav(id, 'detail'))}${labDetailHtml(d, sheets)}` };
+}
+
+// the same buttons, in the same place, on every page of a batch; the page you are on is highlighted
+function batchNav(id, here){
+  const b = (key, href, label, icon) => key === here
+    ? `<span class="btn btn-ink" aria-current="page">${icon} ${label}</span>`
+    : `<a class="btn btn-ghost" href="${href}">${icon} ${label}</a>`;
+  return `<button class="btn btn-ghost" onclick="window.print()">${I.print} Print</button>
+    ${b('summary', '#/sheet/' + id, 'Summary report', I.doc)}${b('detail', '#/lab/detail/' + id, 'Detailed report', I.doc)}${b('lab', '#/lab/request/' + id, 'QC lab view', I.inbox)}
+    <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`;
 }
 
 /* ---- routes ---- */
