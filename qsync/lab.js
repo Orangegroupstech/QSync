@@ -134,7 +134,7 @@ function viewLabInbox(){
   const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Tests</th><th>OOS</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.map(r => `<tr class="clickable" onclick="go('/lab/request/${r.id}')">
-        <td data-label="Request"><div class="req-no">${esc(r.request_no)}</div><div class="tiny muted">${r.qa_signed_at ? 'QA approved ' + relTime(r.qa_signed_at) : 'sent straight to QC (' + esc(r.stage) + ')'}</div></td>
+        <td data-label="Request"><div class="req-no">${esc(r.request_no)}</div><div class="tiny muted">${r.qa_signed_at ? 'QA approved ' + relTime(r.qa_signed_at) : r.ipqa_signed_at ? 'IPQA sampled ' + relTime(r.ipqa_signed_at) + ', no QA review (' + esc(r.stage) + ')' : 'sent straight to QC (' + esc(r.stage) + ')'}</div></td>
         <td data-label="Product / Batch"><div class="strong">${esc(r.product_name)}</div><div class="tiny muted mono">${esc(r.batch_no)}</div></td>
         <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
         <td data-label="Tests">${testsCell(r)}</td>
@@ -424,11 +424,12 @@ function wsEnsure(){
   for (const s of inp.samples){
     const v = inp.values[s.key] = inp.values[s.key] || {};
     if (test === 'assay'){
-      if (v.avg_weight === undefined) v.avg_weight = '';
+      const theo = ((((ws.ctx.templates[0] || {}).parameters || {}).avg_weight) || {}).theoretical_mg;
+      if (v.avg_weight === undefined) v.avg_weight = ws.ctx.analysis.stage === 'Granulation' && theo ? String(theo) : '';
       if (!v.preps || Array.isArray(v.preps)) v.preps = {};
     }
     if (test === 'dissolution' || test === 'content_uniformity'){ if (!v.units || Array.isArray(v.units)) v.units = {}; }
-    if (test === 'identification'){ if (!v.rt || Array.isArray(v.rt)) v.rt = {}; }
+    if (test === 'identification'){ if (!v.rt || Array.isArray(v.rt)) v.rt = {}; if (!v.verdict || Array.isArray(v.verdict)) v.verdict = {}; }
     if (test === 'microbiology'){ if (!v.micro || Array.isArray(v.micro)) v.micro = {}; }
     for (const t of ws.ctx.templates){
       const P = t.parameters || {};
@@ -441,6 +442,7 @@ function wsEnsure(){
         const u = v.units[t.id] = (Array.isArray(v.units[t.id]) ? v.units[t.id] : []).map(x => (Array.isArray(x) ? x : [x]));
         const inj = (u[0] && u[0].length) || 1;   // every caplet of a sample has the same number of injections (1 or 2)
         while (u.length < n) u.push(Array(inj).fill(''));
+        if (test === 'content_uniformity' && u.length > 10) u.length = 10;   // drafts from before 23 Oct 2026 could hold 30 (stage 2 is gone)
       }
     }
   }
@@ -507,7 +509,7 @@ function wsApiPanel(t){
       return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
           <div class="sub">${esc(stepsText((P.sample || {}).steps, 'mg'))}</div></div><div id="mean-${tid}-${si}" class="strong">--</div></div>
         <div class="card-b">
-          <div class="field" style="max-width:260px"><label>Average weight (mg, measured)</label>${inpNum(`values.${s.key}.avg_weight`, `placeholder="theoretical ${esc((P.avg_weight || {}).theoretical_mg || '')}"`)}
+          <div class="field" style="max-width:260px"><label>Average weight (mg${ws.ctx.analysis.stage === 'Granulation' ? ', granules: theoretical' : ', measured'})</label>${inpNum(`values.${s.key}.avg_weight`, 'placeholder="mg"')}
             <div class="hint">${I.info}<span>Shared by the three APIs of this sample.</span></div></div>
           <div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Prep</th><th>Sample weight (mg)</th><th>Injection areas</th><th style="text-align:right">% of label claim</th></tr></thead><tbody>
           ${preps.map((p, pi) => `<tr><td class="strong">${String.fromCharCode(97 + pi)}</td>
@@ -522,32 +524,34 @@ function wsApiPanel(t){
   }
   if (test === 'dissolution' || test === 'content_uniformity'){
     const diss = test === 'dissolution';
-    const sub = diss ? `${P.medium_ml || 900} mL medium${P.time_point_min ? ', ' + P.time_point_min + ' min' : ', time point per method'}` : '';
+    const sub = diss ? `${P.medium_ml || 900} mL medium` : '';
     return wsStandardCard(t, sub) + samples.map((s, si) => {
       const units = ws.inputs.values[s.key].units[tid];
       return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
           <div class="sub">${diss ? `One caplet per vessel: ${esc(stepsText((P.sample || {}).steps, 'caplet'))}` : `One caplet each: ${esc(stepsText((P.sample || {}).steps, 'caplet'))}`}
-            ${!diss ? ` - stage ${units.length === 30 ? '2 (30 caplets, k 2.0)' : '1 (10 caplets, k 2.4)'}` : ''}</div></div>
+            ${!diss ? ' - 10 caplets, AV NMT ' + esc(P.l1 || 15) : ''}</div></div>
           <div id="mean-${tid}-${si}" class="strong" style="text-align:right">--</div></div>
         <div class="card-b">
           <div class="lab-units" data-group="values.${s.key}.units.${tid}">${units.map((x, ui) => `<div class="lab-unit"><div class="tiny muted">Caplet ${ui + 1}</div>
             ${x.map((y, ii) => inpNum(`values.${s.key}.units.${tid}.${ui}.${ii}`, `placeholder="${x.length > 1 ? 'injection ' + (ii + 1) : 'area'}"`)).join('')}<div class="tiny tnum strong" id="u-${tid}-${si}-${ui}">--</div></div>`).join('')}</div>
           ${wsEditable() ? `<div class="row" style="margin-top:10px">${wsSplInjButtons(si, tid, (units[0] || ['']).length, wsSplMax(P))}
             <span class="hint">${I.info}<span>1 or ${wsSplMax(P)} injections per caplet; with ${wsSplMax(P)}, their mean is used.</span></span></div>` : ''}
-          ${!diss && wsEditable() ? `<div class="row" style="margin-top:10px">${units.length === 10
-            ? `<button class="btn btn-ghost btn-sm" onclick="wsCuStage('${esc(s.key)}',${tid},30)">${I.plus} Stage 2: add 20 caplets</button>`
-            : `<button class="btn btn-ghost btn-sm" onclick="wsCuStage('${esc(s.key)}',${tid},10)">${I.x} Back to stage 1 (10 caplets)</button>`}</div>` : ''}
+
           <div class="hint" style="margin-top:8px">${I.info}<span>Tip: paste the column of caplet areas from Empower into the first box${(units[0] || []).length > 1 ? ' (caplet 1 injection 1, caplet 1 injection 2, caplet 2 ...)' : ''}.</span></div>
         </div></div>`;
     }).join('');
   }
   if (test === 'identification'){
     return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - identification (HPLC)</h3>
-        <div class="sub">Template v${esc(t.version)} - the sample peak's retention time must be within ${esc(P.tolerance_pct)}% of the standard's</div></div></div>
+        <div class="sub">Template v${esc(t.version)} - record the retention times; you decide whether the sample complies</div></div></div>
       <div class="card-b"><div class="grid g3">
         <div class="field"><label>Standard retention time (min)</label>${inpNum(`apis.${tid}.std_rt`)}</div>
-        ${samples.map((s, si) => `<div class="field"><label>Sample ${esc(s.label)} retention time (min)</label>${inpNum(`values.${s.key}.rt.${tid}`)}
-          <div class="small" id="mean-${tid}-${si}" style="margin-top:6px">--</div></div>`).join('')}
+        ${samples.map((s, si) => { const vd = ((ws.inputs.values[s.key] || {}).verdict || {})[tid] || '';
+          return `<div class="field"><label>Sample ${esc(s.label)} retention time (min)</label>${inpNum(`values.${s.key}.rt.${tid}`)}
+          <label style="margin-top:10px">Sample ${esc(s.label)}: your conclusion</label>
+          <select class="inp${wsMiss(vd)}" data-k="values.${s.key}.verdict.${tid}" ${ro}>${[['', 'Choose...'], ['complies', 'Complies'], ['does_not_comply', 'Does not comply']]
+            .map(([k, l]) => `<option value="${k}" ${vd === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <div class="small" id="mean-${tid}-${si}" style="margin-top:6px">--</div></div>`; }).join('')}
       </div></div></div>`;
   }
   if (test === 'microbiology'){
@@ -556,7 +560,7 @@ function wsApiPanel(t){
         <div class="sub">Template v${esc(t.version)} - leave a field blank while it is incubating (you can save; you can submit once everything is in)</div></div>
         <div id="mean-${tid}-${si}" class="strong">--</div></div>
       <div class="card-b"><div class="grid g3">
-        ${(L.counts || []).map(c => `<div class="field"><label>${esc(c.label)} (cfu/g, NMT ${esc(c.max)})</label>${inpNum(`values.${s.key}.micro.${c.key}`)}</div>`).join('')}
+        ${(L.counts || []).map(c => `<div class="field"><label>${esc(c.label)} (${esc(L.unit || 'cfu/g')}, NMT ${esc(c.max)})</label>${inpNum(`values.${s.key}.micro.${c.key}`)}</div>`).join('')}
         ${(L.absent || []).map(o => `<div class="field"><label>${esc(o.label)} (must be absent)</label><select class="inp" data-k="values.${s.key}.micro.${o.key}" ${ro}>
           ${[['', 'Awaiting result'], ['absent', 'Absent'], ['present', 'Present']].map(([k, l]) => `<option value="${k}" ${(ws.inputs.values[s.key].micro || {})[o.key] === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')}
       </div></div></div>`).join('');
@@ -683,12 +687,6 @@ function wsInj(tid, delta){
   if (delta > 0) a.std_areas.push(''); else a.std_areas.pop();
   ws.dirty = true; render(); wsCalcSoon(0);
 }
-function wsCuStage(key, tid, n){
-  const u = ws.inputs.values[key].units[tid];
-  const inj = (u[0] || ['']).length;   // the new caplets get as many injection boxes as the first one
-  if (n === 30) while (u.length < 30) u.push(Array(inj).fill('')); else u.length = 10;
-  ws.dirty = true; render(); wsCalcSoon(0);
-}
 function wsSample(arg, delta){
   const list = ws.inputs.samples;
   if (delta > 0){
@@ -738,7 +736,7 @@ function wsPaint(){
         const below = rs && rs.units_below ? rs.units_below : [];
         if (m) m.innerHTML = !rs || !rs.units ? '--' : test === 'dissolution'
           ? `mean <span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}${below.length ? ` <span class="badge b-danger">caplet ${below.join(', ')} below ${esc(r.samples[si].limit_text || '')}</span>` : ''}`
-          : `mean <span class="tnum">${num1(rs.mean_reported)}%</span> - AV <b class="tnum">${num1(rs.av_reported)}</b> ${rs.needs_l2 ? '<span class="badge b-warn">AV above 15: stage 2 needed</span>' : verdictBadge(rs.pass)}`;
+          : `mean <span class="tnum">${num1(rs.mean_reported)}%</span> - AV <b class="tnum">${num1(rs.av_reported)}</b> ${verdictBadge(rs.pass)}`;
         ((v.units || {})[t.id] || []).forEach((u, ui) => {
           const el = $(`#u-${t.id}-${si}-${ui}`); if (!el) return;
           const val = rs && rs.units_reported ? rs.units_reported[ui] : null;
@@ -746,7 +744,7 @@ function wsPaint(){
           el.style.color = below.includes(ui + 1) ? 'var(--danger)' : '';
         });
       } else if (test === 'identification'){
-        if (m) m.innerHTML = rs ? `difference <b class="tnum">${Number(rs.deviation_reported).toFixed(2)}%</b> ${verdictBadge(rs.pass)}` : '--';
+        if (m) m.innerHTML = rs ? verdictBadge(rs.pass) : '--';
       } else if (test === 'microbiology'){
         if (m) m.innerHTML = !rs ? '--' : r.pending ? '<span class="badge b-warn">Awaiting incubation</span>' : verdictBadge(rs.pass);
       }
@@ -1015,7 +1013,7 @@ function mdTemplate(id, mode){
   openModal({ title: isNew ? 'New method template (draft)' : mode === 'edit' ? `Edit draft - ${src.api} v${src.version}` : `New version of ${src.api} (from v${src.version})`, size: 'wide',
     body: `${isNew ? `<div class="grid g2">
         <div class="field"><label for="tp_product">Product</label><select class="inp" id="tp_product">${(md.products || []).map(p => `<option>${esc(p)}</option>`).join('')}</select></div>
-        <div class="field"><label for="tp_stage">Stage</label><select class="inp" id="tp_stage">${ALL_STAGES.map(s => `<option>${esc(s)}</option>`).join('')}</select></div>
+        <div class="field"><label>Stage</label><div class="small" style="padding-top:8px">All stages (a method belongs to the product)</div></div>
         <div class="field"><label for="tp_test">Test</label><select class="inp" id="tp_test">${testOptions('assay')}</select></div>
         <div class="field"><label for="tp_api">API</label><input class="inp" id="tp_api" placeholder="e.g. Paracetamol"></div></div>` : ''}
       <div class="grid g3">${f('lc', 'Label claim (mg)', P.label_claim_mg)}${f('avg', 'Theoretical average weight (mg)', (P.avg_weight || {}).theoretical_mg)}${f('stdnom', 'Standard nominal weight (mg)', (P.std || {}).nominal_mg)}</div>
@@ -1035,7 +1033,7 @@ function mdTemplate(id, mode){
         avg_weight: { theoretical_mg: n('avg') }, std_injections: { min: n('injmin'), max: n('injmax') }, samples: { min: 1, max: n('smax') || 1 },
         preparations: n('preps'), injections: n('inj'), sst: { limit_rsd: n('rsd'), dp: 2 }, limits: { min: n('min'), max: n('max') }, dp: (P.dp == null ? 1 : P.dp) };
       const body = { parameters: params, method_ref: v('mref'), spec_ref: v('sref'), form_ref: v('fref'), change_note: v('note') };
-      if (isNew) Object.assign(body, { product_name: v('product'), stage: v('stage'), test_type: v('test'), api: v('api') });
+      if (isNew) Object.assign(body, { product_name: v('product'), test_type: v('test'), api: v('api') });
       else if (mode === 'edit') body.id = src.id; else body.from_id = src.id;
       try { await labPost('/template/draft', body); close(); toast('Draft saved', 'QA approves it before it can be used.', 'ok'); labRefresh(); }
       catch (e) { const er = $('#tpErr', w); er.textContent = e.message; er.classList.remove('hide'); }
@@ -1057,7 +1055,8 @@ function resText(x){
   if (x.value_reported === null || x.value_reported === undefined) return x.unit ? String(x.unit).charAt(0).toUpperCase() + String(x.unit).slice(1) : '--';
   if (x.unit === '%') return num1(x.value_reported) + '%';
   if (x.unit === 'AV') return 'AV ' + num1(x.value_reported);
-  if (x.unit === '% RT diff') return nfix(x.value_reported, 2) + '% RT difference';
+  if (x.unit === '% RT diff') return nfix(x.value_reported, 2) + '% RT difference';   // results stored before 23 Oct 2026
+  if (x.unit === 'min RT') return 'RT ' + nfix(x.value_reported, 2) + ' min';
   return `${x.value_reported} ${x.unit || ''}`.trim();
 }
 const verdictText = p => (p === true ? 'COMPLIES' : p === false ? 'DOES NOT COMPLY' : '--');
@@ -1098,22 +1097,23 @@ function printWorksheetHtml(d, opt){
         const units = (((inp.values || {})[sm.key] || {}).units || {})[t.id] || [], rs = (r.samples || [])[si] || {};
         html += `<table><tr><th>Sample ${esc(sm.label)}</th>${units.map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
           <tr><td>Area${units.some(u => Array.isArray(u) && u.length > 1) ? 's (mean used)' : ''}</td>${units.map(u => `<td class="mono">${esc(Array.isArray(u) ? u.join(' / ') : u)}</td>`).join('')}</tr>
-          <tr><td>${test === 'dissolution' ? '% dissolved' : '% of label claim'}</td>${units.map((u, i) => `<td>${nfix((rs.units_reported || [])[i], 1)}</td>`).join('')}</tr></table>
+          <tr><td>${test === 'dissolution' ? '% dissolved' : '% of label claim'}</td>${units.map((u, i) => `<td>${nfix((rs.units_reported || [])[i], 1)}</td>`).join('')}</tr>
+          ${test === 'dissolution' && rs.units_reported ? `<tr><td>Each caplet (${esc(rs.limit_text || '')})</td>${units.map((u, i) => `<td><b>${(rs.units_below || []).includes(i + 1) ? 'BELOW' : 'COMPLIES'}</b></td>`).join('')}</tr>` : ''}</table>
           <table><tr>${test === 'dissolution'
             ? `<th>Mean</th><th>Min</th><th>Max</th><th>Limit</th><th>Verdict</th></tr><tr><td><b>${nfix(rs.reported, 1)}%</b></td><td>${nfix(rs.min_unit, 1)}%</td><td>${nfix(rs.max_unit, 1)}%</td>
                <td>${esc(rs.limit_text || '')}${(rs.units_below || []).length ? ' - caplet ' + rs.units_below.join(', ') + ' below' : ''}</td><td><b>${verdictText(rs.pass)}</b></td>`
-            : `<th>Stage</th><th>Mean (X)</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr><tr><td>${esc(rs.stage || '--')}</td><td>${nfix(rs.mean_reported, 1)}%</td>
+            : `<th>Mean (X)</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr><tr><td>${nfix(rs.mean_reported, 1)}%</td>
                <td>${nfix(rs.sd, 2)}</td><td>${nfix(rs.m, 1)}</td><td>${esc(rs.k || '--')}</td><td><b>${nfix(rs.av_reported, 1)}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td>`}</tr></table>`;
       });
     } else if (test === 'identification'){
-      html += `<table><tr><th>Sample</th><th>Standard RT (min)</th><th>Sample RT (min)</th><th>Difference</th><th>Limit</th><th>Verdict</th></tr>
+      html += `<table><tr><th>Sample</th><th>Standard RT (min)</th><th>Sample RT (min)</th><th>Conclusion</th></tr>
         ${samples.map((sm, si) => { if (!show(sm)) return ''; const rs = (r.samples || [])[si] || {};
           return `<tr><td>${esc(sm.label)}</td><td>${esc(x.std_rt || '--')}</td><td>${esc((((inp.values || {})[sm.key] || {}).rt || {})[t.id] || '--')}</td>
-            <td>${nfix(rs.deviation_reported, 2)}%</td><td>${esc(r.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr>`; }).join('')}</table>`;
+            <td><b>${verdictText(rs.pass)}</b> (analyst)</td></tr>`; }).join('')}</table>`;
     } else if (test === 'microbiology'){
       html += `<table><tr><th>Sample</th><th>Parameter</th><th>Result</th><th>Limit</th><th>Verdict</th></tr>
         ${samples.map((sm, si) => !show(sm) ? '' : ((r.samples || [])[si] || { rows: [] }).rows.map((row, ri) => `<tr>${ri === 0 ? `<td rowspan="${((r.samples || [])[si] || { rows: [] }).rows.length}">${esc(sm.label)}</td>` : ''}
-          <td>${esc(row.label)}</td><td>${row.value === null ? 'awaiting' : esc(typeof row.value === 'number' ? row.value + ' cfu/g' : row.value)}</td><td>${esc(row.limit_text)}</td><td><b>${verdictText(row.pass)}</b></td></tr>`).join('')).join('')}</table>`;
+          <td>${esc(row.label)}</td><td>${row.value === null ? 'awaiting' : esc(typeof row.value === 'number' ? row.value + ' ' + (r.unit || 'cfu/g') : row.value)}</td><td>${esc(row.limit_text)}</td><td><b>${verdictText(row.pass)}</b></td></tr>`).join('')).join('')}</table>`;
     }
     return html;
   }).join('');
