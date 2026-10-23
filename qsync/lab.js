@@ -409,6 +409,7 @@ function wsInit(d){
   ws = { id: a.id, src: d, ctx: d, inputs: JSON.parse(JSON.stringify(a.inputs || {})), calc: a.calc || null, dirty: false, timer: null,
          run: { equipment_id: a.equipment_id || '', reagents: a.reagents || '', started_on: a.started_on || '', ended_on: a.ended_on || '' },
          tab: ws && ws.id === a.id ? ws.tab : (d.templates[0] || {}).id };
+  ws.savedApis = JSON.parse(JSON.stringify((a.inputs || {}).apis || {}));   // the standards as last saved (a change needs a reason)
   wsEnsure();
 }
 function wsEnsure(){
@@ -434,12 +435,14 @@ function wsEnsure(){
       const P = t.parameters || {};
       if (test === 'assay'){
         const list = v.preps[t.id] = Array.isArray(v.preps[t.id]) ? v.preps[t.id] : [];
-        while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: Array(P.injections || 1).fill('') });
-        list.forEach(p => { if (!Array.isArray(p.areas)) p.areas = []; while (p.areas.length < (P.injections || 1)) p.areas.push(''); });
+        const n = (list[0] && Array.isArray(list[0].areas) && list[0].areas.length) || 1;   // 1 injection, or 2 once the analyst adds one
+        while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: Array(n).fill('') });
+        list.forEach(p => { if (!Array.isArray(p.areas)) p.areas = []; if (!p.areas.length) p.areas.push(''); });
       } else if (test === 'dissolution' || test === 'content_uniformity'){
         const n = test === 'dissolution' ? (P.units || 6) : 10;
-        const u = v.units[t.id] = Array.isArray(v.units[t.id]) ? v.units[t.id] : [];
-        while (u.length < n) u.push('');
+        const u = v.units[t.id] = (Array.isArray(v.units[t.id]) ? v.units[t.id] : []).map(x => (Array.isArray(x) ? x : [x]));
+        const inj = (u[0] && u[0].length) || 1;   // every caplet of a sample has the same number of injections (1 or 2)
+        while (u.length < n) u.push(Array(inj).fill(''));
       }
     }
   }
@@ -451,9 +454,17 @@ function wsSet(path, value){
 }
 function wsGet(path){ return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), ws.inputs); }
 function wsEditable(){ const a = ws.ctx.analysis; return a.is_mine && ['in_progress', 'returned'].includes(a.status); }
+const wsMiss = v => (ws.showMissing && wsEditable() && (v == null || String(v).trim() === '') ? ' err' : '');
 function inpNum(path, attrs){
   const v = wsGet(path); const ro = wsEditable() ? '' : 'disabled';
-  return `<input class="inp tnum" data-k="${esc(path)}" value="${esc(v == null ? '' : v)}" inputmode="decimal" autocomplete="off" ${ro} ${attrs || ''}>`;
+  return `<input class="inp tnum${wsMiss(v)}" data-k="${esc(path)}" value="${esc(v == null ? '' : v)}" inputmode="decimal" autocomplete="off" ${ro} ${attrs || ''}>`;
+}
+// sample injections: 1, or up to the template's number (2); the same count for every prep / caplet of a sample
+const wsSplMax = P => (typeof P.injections === 'object' && P.injections ? P.injections.max : P.injections) || 2;
+function wsSplInjButtons(si, tid, n, max){
+  if (!wsEditable()) return '';
+  return `${n < max ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},1)">${I.plus} Injection</button>` : ''}
+    ${n > 1 ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},-1)">${I.x} Last injection</button>` : ''}`;
 }
 function stepsText(steps, firstUnit){
   return (steps || []).map((s, i) => (i === 0 ? (firstUnit === 'caplet' ? `${s[0] || 1} caplet in ${s[1]} mL` : `weighed (${firstUnit}) to ${s[1]} mL`)
@@ -471,7 +482,7 @@ function wsStandardCard(t, extraSub){
       <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - label claim ${esc(P.label_claim_mg)} mg - ${esc(limTxt)}${extraSub ? ' - ' + esc(extraSub) : ''}</div></div></div>
     <div class="card-b">
       <div class="grid g3">
-        <div class="field"><label>Working standard</label><select class="inp" data-k="apis.${tid}.ws_id" ${ro}><option value="">Choose...</option>
+        <div class="field"><label>Working standard</label><select class="inp${wsMiss(a.ws_id)}" data-ws="${tid}" ${ro}><option value="">Choose...</option>
           ${stdList.map(w => `<option value="${w.id}" ${String(a.ws_id) === String(w.id) ? 'selected' : ''} ${w.usable ? '' : 'disabled'}>${esc(w.ws_no)} - ${esc(w.substance)} - ${esc(w.potency_pct)}%${w.usable ? ' (exp ' + fmtDate(w.expiry_date) + ')' : ' (cannot be used: ' + (w.expiry_date ? 'expired' : 'no expiry date') + ')'}</option>`).join('')}</select></div>
         <div class="field"><label>Standard weight (mg)</label>${inpNum(`apis.${tid}.std_weight`, 'placeholder="' + esc((P.std || {}).nominal_mg || '') + '"')}
           <div class="hint">${I.info}<span>${esc(stepsText((P.std || {}).steps, 'mg'))}</span></div></div>
@@ -482,6 +493,7 @@ function wsStandardCard(t, extraSub){
         ${wsEditable() ? `<div class="row" style="margin-top:6px">${a.std_areas.length < (inj.max || 6) ? `<button class="btn btn-ghost btn-sm" onclick="wsInj(${tid},1)">${I.plus} Injection</button>` : ''}
           ${a.std_areas.length > (inj.min || 1) ? `<button class="btn btn-ghost btn-sm" onclick="wsInj(${tid},-1)">${I.x} Last injection</button>` : ''}
           <span class="hint">${I.info}<span>Tip: paste a column of areas from Empower into the first box.</span></span></div>` : ''}</div>
+      ${(a.ws_changes || []).length ? `<div class="notice" style="margin-bottom:12px">${I.info} <span>${a.ws_changes.map(c => `Standard changed from <b>${esc(c.from_no || '?')}</b> to <b>${esc(c.to_no || 'none')}</b>${c.at ? ' on ' + fmtDateTime(c.at) : ''}: ${esc(c.reason)}`).join('<br>')}</span></div>` : ''}
       <div class="field hide" id="just-${tid}"><label>System suitability failed: supervisor's justification (or repeat the run)</label>
         <textarea class="inp" data-k="apis.${tid}.sst_justification" rows="2" ${ro}>${esc(a.sst_justification || '')}</textarea></div>
     </div></div>`;
@@ -503,6 +515,8 @@ function wsApiPanel(t){
             <td><div class="lab-areas" data-group="values.${s.key}.preps.${tid}.${pi}.areas">${p.areas.map((x, ii) => inpNum(`values.${s.key}.preps.${tid}.${pi}.areas.${ii}`, `placeholder="${ii + 1}"`)).join('')}</div></td>
             <td style="text-align:right" class="tnum strong" id="pr-${tid}-${si}-${pi}">--</td></tr>`).join('')}
           </tbody></table></div>
+          ${wsEditable() ? `<div class="row" style="margin-top:8px">${wsSplInjButtons(si, tid, (preps[0] || { areas: [''] }).areas.length, wsSplMax(P))}
+            <span class="hint">${I.info}<span>1 or ${wsSplMax(P)} injections per preparation; with ${wsSplMax(P)}, their mean is used.</span></span></div>` : ''}
         </div></div>`;
     }).join('');
   }
@@ -517,11 +531,13 @@ function wsApiPanel(t){
           <div id="mean-${tid}-${si}" class="strong" style="text-align:right">--</div></div>
         <div class="card-b">
           <div class="lab-units" data-group="values.${s.key}.units.${tid}">${units.map((x, ui) => `<div class="lab-unit"><div class="tiny muted">Caplet ${ui + 1}</div>
-            ${inpNum(`values.${s.key}.units.${tid}.${ui}`, 'placeholder="area"')}<div class="tiny tnum strong" id="u-${tid}-${si}-${ui}">--</div></div>`).join('')}</div>
+            ${x.map((y, ii) => inpNum(`values.${s.key}.units.${tid}.${ui}.${ii}`, `placeholder="${x.length > 1 ? 'injection ' + (ii + 1) : 'area'}"`)).join('')}<div class="tiny tnum strong" id="u-${tid}-${si}-${ui}">--</div></div>`).join('')}</div>
+          ${wsEditable() ? `<div class="row" style="margin-top:10px">${wsSplInjButtons(si, tid, (units[0] || ['']).length, wsSplMax(P))}
+            <span class="hint">${I.info}<span>1 or ${wsSplMax(P)} injections per caplet; with ${wsSplMax(P)}, their mean is used.</span></span></div>` : ''}
           ${!diss && wsEditable() ? `<div class="row" style="margin-top:10px">${units.length === 10
             ? `<button class="btn btn-ghost btn-sm" onclick="wsCuStage('${esc(s.key)}',${tid},30)">${I.plus} Stage 2: add 20 caplets</button>`
             : `<button class="btn btn-ghost btn-sm" onclick="wsCuStage('${esc(s.key)}',${tid},10)">${I.x} Back to stage 1 (10 caplets)</button>`}</div>` : ''}
-          <div class="hint" style="margin-top:8px">${I.info}<span>Tip: paste the column of caplet areas from Empower into the first box.</span></div>
+          <div class="hint" style="margin-top:8px">${I.info}<span>Tip: paste the column of caplet areas from Empower into the first box${(units[0] || []).length > 1 ? ' (caplet 1 injection 1, caplet 1 injection 2, caplet 2 ...)' : ''}.</span></div>
         </div></div>`;
     }).join('');
   }
@@ -576,12 +592,12 @@ function viewLabWorksheet(id){
       ${a.status === 'returned' ? `<div class="notice" style="margin-bottom:16px;color:var(--danger)">${I.alert} Returned by ${esc(a.returned_by || '')} ${a.returned_at ? fmtDateTime(a.returned_at) : ''}: <b>${esc(a.return_reason || '')}</b>. Every correction asks for a reason.</div>` : ''}
       ${!edit && !['submitted', 'checked'].includes(a.status) && !a.is_mine ? `<div class="notice" style="margin-bottom:16px">${I.info} Only the analyst of this worksheet can edit it.</div>` : ''}
       <div class="grid g2" style="margin-bottom:16px;align-items:start">
-        <div class="card"><div class="card-h"><h3>Run details</h3></div><div class="card-b"><div class="grid g2">
-          <div class="field"><label>Instrument</label><select class="inp" data-r="equipment_id" ${edit ? '' : 'disabled'}><option value="">Choose...</option>
+        <div class="card"><div class="card-h"><div><h3>Run details</h3><div class="sub">Every field on this worksheet is required to submit</div></div></div><div class="card-b"><div class="grid g2">
+          <div class="field"><label>${a.test_type === 'microbiology' ? 'Instrument / incubator' : 'Instrument'}</label><select class="inp${wsMiss(ws.run.equipment_id)}" data-r="equipment_id" ${edit ? '' : 'disabled'}><option value="">Choose...</option>
             ${d.equipment.map(q => `<option value="${q.id}" ${String(ws.run.equipment_id) === String(q.id) ? 'selected' : ''}>${esc(q.eq_no)} ${esc(q.eq_type || '')}</option>`).join('')}</select></div>
-          <div class="field"><label>Mobile phase / reagent lots</label><input class="inp" data-r="reagents" value="${esc(ws.run.reagents)}" ${edit ? '' : 'disabled'}></div>
-          <div class="field"><label>Analysis started</label><input class="inp" type="date" data-r="started_on" value="${esc(ws.run.started_on || '')}" ${edit ? '' : 'disabled'}></div>
-          <div class="field"><label>Analysis ended</label><input class="inp" type="date" data-r="ended_on" value="${esc(ws.run.ended_on || '')}" ${edit ? '' : 'disabled'}></div>
+          <div class="field"><label>${a.test_type === 'microbiology' ? 'Media / reagent lots' : 'Mobile phase / reagent lots'}</label><input class="inp${wsMiss(ws.run.reagents)}" data-r="reagents" value="${esc(ws.run.reagents)}" ${edit ? '' : 'disabled'}></div>
+          <div class="field"><label>Analysis started</label><input class="inp${wsMiss(ws.run.started_on)}" type="date" data-r="started_on" value="${esc(ws.run.started_on || '')}" ${edit ? '' : 'disabled'}></div>
+          <div class="field"><label>Analysis ended</label><input class="inp${wsMiss(ws.run.ended_on)}" type="date" data-r="ended_on" value="${esc(ws.run.ended_on || '')}" ${edit ? '' : 'disabled'}></div>
         </div></div></div>
         <div class="card"><div class="card-h"><div><h3>Samples</h3><div class="sub">One per batch; a validation batch may have up to ${maxSamples} (e.g. LS, MS, HS)</div></div></div>
           <div class="card-b">${ws.inputs.samples.map((s, si) => `<div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:nowrap">
@@ -608,9 +624,10 @@ function viewLabWorksheet(id){
     bind(){
       $$('[data-k]').forEach(el => {
         const ev = el.tagName === 'SELECT' ? 'change' : 'input';
-        el.addEventListener(ev, () => { wsSet(el.dataset.k, el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || /label$/.test(el.dataset.k) ? el.value : el.value.replace(/,/g, '').trim()); ws.dirty = true; wsCalcSoon(); });
+        el.addEventListener(ev, () => { wsSet(el.dataset.k, el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || /label$/.test(el.dataset.k) ? el.value : el.value.replace(/,/g, '').trim()); ws.dirty = true; wsUnmark(el); wsCalcSoon(); });
       });
-      $$('[data-r]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { ws.run[el.dataset.r] = el.value; ws.dirty = true; }));
+      $$('[data-r]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { ws.run[el.dataset.r] = el.value; ws.dirty = true; wsUnmark(el); }));
+      $$('[data-ws]').forEach(el => el.addEventListener('change', () => wsStdChange(el)));
       $$('.lab-areas, .lab-units').forEach(g => g.addEventListener('paste', e => {
         const text = (e.clipboardData || window.clipboardData).getData('text');
         const vals = String(text).split(/[\s;\t]+/).map(x => x.replace(/,/g, '')).filter(x => x !== '' && !isNaN(Number(x)));
@@ -629,6 +646,38 @@ function viewLabWorksheet(id){
   };
 }
 function wsTab(tid){ ws.tab = tid; render(); }
+function wsUnmark(el){ if (String(el.value).trim() !== '') el.classList.remove('err'); }
+function wsSplInj(si, tid, delta){
+  const t = ws.ctx.templates.find(x => x.id === tid), v = ws.inputs.values[ws.inputs.samples[si].key], max = wsSplMax((t || {}).parameters || {});
+  const lists = ws.ctx.analysis.test_type === 'assay' ? (v.preps[tid] || []).map(p => p.areas) : (v.units[tid] || []);
+  const n = ((lists[0] || []).length || 1) + delta;
+  if (n < 1 || n > max) return;
+  lists.forEach(l => { if (delta > 0) while (l.length < n) l.push(''); else l.length = n; });
+  ws.dirty = true; render(); wsCalcSoon(0);
+}
+// a working standard already saved on this worksheet is only changed with a reason (kept on the worksheet and in the audit trail)
+function wsStdChange(el){
+  const tid = el.dataset.ws, a = ws.inputs.apis[tid], to = el.value;
+  const savedApi = ws.savedApis[tid] || {};
+  const saved = String(savedApi.ws_id || ''), savedChanges = savedApi.ws_changes || [];
+  const no = id => (ws.ctx.standards.find(w => String(w.id) === String(id)) || {}).ws_no || null;
+  const apply = reason => {
+    a.ws_changes = savedChanges.slice();
+    if (reason) a.ws_changes.push({ from: saved, to, from_no: no(saved), to_no: no(to), reason, at: new Date().toISOString() });
+    a.ws_id = to; ws.dirty = true; render(); wsCalcSoon(0);
+  };
+  if (!saved || to === saved){ apply(null); return; }
+  el.value = String(a.ws_id || '');   // stays on the current standard until a reason is given
+  openModal({ title: 'Reason for changing the standard', size: 'narrow',
+    body: `<p class="small" style="margin-top:0">The saved standard is <b>${esc(no(saved) || '?')}</b>; you picked <b>${esc(no(to) || 'none')}</b>. The reason is kept on the worksheet and in the audit trail.</p>
+      <div class="field"><label for="wsR">Why is the standard changing?</label><textarea class="inp" id="wsR" rows="3"></textarea></div><div class="err-msg hide" id="wsRE" style="color:var(--danger)"></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="wsROk">Change standard</button>`,
+    onMount: (w, close) => { $('#wsROk', w).onclick = () => {
+      const r = $('#wsR', w).value.trim();
+      if (!r){ const e2 = $('#wsRE', w); e2.textContent = 'Please give a reason.'; e2.classList.remove('hide'); return; }
+      close(); apply(r);
+    }; } });
+}
 function wsInj(tid, delta){
   const a = ws.inputs.apis[tid];
   if (delta > 0) a.std_areas.push(''); else a.std_areas.pop();
@@ -636,7 +685,8 @@ function wsInj(tid, delta){
 }
 function wsCuStage(key, tid, n){
   const u = ws.inputs.values[key].units[tid];
-  if (n === 30) while (u.length < 30) u.push(''); else u.length = 10;
+  const inj = (u[0] || ['']).length;   // the new caplets get as many injection boxes as the first one
+  if (n === 30) while (u.length < 30) u.push(Array(inj).fill('')); else u.length = 10;
   ws.dirty = true; render(); wsCalcSoon(0);
 }
 function wsSample(arg, delta){
@@ -717,7 +767,7 @@ async function wsSave(){
   const returned = ws.ctx.analysis.status === 'returned';
   const doSave = async reason => {
     const res = await labPost('/worksheet/save', wsBody({ reason }));
-    ws.calc = res.calc; ws.dirty = false; wsPaint();
+    ws.calc = res.calc; ws.dirty = false; ws.savedApis = JSON.parse(JSON.stringify(ws.inputs.apis)); wsPaint();
     toast('Saved', 'Your worksheet is saved as a draft.', 'ok');
   };
   if (!returned){ try { await doSave(''); } catch (e) { toast('Could not save', e.message, 'err'); } return; }
@@ -732,9 +782,17 @@ async function wsSave(){
 }
 function wsSubmit(){
   const returned = ws.ctx.analysis.status === 'returned';
-  if (!ws.run.ended_on){ toast('Enter the end date', 'Fill in "Analysis ended" under Run details.', 'err'); return; }
+  const run = [['equipment_id', 'instrument'], ['reagents', ws.ctx.analysis.test_type === 'microbiology' ? 'media / reagent lots' : 'mobile phase / reagent lots'],
+               ['started_on', 'start date'], ['ended_on', 'end date']].filter(([k]) => !String(ws.run[k] || '').trim()).map(([, l]) => l);
+  const calcOk = (ws.calc || {}).ok;
+  if (run.length || !calcOk){
+    ws.showMissing = true; render();
+    toast('Not complete yet', run.length ? `Fill in the ${run.join(', ')} under Run details${calcOk ? '' : ', and the points listed under Results'}.` : 'Fill in the points listed under Results (empty boxes are marked in red).', 'err', 7000);
+    return;
+  }
+  if (ws.run.ended_on < ws.run.started_on){ toast('Check the dates', 'The end date is before the start date.', 'err'); return; }
   signDialog({
-    title: 'Submit worksheet', sub: `Worksheet #${ws.id} - ${(ws.calc || {}).ok ? 'complete' : 'check the points under Results first'}`,
+    title: 'Submit worksheet', sub: `Worksheet #${ws.id} - complete`,
     ok: 'Sign as performed by', meaning: 'You sign as "Performed by" (analyst). The worksheet is then locked until it is checked or returned.',
     reason: returned ? 'Reason for the correction' : null, reasonRequired: returned,
     submit: async ({ password, reason }) => {
@@ -1018,7 +1076,8 @@ function printWorksheetHtml(d){
         <tr><td>${esc(ws ? ws.ws_no : r.ws_no || '--')}</td><td>${esc(ws ? ws.potency_pct + '%' : '--')}</td><td>${esc(x.std_weight || '--')} mg</td>
           <td>${esc(stepsText((P.std || {}).steps, 'mg'))}</td><td class="mono">${esc((x.std_areas || []).filter(v => v !== '').join(', '))}</td>
           <td>${nfix(s.mean, 1)}</td><td>${nfix(s.rsd_reported, 2)}% (${esc(s.limit_text || '')})</td><td><b>${s.pass === true ? 'PASS' : s.pass === false ? 'FAIL' : '--'}</b></td></tr>
-        ${x.sst_justification ? `<tr><td colspan="8">SST justification: ${esc(x.sst_justification)}</td></tr>` : ''}</table>`;
+        ${x.sst_justification ? `<tr><td colspan="8">SST justification: ${esc(x.sst_justification)}</td></tr>` : ''}
+        ${(x.ws_changes || []).map(ch => `<tr><td colspan="8">Working standard changed from ${esc(ch.from_no || '?')} to ${esc(ch.to_no || 'none')}${ch.at ? ' (' + fmtDateTime(ch.at) + ')' : ''}: ${esc(ch.reason)}</td></tr>`).join('')}</table>`;
     }
     if (test === 'assay'){
       html += `<table><tr><th>Sample</th><th>Average weight</th><th>Prep</th><th>Sample weight</th><th>Areas</th><th>% of label claim</th><th>Result (mean)</th><th>Limit</th><th>Verdict</th></tr>
@@ -1032,7 +1091,7 @@ function printWorksheetHtml(d){
       samples.forEach((sm, si) => {
         const units = (((inp.values || {})[sm.key] || {}).units || {})[t.id] || [], rs = (r.samples || [])[si] || {};
         html += `<table><tr><th>Sample ${esc(sm.label)}</th>${units.map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
-          <tr><td>Area</td>${units.map(u => `<td class="mono">${esc(u)}</td>`).join('')}</tr>
+          <tr><td>Area${units.some(u => Array.isArray(u) && u.length > 1) ? 's (mean used)' : ''}</td>${units.map(u => `<td class="mono">${esc(Array.isArray(u) ? u.join(' / ') : u)}</td>`).join('')}</tr>
           <tr><td>${test === 'dissolution' ? '% dissolved' : '% of label claim'}</td>${units.map((u, i) => `<td>${nfix((rs.units_reported || [])[i], 1)}</td>`).join('')}</tr></table>
           <table><tr>${test === 'dissolution'
             ? `<th>Mean</th><th>Min</th><th>Max</th><th>Limit</th><th>Verdict</th></tr><tr><td><b>${nfix(rs.reported, 1)}%</b></td><td>${nfix(rs.min_unit, 1)}%</td><td>${nfix(rs.max_unit, 1)}%</td>
