@@ -250,7 +250,8 @@ function viewLabRequest(id){
   }
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
-  acts.push(`<a class="btn btn-ghost" href="#/lab/report/${r.id}">${I.print} QC report</a>`);
+  acts.push(`<a class="btn btn-ghost" href="#/lab/report/${r.id}">${I.print} Summary report</a>`);
+  acts.push(`<a class="btn btn-ghost" href="#/lab/detail/${r.id}">${I.print} Detailed report</a>`);
   acts.push(`<a class="btn btn-ghost" href="#/sheet/${r.id}">${I.doc} Phase 1 sheet</a>`);
   const live = r.assignments.filter(a => !a.cancelled), cancelled = r.assignments.filter(a => a.cancelled);
   const results = r.results || [];
@@ -285,7 +286,7 @@ function viewLabRequest(id){
       </div>
       ${d.ipqa && d.ipqa.length ? `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>IPQA (Phase 1)</h3></div><div class="tbl-wrap"><table class="tbl" style="min-width:0">
         <thead><tr><th>Parameter</th><th>Observed</th><th>Specification</th><th>Status</th></tr></thead><tbody>
-        ${d.ipqa.map(p => `<tr><td>${esc(p.parameter)}</td><td>${esc(p.value)} ${esc(p.unit || '')}</td><td class="small">${esc(p.spec || '')}</td><td>${esc(String(p.status || '').toUpperCase())}</td></tr>`).join('')}
+        ${d.ipqa.map(p => `<tr><td>${esc(p.parameter)}</td><td>${esc(p.value)} ${esc(p.unit || '')}</td><td class="small">${esc(ipqaSpec(p))}</td><td>${esc(String(p.status || '').toUpperCase())}</td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
       <div class="card"><div class="card-h"><h3>History</h3><div class="sub">Every change, who made it, when and why (written by the database)</div></div>
         <div class="card-b">${d.audit.length ? `<div class="timeline">${d.audit.slice().reverse().map(e => `<div class="tl-item ${e.action === 'insert' ? 'done' : ''}">
@@ -435,8 +436,7 @@ function wsEnsure(){
       const P = t.parameters || {};
       if (test === 'assay'){
         const list = v.preps[t.id] = Array.isArray(v.preps[t.id]) ? v.preps[t.id] : [];
-        const n = (list[0] && Array.isArray(list[0].areas) && list[0].areas.length) || 1;   // 1 injection, or 2 once the analyst adds one
-        while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: Array(n).fill('') });
+        while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: [''] });   // 1 injection; each preparation can get a 2nd
         list.forEach(p => { if (!Array.isArray(p.areas)) p.areas = []; if (!p.areas.length) p.areas.push(''); });
       } else if (test === 'dissolution' || test === 'content_uniformity'){
         const n = test === 'dissolution' ? (P.units || 6) : 10;
@@ -461,10 +461,12 @@ function inpNum(path, attrs){
 }
 // sample injections: 1, or up to the template's number (2); the same count for every prep / caplet of a sample
 const wsSplMax = P => (typeof P.injections === 'object' && P.injections ? P.injections.max : P.injections) || 2;
-function wsSplInjButtons(si, tid, n, max){
+// pi: one assay preparation (each preparation has its own injections); none: every caplet of the sample
+function wsSplInjButtons(si, tid, n, max, pi){
   if (!wsEditable()) return '';
-  return `${n < max ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},1)">${I.plus} Injection</button>` : ''}
-    ${n > 1 ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},-1)">${I.x} Last injection</button>` : ''}`;
+  const at = pi === undefined ? '' : ',' + pi;
+  return `${n < max ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},1${at})">${I.plus} Injection</button>` : ''}
+    ${n > 1 ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},-1${at})">${I.x} Last injection</button>` : ''}`;
 }
 function stepsText(steps, firstUnit){
   return (steps || []).map((s, i) => (i === 0 ? (firstUnit === 'caplet' ? `${s[0] || 1} caplet in ${s[1]} mL` : `weighed (${firstUnit}) to ${s[1]} mL`)
@@ -512,11 +514,11 @@ function wsApiPanel(t){
           <div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Prep</th><th>Sample weight (mg)</th><th>Injection areas</th><th style="text-align:right">% of label claim</th></tr></thead><tbody>
           ${preps.map((p, pi) => `<tr><td class="strong">${String.fromCharCode(97 + pi)}</td>
             <td style="width:150px">${inpNum(`values.${s.key}.preps.${tid}.${pi}.weight`)}</td>
-            <td><div class="lab-areas" data-group="values.${s.key}.preps.${tid}.${pi}.areas">${p.areas.map((x, ii) => inpNum(`values.${s.key}.preps.${tid}.${pi}.areas.${ii}`, `placeholder="${ii + 1}"`)).join('')}</div></td>
+            <td><div class="row" style="gap:6px;flex-wrap:wrap"><div class="lab-areas" data-group="values.${s.key}.preps.${tid}.${pi}.areas">${p.areas.map((x, ii) => inpNum(`values.${s.key}.preps.${tid}.${pi}.areas.${ii}`, `placeholder="${ii + 1}"`)).join('')}</div>
+              ${wsSplInjButtons(si, tid, p.areas.length, wsSplMax(P), pi)}</div></td>
             <td style="text-align:right" class="tnum strong" id="pr-${tid}-${si}-${pi}">--</td></tr>`).join('')}
           </tbody></table></div>
-          ${wsEditable() ? `<div class="row" style="margin-top:8px">${wsSplInjButtons(si, tid, (preps[0] || { areas: [''] }).areas.length, wsSplMax(P))}
-            <span class="hint">${I.info}<span>1 or ${wsSplMax(P)} injections per preparation; with ${wsSplMax(P)}, their mean is used.</span></span></div>` : ''}
+          ${wsEditable() ? `<div class="hint" style="margin-top:8px">${I.info}<span>Each preparation takes 1 or ${wsSplMax(P)} injections; with ${wsSplMax(P)}, their mean is used.</span></div>` : ''}
         </div></div>`;
     }).join('');
   }
@@ -647,9 +649,9 @@ function viewLabWorksheet(id){
 }
 function wsTab(tid){ ws.tab = tid; render(); }
 function wsUnmark(el){ if (String(el.value).trim() !== '') el.classList.remove('err'); }
-function wsSplInj(si, tid, delta){
+function wsSplInj(si, tid, delta, pi){
   const t = ws.ctx.templates.find(x => x.id === tid), v = ws.inputs.values[ws.inputs.samples[si].key], max = wsSplMax((t || {}).parameters || {});
-  const lists = ws.ctx.analysis.test_type === 'assay' ? (v.preps[tid] || []).map(p => p.areas) : (v.units[tid] || []);
+  const lists = ws.ctx.analysis.test_type === 'assay' ? (v.preps[tid] || []).filter((p, i) => pi === undefined || i === pi).map(p => p.areas) : (v.units[tid] || []);
   const n = ((lists[0] || []).length || 1) + delta;
   if (n < 1 || n > max) return;
   lists.forEach(l => { if (delta > 0) while (l.length < n) l.push(''); else l.length = n; });
@@ -1061,10 +1063,13 @@ function resText(x){
 const verdictText = p => (p === true ? 'COMPLIES' : p === false ? 'DOES NOT COMPLY' : '--');
 const testOfResult = n => TEST_TYPES[n] || 'Microbiology';
 
-function printWorksheetHtml(d){
+// opt.only: assignment ids to show (one batch of a run, for the detailed batch report); opt.embedded: no letterhead
+function printWorksheetHtml(d, opt){
+  opt = opt || {};
   const a = d.analysis, c = a.calc || {}, inp = a.inputs || {}, test = a.test_type, f = formFor(a.stage);
   const eq = d.equipment.find(q => String(q.id) === String(a.equipment_id));
   const samples = inp.samples || [];
+  const show = sm => !opt.only || opt.only.map(String).includes(String(sm.assignment_id));
   const hplc = ['assay', 'dissolution', 'content_uniformity'].includes(test);
   const parts = d.templates.map(t => {
     const P = t.parameters || {}, r = (c.apis || {})[t.id] || {}, x = (inp.apis || {})[t.id] || {};
@@ -1081,7 +1086,7 @@ function printWorksheetHtml(d){
     }
     if (test === 'assay'){
       html += `<table><tr><th>Sample</th><th>Average weight</th><th>Prep</th><th>Sample weight</th><th>Areas</th><th>% of label claim</th><th>Result (mean)</th><th>Limit</th><th>Verdict</th></tr>
-        ${samples.map((sm, si) => { const v = (inp.values || {})[sm.key] || {}, preps = (v.preps || {})[t.id] || [], rs = (r.samples || [])[si] || {};
+        ${samples.map((sm, si) => { if (!show(sm)) return ''; const v = (inp.values || {})[sm.key] || {}, preps = (v.preps || {})[t.id] || [], rs = (r.samples || [])[si] || {};
           return preps.map((p, pi) => `<tr>${pi === 0 ? `<td rowspan="${preps.length}">${esc(sm.label)}</td><td rowspan="${preps.length}">${esc(v.avg_weight || '--')} mg</td>` : ''}
             <td>${String.fromCharCode(97 + pi)}</td><td>${esc(p.weight || '--')} mg</td><td class="mono">${esc((p.areas || []).join(', '))}</td>
             <td>${nfix(((rs.preparations || [])[pi] || {}).pct_reported, 1)}%</td>
@@ -1089,6 +1094,7 @@ function printWorksheetHtml(d){
               <td rowspan="${preps.length}"><b>${verdictText(rs.pass)}</b></td>` : ''}</tr>`).join(''); }).join('')}</table>`;
     } else if (test === 'dissolution' || test === 'content_uniformity'){
       samples.forEach((sm, si) => {
+        if (!show(sm)) return;
         const units = (((inp.values || {})[sm.key] || {}).units || {})[t.id] || [], rs = (r.samples || [])[si] || {};
         html += `<table><tr><th>Sample ${esc(sm.label)}</th>${units.map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
           <tr><td>Area${units.some(u => Array.isArray(u) && u.length > 1) ? 's (mean used)' : ''}</td>${units.map(u => `<td class="mono">${esc(Array.isArray(u) ? u.join(' / ') : u)}</td>`).join('')}</tr>
@@ -1101,20 +1107,21 @@ function printWorksheetHtml(d){
       });
     } else if (test === 'identification'){
       html += `<table><tr><th>Sample</th><th>Standard RT (min)</th><th>Sample RT (min)</th><th>Difference</th><th>Limit</th><th>Verdict</th></tr>
-        ${samples.map((sm, si) => { const rs = (r.samples || [])[si] || {};
+        ${samples.map((sm, si) => { if (!show(sm)) return ''; const rs = (r.samples || [])[si] || {};
           return `<tr><td>${esc(sm.label)}</td><td>${esc(x.std_rt || '--')}</td><td>${esc((((inp.values || {})[sm.key] || {}).rt || {})[t.id] || '--')}</td>
             <td>${nfix(rs.deviation_reported, 2)}%</td><td>${esc(r.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr>`; }).join('')}</table>`;
     } else if (test === 'microbiology'){
       html += `<table><tr><th>Sample</th><th>Parameter</th><th>Result</th><th>Limit</th><th>Verdict</th></tr>
-        ${samples.map((sm, si) => ((r.samples || [])[si] || { rows: [] }).rows.map((row, ri) => `<tr>${ri === 0 ? `<td rowspan="${((r.samples || [])[si] || { rows: [] }).rows.length}">${esc(sm.label)}</td>` : ''}
+        ${samples.map((sm, si) => !show(sm) ? '' : ((r.samples || [])[si] || { rows: [] }).rows.map((row, ri) => `<tr>${ri === 0 ? `<td rowspan="${((r.samples || [])[si] || { rows: [] }).rows.length}">${esc(sm.label)}</td>` : ''}
           <td>${esc(row.label)}</td><td>${row.value === null ? 'awaiting' : esc(typeof row.value === 'number' ? row.value + ' cfu/g' : row.value)}</td><td>${esc(row.limit_text)}</td><td><b>${verdictText(row.pass)}</b></td></tr>`).join('')).join('')}</table>`;
     }
     return html;
   }).join('');
-  return `<div class="sheet">
-    <div class="letterhead">Orange Kalbe Limited - Quality Control Department</div>
+  return `<div class="${opt.embedded ? 'sheet-part' : 'sheet'}">
+    ${opt.embedded ? `<h3 class="part-title">${esc(TEST_TYPES[test] || test)} - worksheet #${a.id} <span class="tiny">(${esc(f[1])}, engine ${esc(c.engine_version || a.engine_version || '--')})</span></h3>`
+      : `<div class="letterhead">Orange Kalbe Limited - Quality Control Department</div>
     <div class="sheet-head"><div><h2>${esc(f[0])}</h2><div class="small">${esc(TEST_TYPES[test] || test)}</div></div>
-      <div class="doc">${esc(f[1])}<br>Worksheet #${a.id}<br>Engine ${esc(c.engine_version || a.engine_version || '--')}</div></div>
+      <div class="doc">${esc(f[1])}<br>Worksheet #${a.id}<br>Engine ${esc(c.engine_version || a.engine_version || '--')}</div></div>`}
     ${a.status !== 'checked' ? `<p><b>Status: ${esc((WS_STATUS[a.status] || [a.status])[0])}</b>${a.status === 'in_progress' ? ' - draft, not submitted' : ''}</p>` : ''}
     <h4>Analysis details</h4>
     <table class="kv"><tr><th>Product</th><td>${esc(a.product_name)}</td><th>Stage</th><td>${esc(a.stage)}</td></tr>
@@ -1125,7 +1132,7 @@ function printWorksheetHtml(d){
     ${parts}
     ${d.attachments.length ? `<h4>Chromatograms</h4><table><tr><th>File</th><th>Fingerprint (sha256)</th><th>Uploaded</th></tr>${d.attachments.map(x => `<tr><td>${esc(x.file_name)}</td><td class="mono">${esc(x.sha256)}</td><td>${esc(x.uploaded_by)} ${fmtDateTime(x.uploaded_at)}</td></tr>`).join('')}</table>` : ''}
     <div class="sign-grid">${signBox('Performed by (analyst)', a.performed_by, a.performed_at)}${signBox('Checked by (QC Supervisor)', a.checked_by, a.checked_at)}</div>
-    <p class="tiny" style="margin-top:14px">Generated by QSync from the stored record. Every value above was entered once; the results are those calculated and stored by the server (engine ${esc(c.engine_version || a.engine_version || '--')}). Signatures are electronic password sign-offs.</p>
+    ${opt.embedded ? '' : `<p class="tiny" style="margin-top:14px">Generated by QSync from the stored record. Every value above was entered once; the results are those calculated and stored by the server (engine ${esc(c.engine_version || a.engine_version || '--')}). Signatures are electronic password sign-offs.</p>`}
   </div>`;
 }
 function viewLabPrint(id){
@@ -1137,51 +1144,129 @@ function viewLabPrint(id){
       <a class="btn btn-ghost" href="#/lab/worksheet/${esc(id)}">${I.chevL} Back to the worksheet</a>`)}${printWorksheetHtml(d)}` };
 }
 
-function labReportHtml(d){
-  const r = d.request, f = formFor(r.stage), results = r.results || [];
-  const live = r.assignments.filter(a => !a.cancelled);
-  const names = k => [...new Set(live.map(a => a[k]).filter(Boolean))].join(', ');
-  const at = k => live.map(a => a[k]).filter(Boolean).sort().slice(-1)[0];
-  const allPass = results.length && results.every(x => x.pass === true);
-  const oos = results.filter(x => x.oos_status);
-  return `<div class="sheet">
-    <div class="letterhead">Orange Kalbe Limited - Quality Control Department</div>
-    <div class="sheet-head"><div><h2>${esc(f[2])}</h2><div class="small">Includes the Test Request Form "To be filled by QC" section (OKL/QAD/038/F1-00)</div></div>
-      <div class="doc">${esc(f[3])}<br>Request No: ${esc(r.request_no)}</div></div>
+// IPQA specification as Phase 1 stores it: a text, or a numeric range (spec_min / spec_max) in the parameter's unit
+function ipqaSpec(p){
+  const text = htmlDecode(p.spec || '').trim();
+  if (text) return text;
+  const u = p.unit ? ' ' + p.unit : '', has = v => v !== null && v !== undefined && v !== '';
+  if (has(p.spec_min) && has(p.spec_max)) return Number(p.spec_min) === 0 ? `NMT ${p.spec_max}${u}` : `${p.spec_min} - ${p.spec_max}${u}`;
+  if (has(p.spec_max)) return `NMT ${p.spec_max}${u}`;
+  if (has(p.spec_min)) return `NLT ${p.spec_min}${u}`;
+  return '--';
+}
+// Phase 1 saves some texts HTML-escaped (&quot;): turn them back into characters before esc() shows them
+function htmlDecode(t){
+  return String(t == null ? '' : t).replace(/&(quot|#34|#39|apos|lt|gt|amp);/g, (m, k) => ({ quot: '"', '#34': '"', '#39': "'", apos: "'", lt: '<', gt: '>', amp: '&' })[k]);
+}
+// shared by both batch reports: batch details, Phase 1 (IPQA), QC results so far with the tests still open
+function labBatchHead(d, title, docNo, sub){
+  const r = d.request;
+  return `<div class="letterhead">Orange Kalbe Limited - Quality Control Department</div>
+    <div class="sheet-head"><div><h2>${esc(title)}</h2><div class="small">${sub}</div></div>
+      <div class="doc">${esc(docNo)}<br>Request No: ${esc(r.request_no)}<br>Status: ${esc(labStatusText(r.status))}</div></div>
     <h4>Batch details</h4>
     <table class="kv"><tr><th>Product</th><td>${esc(r.product_name)}</td><th>Batch No</th><td>${esc(r.batch_no)}</td></tr>
       <tr><th>Stage</th><td>${esc(r.stage)}</td><th>Tests required</th><td>${esc(r.test_required || '--')}</td></tr>
+      <tr><th>Batch size</th><td>${r.batch_size ? esc(r.batch_size + ' ' + (r.batch_size_unit || '')) : '--'}</td><th>Sample sent</th><td>${r.sample_qty ? esc(r.sample_qty + ' ' + (r.sample_qty_unit || '')) : '--'}</td></tr>
       <tr><th>Mfg Date</th><td>${fmtMonthYear(r.mfg_date)}</td><th>Exp Date</th><td>${fmtMonthYear(r.exp_date)}</td></tr>
-      <tr><th>Sample received</th><td>${r.qc_received_at ? fmtDateTime(r.qc_received_at) : '--'}</td><th>Quantity</th><td>${r.qc_received_qty != null ? esc(r.qc_received_qty + ' ' + (r.qc_received_qty_unit || '')) : '--'}</td></tr></table>
-    ${d.ipqa && d.ipqa.length ? `<h4>In-process (IPQA) results</h4><table><tr><th>Parameter</th><th>Observed</th><th>Specification</th><th>Status</th></tr>
-      ${d.ipqa.map(p => `<tr><td>${esc(p.parameter)}</td><td>${esc(p.value)} ${esc(p.unit || '')}</td><td>${esc(p.spec || '')}</td><td><b>${esc(String(p.status || '').toUpperCase())}</b></td></tr>`).join('')}</table>` : ''}
-    <h4>QC results</h4>
-    <table><tr><th>Test</th><th>API / parameter</th><th>Sample</th><th>Result</th><th>Specification</th><th>Verdict</th></tr>
-      ${results.length ? results.map(x => `<tr><td>${esc(testOfResult(x.result_name))}</td><td>${esc(x.api)}</td><td>${esc(x.sample_label)}</td><td><b>${esc(resText(x))}</b></td>
-        <td>${esc(x.limit_text || '')}</td><td><b>${verdictText(x.pass)}</b></td></tr>`).join('') : '<tr><td colspan="6">No results yet.</td></tr>'}</table>
-    ${oos.length ? `<h4>Out-of-specification entries</h4><table><tr><th>Result</th><th>Status</th><th>Outcome / investigation</th></tr>
-      ${oos.map(x => `<tr><td>${esc(x.api)} ${esc(x.sample_label)}: ${esc(resText(x))}</td><td>${esc(x.oos_status)}</td><td>${esc((x.oos_outcome || '') + (x.oos_reference ? ' - ' + x.oos_reference : ''))}</td></tr>`).join('')}</table>` : ''}
-    <h4>Conclusion</h4>
-    <table class="kv"><tr><th>Results</th><td><b>${results.length ? (allPass ? 'Complies with the specification' : 'Does not comply with the specification') : '--'}</b></td>
-      <th>QC decision</th><td><b>${r.qc_decision ? (r.qc_decision === 'released' ? 'Released for further processing' : 'Not released for further processing') : 'Pending'}</b>${r.qc_comments ? '<div class="tiny">' + esc(r.qc_comments) + '</div>' : ''}</td></tr></table>
-    <div class="sign-grid">
+      <tr><th>Sample received by QC</th><td>${r.qc_received_at ? fmtDateTime(r.qc_received_at) : '--'}</td><th>Quantity received</th><td>${r.qc_received_qty != null ? esc(r.qc_received_qty + ' ' + (r.qc_received_qty_unit || '')) : '--'}</td></tr></table>
+    <h4>In-process (IPQA) results</h4>
+    ${d.ipqa && d.ipqa.length ? `<table><tr><th>Parameter</th><th>Observed</th><th>Specification</th><th>Status</th></tr>
+      ${d.ipqa.map(p => `<tr><td>${esc(htmlDecode(p.parameter))}</td><td>${esc(htmlDecode(p.value))} ${esc(p.value != null && /^[\d.]+$/.test(p.value) ? p.unit || '' : '')}</td><td>${esc(ipqaSpec(p))}</td><td><b>${esc(String(p.status || '').toUpperCase())}</b></td></tr>`).join('')}</table>`
+      : `<p class="small">No IPQA check at this stage${r.ipqa_signed_by ? '' : ' (this stage goes straight to QC)'}.</p>`}
+    ${r.qa_comments ? `<p class="small">QA Supervisor comments: ${esc(r.qa_comments)}</p>` : ''}`;
+}
+function labStatusText(st){ return { pending_ipqa: 'Pending IPQA', pending_qa_review: 'Pending QA review', rejected: 'Rejected by QA', pending_qc_notify: 'Sent to QC',
+  sent_to_qc: 'Waiting for QC receipt', qc_received: 'In the QC lab', qc_released: 'QC released', qc_not_released: 'QC not released', qa_acknowledged: 'Closed (QA acknowledged)' }[st] || st; }
+function labOpenTests(r){
+  const done = new Set((r.results || []).map(x => String(x.analysis_id)));
+  return r.assignments.filter(a => !a.cancelled && !(a.analysis_id && done.has(String(a.analysis_id)) && ['submitted', 'checked'].includes(a.analysis_status)))
+    .map(a => `<tr class="muted"><td>${esc(TEST_TYPES[a.test_type] || a.test_type)}</td><td colspan="5">${a.analysis_id ? 'Worksheet #' + a.analysis_id + ': ' + esc((WS_STATUS[a.analysis_status] || [a.analysis_status])[0]) : 'Not started'} (analyst ${esc(a.analyst)})</td></tr>`).join('');
+}
+function labSignGrid(r, names, at){
+  return `<div class="sign-grid">
+      ${r.production_signed_by ? signBox('Requested by (Production)', r.production_signed_by, r.production_signed_at) : ''}
+      ${r.ipqa_signed_by ? signBox('IPQA done by', r.ipqa_signed_by, r.ipqa_signed_at) : ''}
+      ${r.qa_supervisor_signed_by ? signBox('Approved by (QA Supervisor)', r.qa_supervisor_signed_by, r.qa_signed_at) : ''}
       ${signBox('Received by (QC Supervisor)', r.qc_received_by, r.qc_received_at)}
       ${signBox('Performed by (analyst)', names('performed_by'), at('performed_at'))}
       ${signBox('Checked by (QC Supervisor)', names('checked_by'), at('checked_at'))}
       ${signBox('Approved by (QC Manager)', r.qc_manager, r.qc_manager_signed_at)}
       ${signBox('Reviewed by (QA Manager)', r.qa_manager, r.qa_manager_signed_at)}
-    </div>
+    </div>`;
+}
+function labReportHtml(d){
+  const r = d.request, f = formFor(r.stage), results = r.results || [];
+  const live = r.assignments.filter(a => !a.cancelled);
+  const names = k => [...new Set(live.map(a => a[k]).filter(Boolean))].join(', ');
+  const at = k => live.map(a => a[k]).filter(Boolean).sort().slice(-1)[0];
+  const open = labOpenTests(r);
+  const allPass = results.length && results.every(x => x.pass === true);
+  const oos = results.filter(x => x.oos_status);
+  return `<div class="sheet">
+    ${labBatchHead(d, f[2], f[3], 'Summary report. Includes the Test Request Form "To be filled by QC" section (OKL/QAD/038/F1-00)')}
+    <h4>QC results</h4>
+    <table><tr><th>Test</th><th>API / parameter</th><th>Sample</th><th>Result</th><th>Specification</th><th>Verdict</th></tr>
+      ${results.map(x => `<tr><td>${esc(testOfResult(x.result_name))}</td><td>${esc(x.api)}</td><td>${esc(x.sample_label)}</td><td><b>${esc(resText(x))}</b></td>
+        <td>${esc(x.limit_text || '')}</td><td><b>${verdictText(x.pass)}</b></td></tr>`).join('')}
+      ${open}
+      ${!results.length && !open ? `<tr><td colspan="6">${r.qc_received_at ? 'No results yet.' : 'Not received by QC yet.'}</td></tr>` : ''}</table>
+    ${oos.length ? `<h4>Out-of-specification entries</h4><table><tr><th>Result</th><th>Status</th><th>Outcome / investigation</th></tr>
+      ${oos.map(x => `<tr><td>${esc(x.api)} ${esc(x.sample_label)}: ${esc(resText(x))}</td><td>${esc(x.oos_status)}</td><td>${esc((x.oos_outcome || '') + (x.oos_reference ? ' - ' + x.oos_reference : ''))}</td></tr>`).join('')}</table>` : ''}
+    <h4>Conclusion</h4>
+    <table class="kv"><tr><th>Results</th><td><b>${results.length ? (open ? (allPass ? 'Complies so far (tests still open)' : 'Does not comply with the specification') : (allPass ? 'Complies with the specification' : 'Does not comply with the specification')) : '--'}</b></td>
+      <th>QC decision</th><td><b>${r.qc_decision ? (r.qc_decision === 'released' ? 'Released for further processing' : 'Not released for further processing') : 'Pending'}</b>${r.qc_comments ? '<div class="tiny">' + esc(r.qc_comments) + '</div>' : ''}</td></tr></table>
+    ${labSignGrid(r, names, at)}
     ${r.qa_manager_comments ? `<p class="small">QA comments: ${esc(r.qa_manager_comments)}</p>` : ''}
-    <p class="tiny" style="margin-top:14px">Generated by QSync from the stored record. Signatures are electronic password sign-offs; the full history of every change is kept in QSync.</p>
+    <p class="tiny" style="margin-top:14px">Generated by QSync from the stored record, as complete as the batch's current stage. The detailed report has every test's raw data and calculation. Signatures are electronic password sign-offs; the full history of every change is kept in QSync.</p>
+  </div>`;
+}
+// detailed report: the summary's batch part, then every test of this batch with its raw values and calculation (this batch's samples only)
+function labDetailHtml(d, sheets){
+  const r = d.request, f = formFor(r.stage), results = r.results || [];
+  const live = r.assignments.filter(a => !a.cancelled);
+  const names = k => [...new Set(live.map(a => a[k]).filter(Boolean))].join(', ');
+  const at = k => live.map(a => a[k]).filter(Boolean).sort().slice(-1)[0];
+  const ids = live.map(a => a.id);
+  const notStarted = live.filter(a => !a.analysis_id);
+  return `<div class="sheet">
+    ${labBatchHead(d, 'Detailed Analysis Report', f[1] + ' / ' + f[3], 'Every test of this batch with its raw values, standards, calculation and sign-offs')}
+    <h4>Results summary</h4>
+    <table><tr><th>Test</th><th>API / parameter</th><th>Sample</th><th>Result</th><th>Specification</th><th>Verdict</th></tr>
+      ${results.map(x => `<tr><td>${esc(testOfResult(x.result_name))}</td><td>${esc(x.api)}</td><td>${esc(x.sample_label)}</td><td><b>${esc(resText(x))}</b></td>
+        <td>${esc(x.limit_text || '')}</td><td><b>${verdictText(x.pass)}${x.oos_status ? ' (OOS ' + esc(x.oos_status) + ')' : ''}</b></td></tr>`).join('')}
+      ${labOpenTests(r) || (results.length ? '' : '<tr><td colspan="6">No results yet.</td></tr>')}</table>
+    ${sheets.map(ws => printWorksheetHtml(ws, { only: ids, embedded: true })).join('')}
+    ${notStarted.length ? `<h4>Tests not started</h4><p class="small">${notStarted.map(a => esc((TEST_TYPES[a.test_type] || a.test_type) + ' (analyst ' + a.analyst + ')')).join(', ')}</p>` : ''}
+    <h4>Decision</h4>
+    <table class="kv"><tr><th>QC decision</th><td><b>${r.qc_decision ? (r.qc_decision === 'released' ? 'Released for further processing' : 'Not released for further processing') : 'Pending'}</b>${r.qc_comments ? '<div class="tiny">' + esc(r.qc_comments) + '</div>' : ''}</td>
+      <th>QA Manager</th><td>${r.qa_manager ? 'Acknowledged' + (r.qa_manager_comments ? ': ' + esc(r.qa_manager_comments) : '') : 'Pending'}</td></tr></table>
+    ${labSignGrid(r, names, at)}
+    <p class="tiny" style="margin-top:14px">Generated by QSync from the stored record, as complete as the batch's current stage. Worksheets that ran several batches show this batch's samples only. Results are those calculated and stored by the server. Signatures are electronic password sign-offs.</p>
   </div>`;
 }
 function viewLabReport(id){
   const d = labGet('/request?id=' + id);
   if (!d) return labWait('QC report', 'QC Laboratory');
   if (d.error) return labFail('QC report', 'QC Laboratory', d.error);
-  return { title: `QC report - ${d.request.request_no}`, crumb: 'QC Laboratory',
-    html: `${pageHead(`QC report - ${esc(d.request.request_no)}`, '', `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+  return { title: `Summary report - ${d.request.request_no}`, crumb: 'QC Laboratory',
+    html: `${pageHead(`Summary report - ${esc(d.request.request_no)}`, '', `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+      <a class="btn btn-ghost" href="#/lab/detail/${esc(id)}">${I.doc} Detailed report</a>
       <a class="btn btn-ghost" href="#/lab/request/${esc(id)}">${I.chevL} Back to the batch</a>`)}${labReportHtml(d)}` };
+}
+function viewLabDetail(id){
+  const d = labGet('/request?id=' + id);
+  if (!d) return labWait('Detailed report', 'QC Laboratory');
+  if (d.error) return labFail('Detailed report', 'QC Laboratory', d.error);
+  const sheetIds = [...new Set(d.request.assignments.filter(a => !a.cancelled && a.analysis_id).map(a => a.analysis_id))];
+  const sheets = sheetIds.map(w => labGet('/worksheet?id=' + w));
+  if (sheets.some(x => !x)) return labWait('Detailed report', 'QC Laboratory');
+  const bad = sheets.find(x => x.error);
+  if (bad) return labFail('Detailed report', 'QC Laboratory', bad.error);
+  return { title: `Detailed report - ${d.request.request_no}`, crumb: 'QC Laboratory',
+    html: `${pageHead(`Detailed report - ${esc(d.request.request_no)}`, '', `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+      <a class="btn btn-ghost" href="#/lab/report/${esc(id)}">${I.doc} Summary report</a>
+      <a class="btn btn-ghost" href="#/lab/request/${esc(id)}">${I.chevL} Back to the batch</a>`)}${labDetailHtml(d, sheets)}` };
 }
 
 /* ---- routes ---- */
@@ -1193,3 +1278,4 @@ route('/lab/oos', () => viewLabOos());
 route('/lab/master', () => viewLabMaster());
 route('/lab/print/:id', p => viewLabPrint(p.id));
 route('/lab/report/:id', p => viewLabReport(p.id));
+route('/lab/detail/:id', p => viewLabDetail(p.id));

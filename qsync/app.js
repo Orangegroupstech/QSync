@@ -758,7 +758,7 @@ function reqById(id){ return S.requests.find(r => String(r.id) === String(id)); 
 function qsyncSheetHtml(r){
   const paramRows = (r.parameters||[]).map(p => {
     const value = p.valueText || p.valueNumeric;
-    const spec = p.specText ? p.specText : `${p.specMin ?? ''} - ${p.specMax ?? ''}${p.unit ? ' '+p.unit : ''}`;
+    const spec = p.specText ? htmlDecode(p.specText) : ipqaSpec({ spec_min: p.specMin, spec_max: p.specMax, unit: p.unit });
     const verdict = p.status === 'pass' ? 'PASS' : p.status === 'fail' ? 'FAIL' : 'N/A';
     return `<tr>
       <td>${esc(p.name)}</td>
@@ -808,9 +808,24 @@ function qsyncSheetHtml(r){
   </div>`;
 }
 
+const LAB_STAGE = ['sent_to_qc', 'pending_qc_notify', 'qc_received', 'qc_released', 'qc_not_released', 'qa_acknowledged'];
 function viewSheet(id){
   const r = reqById(id);
   if (!r) return { title:'Not found', crumb:'Records', html: notFound() };
+  // once QC has the batch, the page is the summary report: Phase 1 and QC so far, in one place
+  if (S.lab && LAB_STAGE.includes(r.status)){
+    const d = labGet('/request?id=' + r.id);
+    if (d && !d.error) return {
+      title:`${r.requestNo} - summary`, crumb:'Records',
+      html: `${pageHead(`${esc(r.requestNo)} - summary report`, `As complete as the current stage: ${esc(labStatusText(d.request.status))}`,
+        `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+         <a class="btn btn-ghost" href="#/lab/detail/${r.id}">${I.doc} Detailed report</a>
+         <a class="btn btn-ghost" href="#/lab/request/${r.id}">${I.inbox} QC lab view</a>
+         <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`)}
+        ${labReportHtml(d)}`
+    };
+    if (!d) return labWait('Summary report', 'Records');
+  }
   return {
     title:`QSync sheet - ${r.requestNo}`, crumb:'Records',
     html: `${pageHead(`QSync sheet - ${esc(r.requestNo)}`, '',
