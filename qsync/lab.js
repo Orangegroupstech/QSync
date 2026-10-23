@@ -1050,6 +1050,8 @@ const FORM_TITLES = {
   'Granulation':      ['Granules Analytical Worksheet', 'QC/MOA/FP/005/F1-01', 'Granules Analysis Assessment Report', 'QC/MOA/FP/005/F3-01'],
   'Finished Product': ['Finished Product Analytical Worksheet', 'QC/MOA/FP/005/F2-01', 'Product Analysis Assessment Report', 'QC/MOA/FP/005/F4-01'],
 };
+// caplet stages before packing use the finished-product forms
+FORM_TITLES['Compression'] = FORM_TITLES['Sacheting/Blistering/Stripping'] = FORM_TITLES['Finished Product'];
 function formFor(stage){ return FORM_TITLES[stage] || ['Analytical Worksheet', '', 'QC Analysis Report', '']; }
 const nfix = (v, dp) => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? '--' : Number(v).toFixed(dp));
 function signBox(label, name, at){ return `<div class="sign-box"><div class="sl">${esc(label)}</div><div class="sv">${esc(name || '--')}</div><div class="ss">${at ? fmtDateTime(at) : '--'}</div></div>`; }
