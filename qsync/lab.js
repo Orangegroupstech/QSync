@@ -468,8 +468,11 @@ function wsSplInjButtons(si, tid, n, max, pi){
   return `${n < max ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},1${at})">${I.plus} Injection</button>` : ''}
     ${n > 1 ? `<button class="btn btn-ghost btn-sm" onclick="wsSplInj(${si},${tid},-1${at})">${I.x} Last injection</button>` : ''}`;
 }
+// the dosage unit of a product's templates: 'tablet' (Procold) or 'caplet' (Mixagrip, Corhinza)
+const unitWord = P => (P && P.dosage_form) || 'caplet';
+const UnitWord = P => unitWord(P).charAt(0).toUpperCase() + unitWord(P).slice(1);
 function stepsText(steps, firstUnit){
-  return (steps || []).map((s, i) => (i === 0 ? (firstUnit === 'caplet' ? `${s[0] || 1} caplet in ${s[1]} mL` : `weighed (${firstUnit}) to ${s[1]} mL`)
+  return (steps || []).map((s, i) => (i === 0 ? (['caplet', 'tablet'].includes(firstUnit) ? `${s[0] || 1} ${firstUnit} in ${s[1]} mL` : `weighed (${firstUnit}) to ${s[1]} mL`)
     : (s[0] === 1 && s[1] === 1 ? null : `${s[0]} mL to ${s[1]} mL`))).filter(Boolean).join(', then ');
 }
 function wsStandardCard(t, extraSub){
@@ -528,16 +531,16 @@ function wsApiPanel(t){
     return wsStandardCard(t, sub) + samples.map((s, si) => {
       const units = ws.inputs.values[s.key].units[tid];
       return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
-          <div class="sub">${diss ? `One caplet per vessel: ${esc(stepsText((P.sample || {}).steps, 'caplet'))}` : `One caplet each: ${esc(stepsText((P.sample || {}).steps, 'caplet'))}`}
-            ${!diss ? ' - 10 caplets, AV NMT ' + esc(P.l1 || 15) : ''}</div></div>
+          <div class="sub">${diss ? `One ${unitWord(P)} per vessel: ${esc(stepsText((P.sample || {}).steps, unitWord(P)))}` : `One ${unitWord(P)} each: ${esc(stepsText((P.sample || {}).steps, unitWord(P)))}`}
+            ${!diss ? ` - 10 ${unitWord(P)}s, AV NMT ` + esc(P.l1 || 15) : ''}</div></div>
           <div id="mean-${tid}-${si}" class="strong" style="text-align:right">--</div></div>
         <div class="card-b">
-          <div class="lab-units" data-group="values.${s.key}.units.${tid}">${units.map((x, ui) => `<div class="lab-unit"><div class="tiny muted">Caplet ${ui + 1}</div>
+          <div class="lab-units" data-group="values.${s.key}.units.${tid}">${units.map((x, ui) => `<div class="lab-unit"><div class="tiny muted">${UnitWord(P)} ${ui + 1}</div>
             ${x.map((y, ii) => inpNum(`values.${s.key}.units.${tid}.${ui}.${ii}`, `placeholder="${x.length > 1 ? 'injection ' + (ii + 1) : 'area'}"`)).join('')}<div class="tiny tnum strong" id="u-${tid}-${si}-${ui}">--</div></div>`).join('')}</div>
           ${wsEditable() ? `<div class="row" style="margin-top:10px">${wsSplInjButtons(si, tid, (units[0] || ['']).length, wsSplMax(P))}
-            <span class="hint">${I.info}<span>1 or ${wsSplMax(P)} injections per caplet; with ${wsSplMax(P)}, their mean is used.</span></span></div>` : ''}
+            <span class="hint">${I.info}<span>1 or ${wsSplMax(P)} injections per ${unitWord(P)}; with ${wsSplMax(P)}, their mean is used.</span></span></div>` : ''}
 
-          <div class="hint" style="margin-top:8px">${I.info}<span>Tip: paste the column of caplet areas from Empower into the first box${(units[0] || []).length > 1 ? ' (caplet 1 injection 1, caplet 1 injection 2, caplet 2 ...)' : ''}.</span></div>
+          <div class="hint" style="margin-top:8px">${I.info}<span>Tip: paste the column of ${unitWord(P)} areas from Empower into the first box${(units[0] || []).length > 1 ? ` (${unitWord(P)} 1 injection 1, ${unitWord(P)} 1 injection 2, ${unitWord(P)} 2 ...)` : ''}.</span></div>
         </div></div>`;
     }).join('');
   }
@@ -735,7 +738,7 @@ function wsPaint(){
       } else if (test === 'dissolution' || test === 'content_uniformity'){
         const below = rs && rs.units_below ? rs.units_below : [];
         if (m) m.innerHTML = !rs || !rs.units ? '--' : test === 'dissolution'
-          ? `mean <span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}${below.length ? ` <span class="badge b-danger">caplet ${below.join(', ')} below ${esc(r.samples[si].limit_text || '')}</span>` : ''}`
+          ? `mean <span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}${below.length ? ` <span class="badge b-danger">${unitWord(t.parameters)} ${below.join(', ')} below ${esc(r.samples[si].limit_text || '')}</span>` : ''}`
           : `mean <span class="tnum">${num1(rs.mean_reported)}%</span> - AV <b class="tnum">${num1(rs.av_reported)}</b> ${verdictBadge(rs.pass)}`;
         ((v.units || {})[t.id] || []).forEach((u, ui) => {
           const el = $(`#u-${t.id}-${si}-${ui}`); if (!el) return;
@@ -1048,7 +1051,11 @@ const FORM_TITLES = {
 };
 // caplet stages before packing use the finished-product forms
 FORM_TITLES['Compression'] = FORM_TITLES['Sacheting/Blistering/Stripping'] = FORM_TITLES['Finished Product'];
-function formFor(stage){ return FORM_TITLES[stage] || ['Analytical Worksheet', '', 'QC Analysis Report', '']; }
+function formFor(stage, methodRef){
+  const f = (FORM_TITLES[stage] || ['Analytical Worksheet', '', 'QC Analysis Report', '']).slice();
+  if (methodRef) [1, 3].forEach(i => { if (f[i]) f[i] = f[i].replace(/^QC\/MOA\/FP\/005/, methodRef); });
+  return f;
+}
 const nfix = (v, dp) => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? '--' : Number(v).toFixed(dp));
 function signBox(label, name, at){ return `<div class="sign-box"><div class="sl">${esc(label)}</div><div class="sv">${esc(name || '--')}</div><div class="ss">${at ? fmtDateTime(at) : '--'}</div></div>`; }
 function resText(x){
@@ -1065,7 +1072,7 @@ const testOfResult = n => TEST_TYPES[n] || 'Microbiology';
 // opt.only: assignment ids to show (one batch of a run, for the detailed batch report); opt.embedded: no letterhead
 function printWorksheetHtml(d, opt){
   opt = opt || {};
-  const a = d.analysis, c = a.calc || {}, inp = a.inputs || {}, test = a.test_type, f = formFor(a.stage);
+  const a = d.analysis, c = a.calc || {}, inp = a.inputs || {}, test = a.test_type, f = formFor(a.stage, (d.templates[0] || {}).method_ref);
   const eq = d.equipment.find(q => String(q.id) === String(a.equipment_id));
   const samples = inp.samples || [];
   const show = sm => !opt.only || opt.only.map(String).includes(String(sm.assignment_id));
@@ -1098,10 +1105,10 @@ function printWorksheetHtml(d, opt){
         html += `<table><tr><th>Sample ${esc(sm.label)}</th>${units.map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
           <tr><td>Area${units.some(u => Array.isArray(u) && u.length > 1) ? 's (mean used)' : ''}</td>${units.map(u => `<td class="mono">${esc(Array.isArray(u) ? u.join(' / ') : u)}</td>`).join('')}</tr>
           <tr><td>${test === 'dissolution' ? '% dissolved' : '% of label claim'}</td>${units.map((u, i) => `<td>${nfix((rs.units_reported || [])[i], 1)}</td>`).join('')}</tr>
-          ${test === 'dissolution' && rs.units_reported ? `<tr><td>Each caplet (${esc(rs.limit_text || '')})</td>${units.map((u, i) => `<td><b>${(rs.units_below || []).includes(i + 1) ? 'BELOW' : 'COMPLIES'}</b></td>`).join('')}</tr>` : ''}</table>
+          ${test === 'dissolution' && rs.units_reported ? `<tr><td>Each ${unitWord(P)} (${esc(rs.limit_text || '')})</td>${units.map((u, i) => `<td><b>${(rs.units_below || []).includes(i + 1) ? 'BELOW' : 'COMPLIES'}</b></td>`).join('')}</tr>` : ''}</table>
           <table><tr>${test === 'dissolution'
             ? `<th>Mean</th><th>Min</th><th>Max</th><th>Limit</th><th>Verdict</th></tr><tr><td><b>${nfix(rs.reported, 1)}%</b></td><td>${nfix(rs.min_unit, 1)}%</td><td>${nfix(rs.max_unit, 1)}%</td>
-               <td>${esc(rs.limit_text || '')}${(rs.units_below || []).length ? ' - caplet ' + rs.units_below.join(', ') + ' below' : ''}</td><td><b>${verdictText(rs.pass)}</b></td>`
+               <td>${esc(rs.limit_text || '')}${(rs.units_below || []).length ? ` - ${unitWord(P)} ` + rs.units_below.join(', ') + ' below' : ''}</td><td><b>${verdictText(rs.pass)}</b></td>`
             : `<th>Mean (X)</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr><tr><td>${nfix(rs.mean_reported, 1)}%</td>
                <td>${nfix(rs.sd, 2)}</td><td>${nfix(rs.m, 1)}</td><td>${esc(rs.k || '--')}</td><td><b>${nfix(rs.av_reported, 1)}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td>`}</tr></table>`;
       });
@@ -1196,7 +1203,7 @@ function labSignGrid(r, names, at){
     </div>`;
 }
 function labReportHtml(d){
-  const r = d.request, f = formFor(r.stage), results = r.results || [];
+  const r = d.request, f = formFor(r.stage, r.method_ref), results = r.results || [];
   const live = r.assignments.filter(a => !a.cancelled);
   const names = k => [...new Set(live.map(a => a[k]).filter(Boolean))].join(', ');
   const at = k => live.map(a => a[k]).filter(Boolean).sort().slice(-1)[0];
@@ -1223,7 +1230,7 @@ function labReportHtml(d){
 }
 // detailed report: the summary's batch part, then every test of this batch with its raw values and calculation (this batch's samples only)
 function labDetailHtml(d, sheets){
-  const r = d.request, f = formFor(r.stage), results = r.results || [];
+  const r = d.request, f = formFor(r.stage, r.method_ref), results = r.results || [];
   const live = r.assignments.filter(a => !a.cancelled);
   const names = k => [...new Set(live.map(a => a[k]).filter(Boolean))].join(', ');
   const at = k => live.map(a => a[k]).filter(Boolean).sort().slice(-1)[0];
