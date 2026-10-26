@@ -683,27 +683,27 @@ function overallResult(r){
 function resultBadge(r){
   const ev = overallResult(r);
   if (ev === null) return `<span class="badge b-slate">Not tested</span>`;
-  return ev === 'pass' ? `<span class="badge b-ok">${I.check} Pass</span>` : `<span class="badge b-danger">${I.x} Out of spec</span>`;
+  return ev === 'pass' ? `<span class="badge b-ok">${I.check} IPQA pass</span>` : `<span class="badge b-danger">${I.x} IPQA out of spec</span>`;   // IPQA checks only: QC results show on the batch pages
 }
 function viewRequests(){
   const rows = filterRequests();
   const productOptions = Object.keys(PRODUCTS_META).map(p => `<option value="${esc(p)}" ${listState.product===p?'selected':''}>${esc(p)}</option>`).join('');
   const statusOptions = Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${listState.status===k?'selected':''}>${esc(v.label)}</option>`).join('');
   const stageOptions = ALL_STAGES.map(s => `<option value="${esc(s)}" ${listState.stage===s?'selected':''}>${esc(s)}</option>`).join('');
-  const resultOptions = [['pass','Pass'],['fail','Out of spec'],['untested','Not tested']]
+  const resultOptions = [['pass','IPQA pass'],['fail','IPQA out of spec'],['untested','Not tested']]
     .map(([k,label]) => `<option value="${k}" ${listState.result===k?'selected':''}>${label}</option>`).join('');
   const years = yearsFromDates(S.requests, 'createdAt');
   const sortOptions = [['updated','Recently updated'],['created','Newest first'],['oldest','Oldest first']]
     .map(([k,label]) => `<option value="${k}" ${listState.sort===k?'selected':''}>${label}</option>`).join('');
   const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Status</th><th>Result</th><th>Updated</th><th></th></tr></thead>
+      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Status</th><th>IPQA result</th><th>Updated</th><th></th></tr></thead>
       <tbody>${rows.map(r => `
         <tr class="clickable" onclick="go('/sheet/${r.id}')">
           <td data-label="Request"><div class="req-no">${esc(r.requestNo)}</div></td>
           <td data-label="Product / Batch"><div class="strong">${esc(r.productName)}</div><div class="tiny muted mono">${esc(r.batchNo)}</div></td>
           <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
           <td data-label="Status">${statusBadge(r.status)}</td>
-          <td data-label="Result">${resultBadge(r)}</td>
+          <td data-label="IPQA result">${resultBadge(r)}</td>
           <td class="small muted" data-label="Updated">${relTime(r.updatedAt)}</td>
           <td style="text-align:right">${I.chevR}</td>
         </tr>`).join('')}</tbody></table></div>`
