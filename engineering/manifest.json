@@ -1,0 +1,10 @@
+{
+  "name": "OKL Engineering",
+  "short_name": "Engineering",
+  "start_url": "/engineering/#/jobs",
+  "scope": "/engineering/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ED6B1F",
+  "icons": [{ "src": "../logo.png", "sizes": "512x512", "type": "image/png" }]
+}

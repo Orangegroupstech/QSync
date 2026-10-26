@@ -96,17 +96,18 @@
       <div><button class="linkbtn" id="changePw">Change password</button><button class="linkbtn" id="signOut">Sign out</button></div>
     </div>
     
+    <div id="noConsoles" class="notice hidden">You have not been given access to any console yet. Ask an admin to add you in Users.</div>
     <div class="grid">
-      <a class="tile" href="employees/">
+      <a class="tile" data-module="employees" href="employees/">
         <h3>Human Resource</h3>
       </a>
-      <a class="tile" href="qsync/">
+      <a class="tile" data-module="qsync" href="qsync/">
         <h3>QSync</h3>
       </a>
-      <a class="tile" href="procurement/">
+      <a class="tile" data-module="procurement" href="procurement/">
         <h3>Procurement</h3>
       </a>
-      <a class="tile" href="engineering/">
+      <a class="tile" data-module="engineering" href="engineering/">
         <h3>Engineering</h3>
       </a>
       <a class="tile hidden" id="usersTile" href="users/">
@@ -170,6 +171,13 @@
     notice('');
     $('whoName').textContent = me.user.name;
     $('usersTile').classList.toggle('hidden', !me.user.is_admin);
+    // a console tile shows only when the person can open it (any page of it); admins see everything
+    var access = me.access || {}, any = false;
+    Array.prototype.forEach.call(document.querySelectorAll('a.tile[data-module]'), function(t){
+      var can = !!me.user.is_admin || !!access[t.getAttribute('data-module')];
+      t.classList.toggle('hidden', !can); any = any || can;
+    });
+    $('noConsoles').classList.toggle('hidden', any || !!me.user.is_admin);
     show('homeView'); resetIdle();
   }
   function showPassword(force){
