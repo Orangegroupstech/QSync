@@ -102,12 +102,28 @@ function setToken(t){
 // One sign-in on the landing page serves every console; no token means go there.
 function toLanding(){ setToken(''); location.href = '../'; }
 function toLandingKeepToken(){ location.href = '../'; }
+// a link into this console (WhatsApp, e-mail) survives signing in: the landing page sends the person back here afterwards
+function rememberHere(){ try { if (currentPath() !== '/') sessionStorage.setItem('okl.return', location.pathname + location.hash); } catch(e) { /* ignore */ } }
+function noAccess(){
+  try { sessionStorage.setItem('okl.notice', 'You do not have access to Human Resource. Ask an admin if you need it.'); } catch(e) { /* ignore */ }
+  toLandingKeepToken();
+}
 function meFromAuth(auth, scope){
   const u = (auth && auth.user) || {};
   const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
   return { id: u.id, name: u.name, role: u.is_admin ? 'admin' : '', is_admin: !!u.is_admin,
-           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change };
+           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change, access: (auth && auth.access) || {} };
 }
+// Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
+function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
+const PAGES = [["/salary", "employees.salary"], ["/training", "employees.training"], ["/overtime", "employees.overtime"], ["/attendance", "employees.attendance"], ["/leave", "employees.leave"], ["/holidays", "employees.holidays"], ["/employees", "employees.people"], ["/dashboard", "employees.people"], ["/", "employees.people"]];   // route prefix -> page, first match wins
+function pageOf(path){
+  const p = String(path == null ? currentPath() : path).split('?')[0];
+  const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
+  return hit ? hit[1] : 'employees';
+}
+function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canEditHere(){ return levelOf(pageOf()) === 'edit'; }
 
 const API_BASE = 'https://orangegroupsai.online';
 async function api(path, opts){
@@ -126,12 +142,12 @@ async function api(path, opts){
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
   if (res.status === 401){
-    toLanding();
+    rememberHere(); toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
   let json = {};
   try { json = await res.json(); } catch (e) { /* empty body */ }
-  if (!res.ok) throw new Error(json.error || 'Something went wrong.');
+  if (!res.ok){ const err = new Error(json.error || 'Something went wrong.'); err.status = res.status; throw err; }
   return json;
 }
 async function exportEmployeesCSV(){
@@ -256,9 +272,12 @@ function navModel(){
 }
 
 /* ---------------- Shell ---------------- */
+function allowedNav(){
+  return navModel().map(g => Object.assign({}, g, { items: g.items.filter(it => canOpen(it.path)) })).filter(g => g.items.length);
+}
 function renderShell(inner, meta){
   const path = currentPath().split('?')[0];
-  const navHtml = navModel().map(g => `
+  const navHtml = allowedNav().map(g => `
     <div class="nav-group">${esc(g.title)}</div>
     ${g.items.map(it => {
       const active = path === it.path || path.startsWith(it.path + '/');
@@ -333,7 +352,7 @@ function fatalErrorHtml(err){
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
   const auth = await api('/webhook/auth/api/me');
-  if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
+  if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
   const [data, dep] = await Promise.all([
     api('/webhook/employees/api/list'),
     api('/webhook/employees/api/departments').catch(() => ({ departments: [] })),
@@ -354,6 +373,11 @@ function render(){
   try {
     if (!S){ toLanding(); return; }
     const path = currentPath();
+    if (!canOpen(path)){
+      const first = allowedNav()[0];
+      if (first && first.items[0].path !== path.split('?')[0]) { location.hash = '#' + first.items[0].path; return; }
+      if (!first) { noAccess(); return; }
+    }
     const m = matchRoute(path);
     if (!m){
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
@@ -381,9 +405,9 @@ window.addEventListener('hashchange', render);
 
 (async function boot(){
   try {
-    if (!getToken()){ toLanding(); return; }
+    if (!getToken()){ rememberHere(); toLanding(); return; }
     try { await bootstrap(); }
-    catch (e) { if (!getToken()) return; toLandingKeepToken(); return; }
+    catch (e) { if (!getToken()) return; if (e && e.status === 403) { noAccess(); return; } rememberHere(); toLandingKeepToken(); return; }
     if (!location.hash) location.hash = '#/';
     render();
   } catch (err) {
@@ -519,7 +543,7 @@ function trainMatrixTab(){
 }
 
 function viewTraining(){
-  const canEdit = S.me.permission === 'editor';
+  const canEdit = canEditHere();
   const tabs = [['sessions','Training sessions'],['catalogue','Competency catalogue'],['matrix','Skills matrix']];
   const tabBar = `<div class="tabs">${tabs.map(([k,l]) => `<div class="tab ${trainTab===k?'on':''}" onclick="setTrainTab('${k}')">${esc(l)}</div>`).join('')}</div>`;
   const body = trainTab==='sessions' ? trainSessionsTab() : trainTab==='catalogue' ? trainCatalogueTab() : trainMatrixTab();
@@ -797,7 +821,7 @@ function viewEmployees(){
     (!employeeGenderFilter || (e.gender || '') === employeeGenderFilter) && matchesEmployeeQuery(e, q));
   const depts = [...new Set([...(S.departments || []), ...S.employees.map(e => e.department).filter(Boolean)])].sort();
   const filtering = !!(q || employeeTypeFilter || employeeDeptFilter.length || employeeGenderFilter || employeeStatusFilter !== 'active');
-  const canEdit = S.me.permission === 'editor';
+  const canEdit = canEditHere();
   const cols = canEdit ? 9 : 8;
 
   return {
@@ -1053,7 +1077,7 @@ function paintOtList(){
   const box = $('#otListBody'); if (!box) return;
   const s = otListState;
   if (!s.records) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
-  const rows = filteredOvertime(), canEdit = S.me.permission === 'editor';
+  const rows = filteredOvertime(), canEdit = canEditHere();
   const live = rows.filter(r => r.status !== 'void');
   const total = live.reduce((t, r) => t + Number(r.hours || 0), 0);
   const foot = `<div class="small muted" style="padding:12px 14px">${live.length} ${live.length === 1 ? 'entry' : 'entries'}, ${fmtHours(total)} hours in total${rows.length !== live.length ? ' (voided entries not counted)' : ''}.</div>`;
@@ -1428,8 +1452,8 @@ function paintAtt(tab){
   const body = $('#attBody'); if (!body || att.tab !== tab || !att.data) return;
   const c = attCompute();
   if (!c.days.length) {
-    body.innerHTML = `<div class="card"><div class="card-b">${emptyState('clock', 'No attendance in this period', 'Nothing has been uploaded for these dates yet. Pick another period' + (S.me.permission === 'editor' ? ' or upload the machine export.' : '.'),
-      S.me.permission === 'editor' ? `<a class="btn btn-primary" href="#/attendance/upload">${I.plus} Upload attendance</a>` : '')}</div></div>`;
+    body.innerHTML = `<div class="card"><div class="card-b">${emptyState('clock', 'No attendance in this period', 'Nothing has been uploaded for these dates yet. Pick another period' + (canEditHere() ? ' or upload the machine export.' : '.'),
+      canEditHere() ? `<a class="btn btn-primary" href="#/attendance/upload">${I.plus} Upload attendance</a>` : '')}</div></div>`;
     return;
   }
   if (tab === 'daily') return paintAttDaily(body, c);
@@ -1598,7 +1622,7 @@ function openAttPerson(id){
 /* ---- Settings ---- */
 function paintAttSettings(body){
   if (!body || att.tab !== 'setup') return;
-  const canEdit = S.me.permission === 'editor', late = att.data.late_after || LATE_DEFAULT, lateC = att.data.late_after_casual || LATE_CASUAL_DEFAULT, dis = canEdit ? '' : 'disabled';
+  const canEdit = canEditHere(), late = att.data.late_after || LATE_DEFAULT, lateC = att.data.late_after_casual || LATE_CASUAL_DEFAULT, dis = canEdit ? '' : 'disabled';
   body.innerHTML = `<div class="card"><div class="card-h"><h3>Lateness</h3></div><div class="card-b">
     <div class="grid g2">
       <div class="field"><label for="asLate">Staff late after</label><input class="inp" type="time" id="asLate" value="${esc(late)}" ${dis}><div class="err-msg hide" data-err="asLate"></div></div>
@@ -1736,7 +1760,7 @@ async function attChooseFile(file){
 }
 function paintAttUpload(){
   const body = $('#attUp'); if (!body || att.tab !== 'setup') return;
-  if (S.me.permission !== 'editor') { body.innerHTML = ''; return; }
+  if (!canEditHere()) { body.innerHTML = ''; return; }
   const u = attUp, known = new Set(S.employees.map(e => e.enroll_id));
   const g = u.grid, unknown = g ? [...new Set(g.people.map(p => p.id).filter(id => !known.has(id)))] : [];
   const todo = u.days.filter(d => !u.entered.has(d.date) || u.replace.has(d.date));
@@ -1948,7 +1972,7 @@ function lvPaintBalances(){
   if (!lv.bal) return;
   const deps = [...new Set(lv.bal.map(b => b.department).filter(Boolean))].sort();
   msRender('lbDept', 'All departments', deptOpts(deps), lv.department, v => { lv.department = v; lvPaintBalances(); });
-  const rows = lvBalFiltered(), canEdit = S.me.permission === 'editor', unset = lv.bal.filter(b => b.entitled == null).length;
+  const rows = lvBalFiltered(), canEdit = canEditHere(), unset = lv.bal.filter(b => b.entitled == null).length;
   if (!rows.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No staff match these filters.</div>`; return; }
   const dirty = Object.keys(lv.balEdits).length;
   box.innerHTML = `<div class="card-b row between" style="flex-wrap:wrap;gap:10px"><div class="small muted">${unset ? `<b>${unset}</b> staff have no yearly days set yet, so they cannot request annual leave. ` : ''}Left = yearly days - approved - waiting. Staff only; casual workers are not listed.</div>
@@ -1994,7 +2018,7 @@ async function lvPaintSetup(){
   let setup;
   try { setup = await api('/webhook/employees/api/leave/setup'); } catch (err) { box.innerHTML = `<div class="small muted" style="padding:14px">${esc(err.message)}</div>`; return; }
   lv.types = (setup.types || []).map(t => Object.assign({}, t));
-  const canEdit = S.me.permission === 'editor';
+  const canEdit = canEditHere();
   const num = v => v == null || v === '' ? '' : esc(v), dis = canEdit ? '' : 'disabled';
   const row = (t, i) => `<tr data-i="${i}"><td data-label="Name"><input class="inp" data-f="label" value="${esc(t.label)}" maxlength="60" ${dis} style="min-width:150px"><div class="tiny muted mono" style="margin-top:3px">${t.isNew && canEdit ? `<input class="inp" data-f="key" value="${esc(t.key)}" maxlength="30" placeholder="key e.g. study" style="width:130px">` : esc(t.key)}</div></td>
       <td data-label="Counts against yearly days"><input type="checkbox" data-f="deducts" ${t.deducts ? 'checked' : ''} ${dis}></td>
@@ -2056,14 +2080,14 @@ function lvCanDecide(r){
   if (!String(r.status).startsWith('pending')) return null;
   const stage = String(r.status).replace('pending_', ''), st = (r.stages || []).find(x => x.stage === stage);
   if (!st) return null;
-  const editor = S.me.permission === 'editor', mine = !!lv.meEmail && lv.meEmail === String(st.email || '').toLowerCase();
+  const editor = canEditHere(), mine = !!lv.meEmail && lv.meEmail === String(st.email || '').toLowerCase();
   return (editor || mine) ? { stage, st, editor, mine } : null;
 }
 function lvPaintReview(no){
   const box = $('#lrBody'); if (!box) return;
   const r = lvReview;
   if (!r) { box.innerHTML = `<div class="card"><div class="card-b">${emptyState('alert', 'Request not found', 'There is no leave request ' + esc(no) + '.', `<a class="btn btn-primary" href="#/leave/requests">All requests</a>`)}</div></div>`; return; }
-  const can = lvCanDecide(r), canCancel = S.me.permission === 'editor' && ['pending_manager', 'pending_hr', 'approved'].includes(r.status);
+  const can = lvCanDecide(r), canCancel = canEditHere() && ['pending_manager', 'pending_hr', 'approved'].includes(r.status);
   const kv = (k, v) => `<div><div class="tiny muted" style="text-transform:uppercase;letter-spacing:.03em">${k}</div><div>${v}</div></div>`;
   box.innerHTML = `<div class="card"><div class="card-b">
       <div class="row between" style="flex-wrap:wrap;gap:10px"><div><div class="tiny muted mono">${esc(r.request_no)}</div><h2 style="margin:2px 0 0">${esc(r.name)}</h2><div class="small muted">${esc(r.role || '')}${r.role && r.department ? ', ' : ''}${esc(r.department || '')} - ${esc(r.enroll_id)}</div></div>
@@ -2131,7 +2155,7 @@ function holCsv(){
 }
 function viewHolidays(){
   if (!hol.year) hol.year = +todayStr().slice(0, 4);
-  const canEdit = S.me.permission === 'editor', yr = +todayStr().slice(0, 4);
+  const canEdit = canEditHere(), yr = +todayStr().slice(0, 4);
   return {
     title:'Public holidays', crumb:'Salary',
     html: `${pageHead('Public holidays', 'Days that are not working days. Leave requests and the salary estimate use this calendar. Click a day to mark it.', `<button class="btn btn-ghost" id="hlCsv">${I.download} Export CSV</button>`)}
@@ -2150,7 +2174,7 @@ route('/holidays', () => viewHolidays());
 function holPaint(){
   const cal = $('#hlCal'); if (!cal) return;
   if (!hol.rows) { cal.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
-  const canEdit = S.me.permission === 'editor', today = todayStr(), pad = n => String(n).padStart(2, '0');
+  const canEdit = canEditHere(), today = todayStr(), pad = n => String(n).padStart(2, '0');
   $('#hlYearLbl').textContent = hol.year;
   cal.innerHTML = `<div class="hol-grid">${HOL_MONTHS.map((mn, m) => {
     const first = new Date(Date.UTC(hol.year, m, 1)), lead = (first.getUTCDay() + 6) % 7, days = new Date(Date.UTC(hol.year, m + 1, 0)).getUTCDate();
@@ -2380,7 +2404,7 @@ async function salPaintFormula(){
     try { const fm = await api('/webhook/employees/api/salary/formula'); sal.formula = Object.assign({}, SAL_DEFAULT, fm.formula || {}); sal.formulaLoaded = true; }
     catch (err) { box.innerHTML = `<div class="small muted" style="padding:14px">${esc(err.message)}</div>`; return; }
   }
-  const canEdit = S.me.permission === 'editor', f = sal.formula, dis = canEdit ? '' : 'disabled';
+  const canEdit = canEditHere(), f = sal.formula, dis = canEdit ? '' : 'disabled';
   box.innerHTML = `<div class="card-b"><div class="strong">Numbers used in the estimate (staff)</div>
     <div class="small muted" style="margin:4px 0 14px">Finance can change any of these. The estimate on the Estimate tab updates straight away.${canEdit ? '' : ' Only people with edit access can change them.'}</div>
     <div class="grid g2">${SAL_FIELDS.map(([title, fields]) => `<div class="card" style="box-shadow:none"><div class="card-b"><div class="strong" style="margin-bottom:10px">${title}</div>

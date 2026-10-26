@@ -204,6 +204,7 @@ function navModel(){
   return [
     { title:'Admin', items:[
       { path:'/people', label:'People', icon:'users' },
+      { path:'/roles', label:'Roles', icon:'layers' },
       { path:'/approvers', label:'Approvers', icon:'key' },
       { path:'/audit', label:'Activity', icon:'activity' },
     ] },
@@ -287,8 +288,9 @@ function fatalErrorHtml(err){
 
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function loadPeople(){
-  const [acc, staff] = await Promise.all([api('/webhook/users/api/accounts'), api('/webhook/users/api/staff-without-account')]);
+  const [acc, staff, roles] = await Promise.all([api('/webhook/users/api/accounts'), api('/webhook/users/api/staff-without-account'), api('/webhook/users/api/roles')]);
   S.accounts = acc.accounts || []; S.defaultPin = acc.default_pin || ''; S.staff = staff.staff || []; S.noApp = staff.no_app || 0;
+  S.roles = roles.roles || []; S.pages = roles.pages || [];
 }
 async function bootstrap(){
   const auth = await api('/webhook/auth/api/me');
@@ -354,8 +356,21 @@ window.addEventListener('hashchange', render);
    ============================================================ */
 const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' }, { key:'engineering', label:'Engineering' } ];
 const SIGNOFFS = [ { key:'signoff.production', label:'Production' }, { key:'signoff.ipqa', label:'IPQA' },
-                   { key:'signoff.qa_supervisor', label:'QA Supervisor' }, { key:'signoff.qc_supervisor', label:'QC Supervisor' } ];
-const scopeLabel = k => (CONSOLES.concat(SIGNOFFS).find(x => x.key === k) || { label: k }).label;
+                   { key:'signoff.qa_supervisor', label:'QA Supervisor' }, { key:'signoff.qc_supervisor', label:'QC Supervisor' },
+                   { key:'signoff.qc_analyst', label:'QC Analyst' }, { key:'signoff.qc_manager', label:'QC Manager' }, { key:'signoff.qa_manager', label:'QA Manager' } ];
+const LEVELS = [ { key:'', label:'No access' }, { key:'view', label:'View' }, { key:'submit', label:'Submit' }, { key:'edit', label:'Edit' } ];
+const LEVEL_HELP = 'View = can open and read. Submit = can also record their own work (for example a technician closing a job). Edit = can change everything on that page.';
+// "Engineering - Spares", or just "Engineering" for a whole console
+function pageLabel(k){
+  const pg = (S && S.pages || []).find(x => x.scope === k);
+  if (!pg) return (CONSOLES.concat(SIGNOFFS).find(x => x.key === k) || { label: k }).label;
+  if (pg.scope === pg.module) return pg.label;
+  const mod = (S.pages || []).find(x => x.scope === pg.module);
+  return (mod ? mod.label + ' - ' : '') + pg.label;
+}
+const scopeLabel = pageLabel;
+const levelWord = l => ({ view:'view', submit:'submit', edit:'edit' })[l] || l;
+function pagesSummary(pages){ return (pages || []).map(x => pageLabel(x.scope) + ': ' + levelWord(x.level)).join(', '); }
 let peopleState = { q:'', status:'console', tab:'accounts' };
 const hasConsole = a => a.console_access !== false || a.is_admin;   // accounts from before the machine app have it
 
@@ -365,10 +380,11 @@ function accessChips(a){
   if (a.is_admin) chips.push(`<span class="badge b-brand">Admin</span>`);
   if (!hasConsole(a)) chips.push(`<span class="badge b-slate">No console</span>`);
   if (a.app_access) chips.push(`<span class="chip">Machine app</span>`);
-  (a.edit || []).forEach(k => chips.push(`<span class="chip">Edit ${esc(scopeLabel(k))}</span>`));
+  (a.roles || []).forEach(r => chips.push(`<span class="chip on" title="${esc(pagesSummary((S.roles.find(x => x.role === r) || {}).pages))}">${esc(r)}</span>`));
+  (a.grants || []).forEach(g => chips.push(`<span class="chip">${esc(pageLabel(g.scope))}: ${esc(levelWord(g.level))}</span>`));
   (a.signoff || []).forEach(k => chips.push(`<span class="chip">Signs ${esc(scopeLabel(k))}</span>`));
   (a.seats || []).forEach(s => chips.push(`<span class="chip">Approver: ${esc(s)}</span>`));
-  return chips.length ? chips.join(' ') : '<span class="muted small">Read only</span>';
+  return chips.length ? chips.join(' ') : '<span class="muted small">No access yet</span>';
 }
 function statusBadges(a){
   const out = [];
@@ -604,8 +620,16 @@ async function loadEmployees(){
 
 function openManage(id){
   const a = S.accounts.find(x => x.id === id); if (!a) return;
-  const has = k => (a.edit || []).includes(k) || (a.signoff || []).includes(k);
+  const has = k => (a.signoff || []).includes(k);
   const box = (k, label) => `<label class="row" style="gap:8px;margin:6px 0;font-weight:500"><input type="checkbox" data-scope="${k}" ${has(k)?'checked':''}> ${esc(label)}</label>`;
+  const own = k => ((a.grants || []).find(g => g.scope === k) || {}).level || '';
+  const roleBox = r => `<label class="row" style="gap:8px;margin:6px 0;font-weight:500;align-items:flex-start"><input type="checkbox" data-role="${esc(r.role)}" ${(a.roles || []).includes(r.role) ? 'checked' : ''} style="margin-top:3px">
+      <span>${esc(r.role)}<span class="tiny muted" style="display:block;font-weight:400">${esc(pagesSummary(r.pages))}</span></span></label>`;
+  const modules = (S.pages || []).filter(x => x.scope === x.module);
+  const levelSel = (k, cur) => `<select class="inp" data-grant="${esc(k)}" style="width:auto;min-width:120px;padding:4px 8px">${LEVELS.map(l => `<option value="${l.key}" ${cur === l.key ? 'selected' : ''}>${l.label}</option>`).join('')}</select>`;
+  const pageRows = modules.map(m => `
+      <tr style="background:var(--surface-2,#f6f7f8)"><td class="strong">${esc(m.label)} <span class="tiny muted">(whole console, every page)</span></td><td style="text-align:right">${levelSel(m.scope, own(m.scope))}</td></tr>
+      ${(S.pages || []).filter(x => x.module === m.scope && x.scope !== m.scope).map(pg => `<tr><td style="padding-left:22px">${esc(pg.label)}</td><td style="text-align:right">${levelSel(pg.scope, own(pg.scope))}</td></tr>`).join('')}`).join('');
   const isSelf = a.id === S.me.id;
   openModal({
     title: a.name, size:'wide', sub: (a.email || 'no email') + (a.linked ? ' - staff no. ' + a.enroll_id : ' - not linked to an employee'),
@@ -619,15 +643,18 @@ function openManage(id){
       </div>
       ${(a.seats || []).length ? `<div class="small muted" style="margin-top:8px">Approver seat${a.seats.length === 1 ? '' : 's'}: ${a.seats.map(esc).join(', ')} (change these in Approvers; approvals work by email link).</div>` : ''}
       <div class="divider"></div>
-      <div class="grid g2">
-        <div><div class="strong" style="margin-bottom:4px">Can edit</div>
-          <div class="small muted" style="margin-bottom:6px">Everyone with console access can read every console; this adds the right to change things.</div>
-          ${CONSOLES.map(c => box(c.key, c.label)).join('')}</div>
-        <div><div class="strong" style="margin-bottom:4px">QC sign-off roles</div>
-          <div class="small muted" style="margin-bottom:6px">Who may sign QC stages with their password.</div>
-          ${SIGNOFFS.map(c => box(c.key, c.label)).join('')}</div>
-      </div>
-      ${a.is_admin ? `<div class="notice info" style="margin-top:12px">${I.info}<div>Admins can edit everything and manage people, and always keep console access. Sign-off roles are still ticked individually.</div></div>` : ''}
+      <div class="strong" style="margin-bottom:4px">Roles</div>
+      <div class="small muted" style="margin-bottom:6px">A role is a set of pages. People only see the consoles and pages their roles and their own access below allow; the higher level wins. Change roles in <a href="#/roles">Roles</a>.</div>
+      <div class="grid g2">${(S.roles || []).map(roleBox).join('') || '<div class="small muted">No roles yet.</div>'}</div>
+      <details style="margin-top:10px" ${(a.grants || []).length ? 'open' : ''}><summary class="strong" style="cursor:pointer">Own access, page by page${(a.grants || []).length ? ' (' + a.grants.length + ')' : ''}</summary>
+        <div class="small muted" style="margin:6px 0">${esc(LEVEL_HELP)} Only for what their roles do not cover.</div>
+        <div class="tbl-wrap" style="max-height:320px;overflow:auto"><table class="tbl"><tbody>${pageRows}</tbody></table></div>
+      </details>
+      <div class="divider"></div>
+      <div class="strong" style="margin-bottom:4px">QC sign-off roles</div>
+      <div class="small muted" style="margin-bottom:6px">Who may sign QC stages with their password.</div>
+      <div class="grid g2">${SIGNOFFS.map(c => box(c.key, c.label)).join('')}</div>
+      ${a.is_admin ? `<div class="notice info" style="margin-top:12px">${I.info}<div>Admins can open and edit everything and manage people, and always keep console access. Sign-off roles are still ticked individually.</div></div>` : ''}
       <div class="divider"></div>
       <div class="strong" style="margin-bottom:4px">Employee record</div>
       <div class="small muted" style="margin-bottom:6px">${a.linked ? `Linked to staff no. <b>${esc(a.enroll_id)}</b>.` : 'Not linked. Link it so the same person never gets a second account, and so the machine app can find them.'}</div>
@@ -661,8 +688,10 @@ function openManage(id){
       $('[data-link]', w).onclick = () => { const v = $('#mgEmp', w).value; if (!v) { toast('Choose the employee first', '', 'err'); return; } link(v); };
       const ul = $('[data-unlink]', w); if (ul) ul.onclick = async () => { if (await confirmDialog('Unlink?', `Unlink <b>${esc(a.name)}</b> from staff no. ${esc(a.enroll_id)}? They also come off the machine app.`, 'Unlink')) link(''); };
       $('[data-save]', w).onclick = async () => {
-        const scopes = $$('input[data-scope]', w).filter(c => c.checked).map(c => c.dataset.scope);
-        const body = { id: a.id, scopes, app: $('#mgApp', w).checked };
+        const roles = $$('input[data-role]', w).filter(c => c.checked).map(c => c.dataset.role);
+        const grants = $$('select[data-grant]', w).filter(x => x.value).map(x => ({ scope: x.dataset.grant, level: x.value }))
+          .concat($$('input[data-scope]', w).filter(c => c.checked).map(c => ({ scope: c.dataset.scope })));
+        const body = { id: a.id, roles, grants, app: $('#mgApp', w).checked };
         if (!$('#mgConsole', w).disabled) body.console = $('#mgConsole', w).checked;
         try { await api('/webhook/users/api/grants', { method:'POST', body }); await loadPeople(); close(); render(); toast('Access saved', a.name + "'s access has been updated.", 'ok'); }
         catch (err) { toast('Could not save', err.message, 'err', 8000); }
@@ -688,6 +717,63 @@ function openManage(id){
   });
 }
 
+/* ---------------- Roles (migration 016) ---------------- */
+function viewRoles(){
+  const rows = S.roles || [];
+  return {
+    title:'Roles', crumb:'Admin',
+    html: `${pageHead('Roles', 'A role is a named set of pages with a level for each. Give roles to people in People &gt; Manage. Changing a role changes it for everyone who has it.',
+      `<button class="btn btn-primary" onclick="openRole('')">${I.plus} New role</button>`)}
+    <div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Role</th><th>Pages</th><th>People</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(r => `<tr>
+        <td class="strong" data-label="Role">${esc(r.role)}</td>
+        <td class="small" data-label="Pages">${(r.pages || []).map(x => `<span class="chip" style="margin:2px 4px 2px 0">${esc(pageLabel(x.scope))}: ${esc(levelWord(x.level))}</span>`).join('')}</td>
+        <td data-label="People">${Number(r.people) || 0}</td>
+        <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="openRole('${esc(r.role).replace(/'/g, '&#39;')}')">${I.edit} Edit</button></td>
+      </tr>`).join('') : `<tr><td colspan="4" class="muted" style="padding:16px">No roles yet.</td></tr>`}</tbody>
+    </table></div></div>
+    <div class="small muted" style="margin-top:10px">${esc(LEVEL_HELP)}</div>`,
+  };
+}
+route('/roles', () => viewRoles());
+function openRole(name){
+  const r = (S.roles || []).find(x => x.role === name) || { role: '', pages: [], people: 0 };
+  const cur = k => ((r.pages || []).find(x => x.scope === k) || {}).level || '';
+  const modules = (S.pages || []).filter(x => x.scope === x.module);
+  const sel = k => `<select class="inp" data-page="${esc(k)}" style="width:auto;min-width:120px;padding:4px 8px">${LEVELS.map(l => `<option value="${l.key}" ${cur(k) === l.key ? 'selected' : ''}>${l.label}</option>`).join('')}</select>`;
+  const rows = modules.map(m => `
+    <tr style="background:var(--surface-2,#f6f7f8)"><td class="strong">${esc(m.label)} <span class="tiny muted">(whole console, every page)</span></td><td style="text-align:right">${sel(m.scope)}</td></tr>
+    ${(S.pages || []).filter(x => x.module === m.scope && x.scope !== m.scope).map(pg => `<tr><td style="padding-left:22px">${esc(pg.label)}</td><td style="text-align:right">${sel(pg.scope)}</td></tr>`).join('')}`).join('');
+  openModal({
+    title: r.role ? 'Role: ' + r.role : 'New role', size:'wide',
+    sub: r.role ? (Number(r.people) || 0) + ' active ' + ((Number(r.people) || 0) === 1 ? 'person has' : 'people have') + ' this role.' : 'Give it a clear name, for example "Technician".',
+    body: `${r.role ? '' : `<div class="field"><label for="rlName">Name</label><input class="inp" id="rlName" maxlength="40" placeholder="e.g. Shift supervisor"></div>`}
+      <div class="small muted" style="margin-bottom:8px">${esc(LEVEL_HELP)}</div>
+      <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table class="tbl"><tbody>${rows}</tbody></table></div>
+      <div class="err-msg hide" data-err="rlName" style="margin-top:8px"></div>`,
+    footer: `${r.role ? `<button class="btn btn-ghost" data-del style="margin-right:auto">Remove role</button>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save role</button>`,
+    onMount: (w, close) => {
+      const save = async (pages, okMsg) => {
+        clearErrors(w);
+        const role = r.role || ($('#rlName', w).value || '').trim();
+        if (!role) return setErr('rlName', 'Give the role a name.', w);
+        try { await api('/webhook/users/api/roles/save', { method:'POST', body:{ role, pages } }); await loadPeople(); close(); render(); toast(okMsg, role, 'ok'); }
+        catch (err) { setErr('rlName', err.message, w); }
+      };
+      $('[data-save]', w).onclick = () => {
+        clearErrors(w);
+        if (!r.role && !($('#rlName', w).value || '').trim()) return setErr('rlName', 'Give the role a name.', w);
+        const pages = $$('select[data-page]', w).filter(x => x.value).map(x => ({ scope: x.dataset.page, level: x.value }));
+        if (!pages.length) return setErr('rlName', r.role ? 'Choose at least one page, or use Remove role.' : 'Choose at least one page.', w);
+        save(pages, 'Role saved');
+      };
+      const d = $('[data-del]', w);
+      if (d) d.onclick = async () => { if (await confirmDialog('Remove role?', `Remove the role <b>${esc(r.role)}</b>? Only possible when nobody has it.`, 'Remove', 'danger')) save([], 'Role removed'); };
+    },
+  });
+}
+
 /* ---------------- Activity (audit) ---------------- */
 let auditRows = null;
 const ACTION_LABELS = { account_created:'Account created', grants_set:'Access changed', reset:'PIN reset', unlock:'Unlocked', deactivate:'Deactivated',
@@ -695,7 +781,7 @@ const ACTION_LABELS = { account_created:'Account created', grants_set:'Access ch
   overtime_submitted:'Overtime submitted', overtime_edited:'Overtime edited', overtime_voided:'Overtime voided', leave_submitted:'Leave requested', leave_decided:'Leave decision',
   leave_cancelled:'Leave cancelled', leave_types_saved:'Leave types changed', leave_entitlement_set:'Yearly leave days set', holidays_saved:'Public holidays changed',
   approver_saved:'Approver saved', approver_removed:'Approver removed', salary_formula_saved:'Salary formula changed',
-  access_set:'Console / machine app changed', employee_linked:'Linked to employee record' };
+  access_set:'Console / machine app changed', employee_linked:'Linked to employee record', role_saved:'Role saved', role_removed:'Role removed' };
 function paintAudit(){
   const box = $('#auditBody'); if (!box) return;
   if (!auditRows){ box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }

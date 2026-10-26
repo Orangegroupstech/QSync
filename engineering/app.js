@@ -23,6 +23,10 @@ const I = (() => {
     arrowDown: w('<path d="M12 5v14M5 12l7 7 7-7"/>'),
     arrowUp: w('<path d="M12 19V5M5 12l7-7 7 7"/>'),
     users: w('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
+    thermo: w('<path d="M14 14.8V4a2 2 0 0 0-4 0v10.8a4 4 0 1 0 4 0z"/>'),
+    wrench: w('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'),
+    layers: w('<path d="M12 2l10 5-10 5L2 7z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>'),
+    sliders: w('<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'),
   };
 })();
 
@@ -61,12 +65,30 @@ function setToken(t){
 // One sign-in on the landing page serves every console; no token means go there.
 function toLanding(){ setToken(''); location.href = '../'; }
 function toLandingKeepToken(){ location.href = '../'; }
+// a link into this console (WhatsApp, e-mail) survives signing in: the landing page sends the person back here afterwards
+function rememberHere(){ try { if (currentPath() !== '/') sessionStorage.setItem('okl.return', location.pathname + location.hash); } catch(e) { /* ignore */ } }
+function noAccess(){
+  try { sessionStorage.setItem('okl.notice', 'You do not have access to Engineering. Ask an admin if you need it.'); } catch(e) { /* ignore */ }
+  toLandingKeepToken();
+}
 function meFromAuth(auth, scope){
   const u = (auth && auth.user) || {};
   const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
   return { id: u.id, name: u.name, role: u.is_admin ? 'admin' : '', is_admin: !!u.is_admin,
-           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change };
+           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change, access: (auth && auth.access) || {} };
 }
+// Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
+function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
+const PAGES = [["/spares", "engineering.spares"], ["/jobs", "engineering.jobs"], ["/stops", "engineering.jobs"], ["/floor", "engineering.jobs"],
+  ["/actions", "engineering.actions"], ["/pm", "engineering.pm"], ["/overview", "engineering.actions"], ["/outdoor", "engineering.outdoor"],
+  ["/equipment", "engineering.equipment"], ["/settings", "engineering.settings"], ["/", "engineering.ahu"]];   // route prefix -> page, first match wins
+function pageOf(path){
+  const p = String(path == null ? currentPath() : path).split('?')[0];
+  const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
+  return hit ? hit[1] : 'engineering';
+}
+function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canEditHere(){ return levelOf(pageOf()) === 'edit'; }
 
 const API_BASE = 'https://orangegroupsai.online';
 async function api(path, opts){
@@ -85,12 +107,12 @@ async function api(path, opts){
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
   if (res.status === 401){
-    toLanding();
+    rememberHere(); toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
   let json = {};
   try { json = await res.json(); } catch (e) { /* empty body */ }
-  if (!res.ok) throw new Error(json.error || 'Something went wrong.');
+  if (!res.ok){ const err = new Error(json.error || 'Something went wrong.'); err.status = res.status; throw err; }
   return json;
 }
 
@@ -189,17 +211,36 @@ function matchRoute(path){
 
 /* ---------------- Navigation model ---------------- */
 function navModel(){
+  const mgr = levelOf('engineering.jobs') === 'edit';
   return [
-    { title:'Engineering', items:[
-      { path:'/', label:'AHU Temperature Log', icon:'alert' },
+    { title:'Maintenance', items:[
+      { path:'/jobs', label:'Calls and jobs', icon:'wrench' },
+      { path:'/stops', label:'Machine stops', icon:'alert' },
+      { path:'/pm', label:'Preventive maintenance', icon:'checkCircle' },
+      { path:'/actions', label:'Corrective and preventive actions', icon:'edit' },
+      { path:'/overview', label:'Overview', icon:'layers' },
     ] },
+    { title:'Logs', items:[
+      { path:'/', label:'AHU Temperature Log', icon:'thermo' },
+      { path:'/outdoor', label:'Outdoor Units', icon:'thermo' },
+    ] },
+    { title:'Store', items:[
+      { path:'/spares', label:'Spares', icon:'box' },
+    ] },
+    { title:'Setup', items:[
+      { path:'/equipment', label:'Equipment', icon:'layers' },
+      { path:'/settings', label:'Settings', icon:'sliders' },
+    ].concat(mgr ? [{ path:'/floor', label:'Floor messages', icon:'externalLink' }] : []) },
   ];
 }
 
 /* ---------------- Shell ---------------- */
+function allowedNav(){
+  return navModel().map(g => Object.assign({}, g, { items: g.items.filter(it => canOpen(it.path)) })).filter(g => g.items.length);
+}
 function renderShell(inner, meta){
   const path = currentPath().split('?')[0];
-  const navHtml = navModel().map(g => `
+  const navHtml = allowedNav().map(g => `
     <div class="nav-group">${esc(g.title)}</div>
     ${g.items.map(it => {
       const active = path === it.path || path.startsWith(it.path + '/');
@@ -274,7 +315,7 @@ function fatalErrorHtml(err){
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
   const auth = await api('/webhook/auth/api/me');
-  if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
+  if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
   S = { me: meFromAuth(auth, 'engineering') };
   resetIdleTimer();
 }
@@ -282,7 +323,13 @@ function render(){
   const app = document.getElementById('app');
   try {
     if (!S){ toLanding(); return; }
-    const m = matchRoute(currentPath());
+    const path = currentPath();
+    if (!canOpen(path)){
+      const first = allowedNav()[0];
+      if (first && first.items[0].path !== path.split('?')[0]) { location.hash = '#' + first.items[0].path; return; }
+      if (!first) { noAccess(); return; }
+    }
+    const m = matchRoute(path);
     if (!m){
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
@@ -309,9 +356,9 @@ window.addEventListener('hashchange', render);
 
 (async function boot(){
   try {
-    if (!getToken()){ toLanding(); return; }
+    if (!getToken()){ rememberHere(); toLanding(); return; }
     try { await bootstrap(); }
-    catch (e) { if (!getToken()) return; toLandingKeepToken(); return; }
+    catch (e) { if (!getToken()) return; if (e && e.status === 403) { noAccess(); return; } rememberHere(); toLandingKeepToken(); return; }
     if (!location.hash) location.hash = '#/';
     render();
   } catch (err) {
@@ -518,3 +565,1255 @@ function viewAhu(){
   };
 }
 route('/', viewAhu);
+
+
+/* ============================================================
+   Equipment register (migration 017: OKL_ENG_assets)
+   Everything Engineering looks after, one row each. GET /webhook/engineering/api/equipment, save with POST .../equipment/save.
+   A production machine on the shop floor app uses the floor's machine code as its code. Codes never change.
+   Rows whose notes start with "Check:" are guesses from the old lists for Engineering to confirm.
+   ============================================================ */
+const ASSET_TYPES = ['Machine', 'Line', 'Room', 'AHU', 'Outdoor unit', 'Utility', 'Instrument', 'Building', 'Vehicle', 'Other'];
+let EQ = { list: null, loading: false, error: '', q: '', type: '', area: '', status: 'Active', check: false };
+async function eqLoad(force){
+  if (EQ.loading || (EQ.list && !force)) return;
+  EQ.loading = true; EQ.error = '';
+  try { const r = await api('/webhook/engineering/api/equipment'); EQ.list = r.assets || []; }
+  catch (err) { EQ.error = err.message; }
+  finally { EQ.loading = false; render(); }
+}
+function eqByCode(code){ return (EQ.list || []).find(a => a.code === code); }
+function eqFiltered(){
+  const q = EQ.q.trim().toLowerCase();
+  return (EQ.list || []).filter(a => (!EQ.type || a.type === EQ.type) && (!EQ.area || (a.area || '') === EQ.area) && (!EQ.status || a.status === EQ.status)
+    && (!EQ.check || a.review) && (!q || [a.code, a.name, a.eq_no, a.floor_code, a.parent_name, a.area].join(' ').toLowerCase().includes(q)));
+}
+function viewEquipment(){
+  if (!EQ.list && !EQ.error) eqLoad();
+  const canEdit = canEditHere();
+  const head = pageHead('Equipment', 'Everything Engineering looks after: machines, lines, rooms, AHUs and their outdoor units, utilities, instruments and buildings.',
+    canEdit ? `<button class="btn btn-primary" onclick="eqOpen('')">${I.plus} Add equipment</button>` : '');
+  if (EQ.error) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the register', esc(EQ.error), `<button class="btn btn-primary" onclick="eqLoad(true)">Try again</button>`)}</div></div>` };
+  if (!EQ.list) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  const all = EQ.list, rows = eqFiltered(), shown = rows.slice(0, 400);
+  const areas = Array.from(new Set(all.map(a => a.area).filter(Boolean))).sort();
+  const byType = ASSET_TYPES.map(t => [t, all.filter(a => a.type === t && a.status === 'Active').length]).filter(x => x[1]);
+  const toCheck = all.filter(a => a.review).length;
+  const opt = (v, cur, label) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(label || v)}</option>`;
+  return {
+    title:'Equipment', crumb:'Setup', keepScroll: true,
+    html: head + `
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      ${byType.map(([t, n]) => `<button class="chip ${EQ.type === t ? 'on' : ''}" onclick="eqSet('type', '${esc(t)}')">${esc(t)} <b>${n}</b></button>`).join('')}
+      ${toCheck ? `<button class="chip ${EQ.check ? 'on' : ''}" onclick="eqSet('check', ${!EQ.check})" title="Guesses from the old lists: open each and confirm or correct it">${I.alert} To check <b>${toCheck}</b></button>` : ''}
+    </div>
+    <div class="card">
+      <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
+        <div class="row" style="gap:10px;flex-wrap:wrap">
+          <div class="search filter-search"><span class="ic">${I.search}</span>
+            <input class="inp" id="eqQ" style="padding-left:34px;border-radius:20px" placeholder="Search code, name, EQ/PD number" value="${esc(EQ.q)}"></div>
+          <select class="inp" id="eqType" style="width:auto">${opt('', EQ.type, 'All types')}${ASSET_TYPES.map(t => opt(t, EQ.type)).join('')}</select>
+          <select class="inp" id="eqArea" style="width:auto">${opt('', EQ.area, 'All areas')}${areas.map(a => opt(a, EQ.area)).join('')}</select>
+          <select class="inp" id="eqStatus" style="width:auto">${opt('Active', EQ.status)}${opt('Inactive', EQ.status)}${opt('', EQ.status, 'Active and inactive')}</select>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Area</th><th>Part of</th><th>EQ/PD no</th><th>On the shop floor</th><th></th></tr></thead>
+        <tbody>${shown.length ? shown.map(a => `<tr class="clickable" onclick="eqOpen('${esc(a.code)}')">
+          <td class="mono small" data-label="Code">${esc(a.code)}</td>
+          <td data-label="Name"><div class="strong">${esc(a.name)}</div>${a.children ? `<div class="tiny muted">${a.children} part${a.children === 1 ? '' : 's'}</div>` : ''}</td>
+          <td data-label="Type">${esc(a.type)}</td><td data-label="Area">${esc(a.area || '--')}</td>
+          <td data-label="Part of" class="small">${a.parent ? esc(a.parent_name || a.parent) : '--'}</td>
+          <td data-label="EQ/PD no" class="mono small">${esc(a.eq_no || '--')}</td>
+          <td data-label="On the shop floor">${a.floor_code ? `<span class="badge b-ok">${esc(a.floor_code)}</span>` : '<span class="muted small">no</span>'}</td>
+          <td style="text-align:right">${a.review ? `<span class="badge b-warn" title="${esc(a.notes)}">To check</span>` : ''}${a.status === 'Inactive' ? ' <span class="badge b-slate">Inactive</span>' : ''}</td>
+        </tr>`).join('') : `<tr><td colspan="8" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody>
+      </table></div>
+      <div class="small muted" style="padding:12px 18px">${rows.length} of ${all.length} shown${rows.length > shown.length ? ' (first ' + shown.length + ')' : ''}. Mirrored to the Maintenance Google Sheet (Equipment tab).</div>
+    </div>`,
+    bind(){
+      const q = $('#eqQ');
+      if (q) q.addEventListener('input', debounce(e => { EQ.q = e.target.value; render(); const el = $('#eqQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 200));
+      [['#eqType', 'type'], ['#eqArea', 'area'], ['#eqStatus', 'status']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => eqSet(k, e.target.value); });
+    },
+  };
+}
+route('/equipment', viewEquipment);
+function eqSet(k, v){ EQ[k] = (k === 'type' && EQ.type === v) ? '' : v; render(); }
+
+function eqOpen(code){
+  const a = code ? eqByCode(code) : null, isNew = !a, canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
+  const v = a || { code: '', name: '', type: 'Machine', area: '', parent: '', eq_no: '', floor_code: '', pm_interval_days: '', status: 'Active', notes: '' };
+  const parents = (EQ.list || []).filter(x => x.code !== v.code && x.status === 'Active').sort((p, q) => p.name.localeCompare(q.name));
+  const kids = a ? (EQ.list || []).filter(x => x.parent === a.code) : [];
+  const areas = Array.from(new Set((EQ.list || []).map(x => x.area).filter(Boolean))).sort();
+  openModal({
+    title: isNew ? 'Add equipment' : v.name, size:'wide', sub: isNew ? 'The code cannot be changed later.' : v.code + ' - ' + v.type,
+    body: `<form id="eqForm" novalidate>
+      ${a && a.review ? `<div class="notice warn" style="margin-bottom:12px">${I.alert}<div><b>To check:</b> ${esc(a.notes.replace(/^check:\s*/i, ''))}<br>Correct anything wrong, then clear the "Check:" note and save.</div></div>` : ''}
+      <div class="grid g2">
+        <div class="field"><label for="eqCode">Code</label><input class="inp mono" id="eqCode" maxlength="40" value="${esc(v.code)}" ${isNew ? '' : 'disabled'} placeholder="e.g. AIR_COMPRESSOR_2">
+          <div class="hint">${I.info}<span>Capital letters, digits, dots, dashes, underscores. A shop floor machine uses its floor code.</span></div></div>
+        <div class="field"><label for="eqName">Name</label><input class="inp" id="eqName" maxlength="80" value="${esc(v.name)}" ${dis}></div>
+        <div class="field"><label for="eqTypeSel">Type</label><select class="inp" id="eqTypeSel" ${dis}>${ASSET_TYPES.map(t => `<option ${t === v.type ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+        <div class="field"><label for="eqAreaIn">Area</label><input class="inp" id="eqAreaIn" maxlength="40" list="eqAreas" value="${esc(v.area || '')}" ${dis}><datalist id="eqAreas">${areas.map(x => `<option value="${esc(x)}">`).join('')}</datalist></div>
+        <div class="field"><label for="eqParent">Part of</label><select class="inp" id="eqParent" ${dis}><option value="">(nothing)</option>${parents.map(x => `<option value="${esc(x.code)}" ${x.code === v.parent ? 'selected' : ''}>${esc(x.name)} (${esc(x.code)})</option>`).join('')}</select></div>
+        <div class="field"><label for="eqEq">EQ/PD number</label><input class="inp mono" id="eqEq" maxlength="30" value="${esc(v.eq_no || '')}" ${dis} placeholder="EQ/PD/021"></div>
+        <div class="field"><label for="eqFloor">Shop floor machine code</label><input class="inp mono" id="eqFloor" maxlength="40" value="${esc(v.floor_code || '')}" ${dis} placeholder="only for machines on the floor app">
+          <div class="hint">${I.info}<span>Floor stops and maintenance calls for this code come to this equipment.</span></div></div>
+        <div class="field"><label for="eqPm">PM interval (days)</label><input class="inp" id="eqPm" type="number" min="1" max="730" value="${esc(v.pm_interval_days || '')}" ${dis} placeholder="default from Settings"></div>
+        <div class="field"><label for="eqStatusSel">Status</label><select class="inp" id="eqStatusSel" ${dis}><option ${v.status === 'Active' ? 'selected' : ''}>Active</option><option ${v.status === 'Inactive' ? 'selected' : ''}>Inactive</option></select></div>
+      </div>
+      <div class="field"><label for="eqNotes">Notes</label><textarea class="inp" id="eqNotes" rows="2" maxlength="500" ${dis}>${esc(v.notes || '')}</textarea></div>
+      ${kids.length ? `<div class="small"><b>Parts (${kids.length}):</b> ${kids.map(k => `<a href="javascript:void 0" onclick="eqSwitch('${esc(k.code)}')">${esc(k.name)}</a>`).join(', ')}</div>` : ''}
+      <div class="err-msg hide" data-err="eqName" style="margin-top:8px"></div>
+    </form>`,
+    footer: canEdit ? `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} ${isNew ? 'Add' : 'Save'}</button>` : `<button class="btn btn-ghost" data-close>Close</button>`,
+    onMount: (w, close) => {
+      const sv = $('[data-save]', w); if (!sv) return;
+      sv.onclick = async () => {
+        clearErrors(w);
+        const asset = { is_new: isNew, code: ($('#eqCode', w).value || '').trim().toUpperCase(), name: $('#eqName', w).value.trim(), type: $('#eqTypeSel', w).value,
+          area: $('#eqAreaIn', w).value.trim(), parent: $('#eqParent', w).value, eq_no: $('#eqEq', w).value.trim(), floor_code: $('#eqFloor', w).value.trim().toUpperCase(),
+          pm_interval_days: $('#eqPm', w).value.trim(), status: $('#eqStatusSel', w).value, notes: $('#eqNotes', w).value.trim() };
+        if (isNew && !/^[A-Z0-9][A-Z0-9_.-]{1,39}$/.test(asset.code)) return setErr('eqName', 'The code must be 2 to 40 capital letters, digits, dots, dashes or underscores.', w);
+        if (asset.name.length < 2) return setErr('eqName', 'Give it a name.', w);
+        sv.disabled = true;
+        try { await api('/webhook/engineering/api/equipment/save', { method:'POST', body:{ asset } }); close(); toast(isNew ? 'Added' : 'Saved', asset.name, 'ok'); await eqLoad(true); }
+        catch (err) { setErr('eqName', err.message, w); sv.disabled = false; }
+      };
+    },
+  });
+}
+function eqSwitch(code){ $$('#layers .overlay').forEach(o => o.remove()); eqOpen(code); }
+
+/* ============================================================
+   Engineering settings (migration 017: OKL_ENG_settings)
+   The numbers Engineering can change; each has a lowest and highest value. GET /webhook/engineering/api/settings.
+   ============================================================ */
+let ES = { list: null, loading: false, error: '' };
+async function esLoad(force){
+  if (ES.loading || (ES.list && !force)) return;
+  ES.loading = true; ES.error = '';
+  try { const r = await api('/webhook/engineering/api/settings'); ES.list = r.settings || []; }
+  catch (err) { ES.error = err.message; }
+  finally { ES.loading = false; render(); }
+}
+function viewSettings(){
+  if (!ES.list && !ES.error) esLoad();
+  const canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
+  const head = pageHead('Settings', 'The numbers behind the Engineering rules. Changes apply from the next check.' + (canEdit ? '' : ' Only people with edit access can change them.'));
+  if (ES.error) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the settings', esc(ES.error), `<button class="btn btn-primary" onclick="esLoad(true)">Try again</button>`)}</div></div>` };
+  if (!ES.list) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  const when = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', dateStyle:'medium', timeStyle:'short' }) : '';
+  return {
+    title:'Settings', crumb:'Setup',
+    html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Setting</th><th style="width:170px">Value</th><th>Allowed</th></tr></thead>
+      <tbody>${ES.list.map(x => `<tr>
+        <td data-label="Setting"><div class="strong">${esc(x.label)}</div><div class="small muted">${esc(x.help || '')}</div>
+          ${x.updated_by ? `<div class="tiny muted">Changed by ${esc(x.updated_by)}, ${esc(when(x.updated_at))}</div>` : ''}</td>
+        ${x.unit === 'list'
+          ? `<td data-label="Value"><textarea class="inp" data-list="${esc(x.key)}" rows="${Math.min(10, (x.list || []).length + 1)}" style="min-width:170px" ${dis}>${esc((x.list || []).join('\n'))}</textarea></td>
+             <td data-label="Allowed" class="small muted">one per line, 2 to 20</td>`
+          : `<td data-label="Value"><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" type="number" data-set="${esc(x.key)}" min="${Number(x.min)}" max="${Number(x.max)}" step="1" value="${Number(x.value)}" style="width:90px" ${dis}><span class="small muted">${esc(x.unit || '')}</span></div></td>
+             <td data-label="Allowed" class="small muted">${Number(x.min)} to ${Number(x.max)}</td>`}
+      </tr>`).join('')}</tbody></table></div>
+      ${canEdit ? `<div class="card-b row" style="gap:10px;border-top:1px solid var(--line-2)"><button class="btn btn-primary" id="esSave">${I.check} Save changes</button><span class="err-msg hide" data-err="esSave"></span></div>` : ''}
+    </div>`,
+    bind(){
+      const b = $('#esSave'); if (!b) return;
+      b.onclick = async () => {
+        clearErrors(document);
+        const values = {};
+        for (const el of $$('[data-set]')) {
+          const x = ES.list.find(s => s.key === el.dataset.set), v = el.value.trim();
+          if (!/^\d+$/.test(v) || +v < +x.min || +v > +x.max) { setErr('esSave', x.label + ': enter a whole number from ' + Number(x.min) + ' to ' + Number(x.max) + '.'); el.focus(); return; }
+          if (+v !== +x.value) values[x.key] = +v;
+        }
+        for (const el of $$('[data-list]')) {
+          const x = ES.list.find(s => s.key === el.dataset.list), items = el.value.split('\n').map(s => s.trim()).filter(Boolean);
+          if (items.length < 2 || items.length > 20) { setErr('esSave', x.label + ': give 2 to 20 entries, one per line.'); el.focus(); return; }
+          if (items.join('|') !== (x.list || []).join('|')) values[x.key] = items;
+        }
+        if (!Object.keys(values).length) { toast('Nothing changed', '', 'ok'); return; }
+        b.disabled = true;
+        try { const r = await api('/webhook/engineering/api/settings/save', { method:'POST', body:{ values } }); toast('Settings saved', r.changed + ' changed', 'ok'); await esLoad(true); }
+        catch (err) { setErr('esSave', err.message); b.disabled = false; }
+      };
+    },
+  };
+}
+route('/settings', viewSettings);
+
+
+/* ============================================================
+   Spares (migration 018): the catalogue with live stock, receipts (Inbound), issues (Outbound), hand-overs of parts that
+   technicians recorded on jobs, and the weekly counts. Nothing is deleted: a mistake is reversed with a reason.
+   Stock = the last count (or the opening stock from the old workbook) + receipts - issues since.
+   ============================================================ */
+const SP_TYPES = { MP:'Mechanical', EP:'Electrical', PP:'Pneumatic', AP:'Accessories', CH:'Chemical', TG:'Tooling' };
+const SP_UNITS = ['pcs', 'set', 'pair', 'box', 'pack', 'roll', 'can', 'tube', 'bottle', 'm', 'L', 'kg'];
+let SP = { list: null, people: [], loading: false, error: '', q: '', type: '', status: '', noLoc: false,
+           moves: { receipt: null, issue: null }, movesErr: '', from: '', to: '', handovers: null, counts: null, week: '' };
+const num = v => v == null || v === '' ? '' : String(+v);
+const money = v => v == null || v === '' ? '' : Number(v).toLocaleString('en-GB', { maximumFractionDigits: 2 });
+const todayIso = () => new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 10);   // Lagos is UTC+1
+async function spLoad(force){
+  if (SP.loading || (SP.list && !force)) return;
+  SP.loading = true; SP.error = '';
+  try { const r = await api('/webhook/engineering/api/spares'); SP.list = r.spares || []; SP.people = r.people || []; }
+  catch (err) { SP.error = err.message; }
+  finally { SP.loading = false; render(); }
+  if (!EQ.list && !EQ.loading) eqLoad();
+}
+async function spLoadMoves(kind, force){
+  if (SP.moves[kind] && !force) return;
+  try { const q = '?kind=' + kind + (SP.from ? '&from=' + SP.from : '') + (SP.to ? '&to=' + SP.to : '');
+        const r = await api('/webhook/engineering/api/spares/moves' + q); SP.moves[kind] = r.moves || []; SP.movesErr = ''; }
+  catch (err) { SP.movesErr = err.message; }
+  render();
+}
+async function spLoadHandovers(force){
+  if (SP.handovers && !force) return;
+  try { const r = await api('/webhook/engineering/api/spares/handovers'); SP.handovers = r.handovers || []; } catch (err) { SP.movesErr = err.message; }
+  render();
+}
+async function spLoadCounts(force){
+  if (SP.counts && !force) return;
+  try { SP.counts = await api('/webhook/engineering/api/spares/counts' + (SP.week ? '?week=' + SP.week : '')); } catch (err) { SP.movesErr = err.message; }
+  render();
+}
+async function spRefresh(){ await Promise.all([spLoad(true), SP.moves.receipt && spLoadMoves('receipt', true), SP.moves.issue && spLoadMoves('issue', true),
+                                               SP.handovers && spLoadHandovers(true), SP.counts && spLoadCounts(true)]); }
+const spBySku = sku => (SP.list || []).find(x => x.sku === sku);
+const spLabel = x => x.sku + ' - ' + x.description;
+const spStatusBadge = st => st === 'OK' ? '<span class="badge b-ok">OK</span>' : st === 'Reorder' ? '<span class="badge b-warn">Reorder</span>' : '<span class="badge b-danger">Out of stock</span>';
+function spTabs(cur){
+  const n = (SP.handovers || []).length, tabs = [['/spares', 'Inventory'], ['/spares/inbound', 'Inbound'], ['/spares/outbound', 'Outbound'],
+    ['/spares/handovers', 'Hand-overs' + (n ? ' (' + n + ')' : '')], ['/spares/counts', 'Weekly count']];
+  return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([h, l]) => `<a class="tab ${h === cur ? 'on' : ''}" href="#${h}">${esc(l)}</a>`).join('')}</div>`;
+}
+function spHead(sub, actions){ return pageHead('Spares', sub, actions); }
+function spWait(cur){
+  if (SP.error) return { title:'Spares', crumb:'Store', html: spHead('') + spTabs(cur) + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the spares', esc(SP.error), `<button class="btn btn-primary" onclick="spLoad(true)">Try again</button>`)}</div></div>` };
+  return { title:'Spares', crumb:'Store', html: spHead('') + spTabs(cur) + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+}
+function spActions(){
+  if (!canEditHere()) return '';
+  return `<button class="btn btn-ghost" onclick="spReceive()">${I.arrowDown} Receive</button><button class="btn btn-ghost" onclick="spIssue()">${I.arrowUp} Issue</button>
+    <button class="btn btn-primary" onclick="spOpen('')">${I.plus} Add part</button>`;
+}
+
+/* ---- Inventory */
+function spFiltered(){
+  const q = SP.q.trim().toLowerCase();
+  return (SP.list || []).filter(x => (!SP.type || x.sku.slice(0, 2) === SP.type) && (!SP.status || x.status === SP.status) && (!SP.noLoc || !x.location)
+    && (!q || [x.sku, x.description, x.part_number, x.brand, x.supplier, x.location, (x.used_on_names || []).join(' '), x.used_for_old].join(' ').toLowerCase().includes(q)));
+}
+function viewSpares(){
+  if (!SP.list) { spLoad(); return spWait('/spares'); }
+  if (!SP.handovers) spLoadHandovers();
+  const all = SP.list.filter(x => x.active), rows = spFiltered(), shown = rows.slice(0, 300);
+  const out = all.filter(x => x.status === 'Out of stock').length, reo = all.filter(x => x.status === 'Reorder').length;
+  const value = all.reduce((t, x) => t + (+x.value || 0), 0), noLoc = all.filter(x => !x.location).length, never = all.filter(x => !x.last_count_at).length;
+  const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
+  return {
+    title:'Spares', crumb:'Store', keepScroll: true,
+    html: spHead('Engineering spare parts with live stock. Stock changes only through receipts, issues and counts.', spActions()) + spTabs('/spares') + `
+    <div class="grid g4" style="margin-bottom:14px">
+      <div class="stat"><div class="lbl">Parts</div><div class="val">${all.length}</div><div class="meta">in the catalogue</div></div>
+      <div class="stat"><div class="lbl">Stock value</div><div class="val">&#8358;${money(Math.round(value))}</div><div class="meta">where a price is known</div></div>
+      <div class="stat"><div class="lbl">Out of stock / reorder</div><div class="val">${out} / ${reo}</div><div class="meta">at or below the reorder level</div></div>
+      <div class="stat"><div class="lbl">Never counted / no location</div><div class="val">${never} / ${noLoc}</div><div class="meta">the weekly count fixes these</div></div>
+    </div>
+    <div class="card">
+      <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
+        <div class="search filter-search"><span class="ic">${I.search}</span><input class="inp" id="spQ" style="padding-left:34px;border-radius:20px" placeholder="SKU, part, brand, machine" value="${esc(SP.q)}"></div>
+        <select class="inp" id="spType" style="width:auto">${opt('', SP.type, 'All types')}${Object.entries(SP_TYPES).map(([k, v]) => opt(k, SP.type, k + ' ' + v)).join('')}</select>
+        <select class="inp" id="spStatus" style="width:auto">${opt('', SP.status, 'Any stock')}${opt('Out of stock', SP.status, 'Out of stock')}${opt('Reorder', SP.status, 'Reorder')}${opt('OK', SP.status, 'OK')}</select>
+        <label class="row small" style="gap:6px"><input type="checkbox" id="spNoLoc" ${SP.noLoc ? 'checked' : ''}> No location</label>
+      </div></div>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>SKU</th><th>Part</th><th>Location</th><th style="text-align:right">Stock</th><th style="text-align:right">Reorder at</th><th>Status</th><th>Used on</th><th>Last counted</th></tr></thead>
+        <tbody>${shown.length ? shown.map(x => `<tr class="clickable" onclick="spOpen('${esc(x.sku)}')">
+          <td class="mono small" data-label="SKU">${esc(x.sku)}</td>
+          <td data-label="Part"><div class="strong">${esc(x.description)}</div><div class="tiny muted">${esc([x.part_number, x.brand].filter(Boolean).join(' - '))}</div></td>
+          <td data-label="Location">${x.location ? esc(x.location) : '<span class="badge b-warn">not set</span>'}</td>
+          <td data-label="Stock" style="text-align:right" class="strong">${num(x.stock)} <span class="small muted">${esc(x.unit)}</span>${+x.waiting ? `<div class="tiny muted">${num(x.waiting)} waiting hand-over</div>` : ''}</td>
+          <td data-label="Reorder at" style="text-align:right">${num(x.reorder_level)}</td>
+          <td data-label="Status">${spStatusBadge(x.status)}${x.active ? '' : ' <span class="badge b-slate">Off</span>'}</td>
+          <td data-label="Used on" class="small">${x.common_use ? 'Common use' : esc((x.used_on_names || []).join(', ') || (x.used_for_old ? '(old: ' + x.used_for_old + ')' : '--'))}</td>
+          <td data-label="Last counted" class="small">${x.last_count_at ? esc(x.last_count_at.slice(0, 10)) : '<span class="muted">never</span>'}</td>
+        </tr>`).join('') : `<tr><td colspan="8" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody>
+      </table></div>
+      <div class="small muted" style="padding:12px 18px">${rows.length} of ${SP.list.length} shown${rows.length > shown.length ? ' (first ' + shown.length + ')' : ''}. Mirrored to the Spares Google Sheet.</div>
+    </div>`,
+    bind(){
+      const q = $('#spQ'); if (q) q.addEventListener('input', debounce(e => { SP.q = e.target.value; render(); const el = $('#spQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 200));
+      const t = $('#spType'); if (t) t.onchange = e => { SP.type = e.target.value; render(); };
+      const st = $('#spStatus'); if (st) st.onchange = e => { SP.status = e.target.value; render(); };
+      const nl2 = $('#spNoLoc'); if (nl2) nl2.onchange = e => { SP.noLoc = e.target.checked; render(); };
+    },
+  };
+}
+route('/spares', viewSpares);
+
+function spAssetOptions(){ return (EQ.list || []).filter(a => a.status === 'Active').sort((a, b) => a.name.localeCompare(b.name)).map(a => `<option value="${esc(a.name + ' (' + a.code + ')')}">`).join(''); }
+const spAssetFrom = v => { const m = /\(([A-Z0-9_.-]+)\)\s*$/.exec(String(v || '')); return m ? m[1] : String(v || '').trim().toUpperCase(); };
+const spSkuFrom = v => { const m = /^\s*([A-Z]{2} \d{3,4})/.exec(String(v || '').toUpperCase()); return m ? m[1] : ''; };
+function spSkuOptions(){ return (SP.list || []).filter(x => x.active).map(x => `<option value="${esc(spLabel(x))}">`).join(''); }
+
+function spOpen(sku){
+  const x = sku ? spBySku(sku) : null, isNew = !x, canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
+  const v = x || { description: '', part_number: '', brand: '', supplier: '', unit: 'pcs', location: '', reorder_level: 0, used_on: [], common_use: false, active: true, notes: '' };
+  const usedNames = (v.used_on || []).map(c => { const a = (EQ.list || []).find(e => e.code === c); return a ? a.name + ' (' + c + ')' : c; });
+  openModal({
+    title: isNew ? 'Add a part' : v.sku + ' - ' + v.description, size:'wide',
+    sub: isNew ? 'The SKU is given automatically from the type.' : (SP_TYPES[v.sku.slice(0, 2)] + ' - stock ' + num(v.stock) + ' ' + v.unit + (v.unit_price ? ', last price NGN ' + money(v.unit_price) : '')),
+    body: `<form novalidate>
+      <div class="grid g2">
+        ${isNew ? `<div class="field"><label for="spPrefix">Type</label><select class="inp" id="spPrefix">${Object.entries(SP_TYPES).map(([k, t]) => `<option value="${k}">${k} - ${t}</option>`).join('')}</select></div>` : ''}
+        <div class="field"><label for="spDesc">Part</label><input class="inp" id="spDesc" maxlength="160" value="${esc(v.description)}" ${dis}></div>
+        <div class="field"><label for="spPn">Part number</label><input class="inp" id="spPn" maxlength="80" value="${esc(v.part_number || '')}" ${dis}></div>
+        <div class="field"><label for="spBrand">Brand</label><input class="inp" id="spBrand" maxlength="80" value="${esc(v.brand || '')}" ${dis}></div>
+        <div class="field"><label for="spSup">Supplier</label><input class="inp" id="spSup" maxlength="80" value="${esc(v.supplier || '')}" ${dis}></div>
+        <div class="field"><label for="spUnit">Unit</label><select class="inp" id="spUnit" ${dis}>${SP_UNITS.map(u => `<option ${u === v.unit ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
+        <div class="field"><label for="spLoc">Location</label><input class="inp" id="spLoc" maxlength="40" value="${esc(v.location || '')}" ${dis} placeholder="shelf / rack / bin"></div>
+        <div class="field"><label for="spReo">Reorder level</label><input class="inp" id="spReo" type="number" min="0" step="1" value="${num(v.reorder_level)}" ${dis}></div>
+      </div>
+      <div class="field"><label>Used on</label>
+        <label class="row small" style="gap:6px;margin-bottom:6px"><input type="checkbox" id="spCommon" ${v.common_use ? 'checked' : ''} ${dis}> Common use (fits anything)</label>
+        <div id="spUsedList" class="row" style="gap:6px;flex-wrap:wrap">${usedNames.map(n => `<span class="chip" data-used="${esc(spAssetFrom(n))}">${esc(n)} ${canEdit ? '<b style="cursor:pointer" data-rm>&times;</b>' : ''}</span>`).join('')}</div>
+        ${canEdit ? `<div class="row" style="gap:6px;margin-top:6px"><input class="inp" id="spUsedAdd" list="spAssets" placeholder="Add a machine or equipment" style="max-width:360px"><button type="button" class="btn btn-ghost btn-sm" id="spUsedBtn">Add</button></div><datalist id="spAssets">${spAssetOptions()}</datalist>` : ''}
+        ${v.used_for_old ? `<div class="hint">${I.info}<span>The old workbook said: "${esc(v.used_for_old)}"</span></div>` : ''}
+      </div>
+      ${isNew ? '' : `<label class="row small" style="gap:6px"><input type="checkbox" id="spActive" ${v.active ? 'checked' : ''} ${dis}> In use (untick to switch the part off)</label>`}
+      <div class="field"><label for="spNotes">Notes</label><textarea class="inp" id="spNotes" rows="2" maxlength="500" ${dis}>${esc(v.notes || '')}</textarea></div>
+      ${isNew ? '' : `<div class="small muted">Last received ${esc(v.last_in || 'never')}, last issued ${esc(v.last_out || 'never')}, last counted ${esc(v.last_count_at ? v.last_count_at.slice(0, 10) : 'never')}.</div>`}
+      <div class="err-msg hide" data-err="spDesc" style="margin-top:8px"></div></form>`,
+    footer: canEdit ? `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} ${isNew ? 'Add part' : 'Save'}</button>` : `<button class="btn btn-ghost" data-close>Close</button>`,
+    onMount: (w, close) => {
+      const list = $('#spUsedList', w);
+      list.addEventListener('click', e => { if (e.target.matches('[data-rm]')) e.target.closest('[data-used]').remove(); });
+      const addBtn = $('#spUsedBtn', w);
+      if (addBtn) addBtn.onclick = () => { const inp = $('#spUsedAdd', w), code = spAssetFrom(inp.value); const a = (EQ.list || []).find(e => e.code === code);
+        if (!a) { setErr('spDesc', 'Pick the equipment from the list.', w); return; }
+        if (!$(`[data-used="${code}"]`, w)) list.insertAdjacentHTML('beforeend', `<span class="chip" data-used="${esc(code)}">${esc(a.name + ' (' + code + ')')} <b style="cursor:pointer" data-rm>&times;</b></span>`);
+        inp.value = ''; };
+      const sv = $('[data-save]', w); if (!sv) return;
+      sv.onclick = async () => {
+        clearErrors(w);
+        const spare = { sku: isNew ? '' : v.sku, prefix: isNew ? $('#spPrefix', w).value : '', description: $('#spDesc', w).value.trim(), part_number: $('#spPn', w).value.trim(),
+          brand: $('#spBrand', w).value.trim(), supplier: $('#spSup', w).value.trim(), unit: $('#spUnit', w).value, location: $('#spLoc', w).value.trim(),
+          reorder_level: $('#spReo', w).value.trim() || '0', common_use: $('#spCommon', w).checked, used_on: $$('[data-used]', w).map(e => e.dataset.used),
+          active: isNew ? true : $('#spActive', w).checked, notes: $('#spNotes', w).value.trim() };
+        if (spare.description.length < 2) return setErr('spDesc', 'Describe the part.', w);
+        if (isNew && !spare.location) return setErr('spDesc', 'Say where it is kept (location).', w);
+        sv.disabled = true;
+        try { const r = await api('/webhook/engineering/api/spares/save', { method:'POST', body:{ spare } }); close(); toast(isNew ? 'Added ' + r.sku : 'Saved', spare.description, 'ok'); await spLoad(true); }
+        catch (err) { setErr('spDesc', err.message, w); sv.disabled = false; }
+      };
+    },
+  });
+}
+
+/* ---- Receive / issue forms */
+function spReceive(sku){
+  const x = sku ? spBySku(sku) : null, me = S.me.name;
+  openModal({
+    title:'Receive parts', size:'wide', sub:'A delivery into the store. The invoice number and price come from the supplier\'s invoice.',
+    body: `<form novalidate><div class="grid g2">
+      <div class="field" style="grid-column:1/-1"><label for="rcSku">Part</label><input class="inp" id="rcSku" list="rcSkus" value="${x ? esc(spLabel(x)) : ''}" placeholder="Type the SKU or the part name"><datalist id="rcSkus">${spSkuOptions()}</datalist>
+        <div class="hint">${I.info}<span>A part that is not in the catalogue yet: add it first (Add part).</span></div></div>
+      <div class="field"><label for="rcQty">Quantity</label><input class="inp" id="rcQty" type="number" min="0" step="any"></div>
+      <div class="field"><label for="rcPrice">Unit price (NGN)</label><input class="inp" id="rcPrice" type="number" min="0" step="any" value="${x && x.unit_price ? num(x.unit_price) : ''}"></div>
+      <div class="field"><label for="rcInv">Invoice number</label><input class="inp" id="rcInv" maxlength="40"></div>
+      <div class="field"><label for="rcSup">Supplier</label><input class="inp" id="rcSup" maxlength="80" value="${x ? esc(x.supplier || '') : ''}"></div>
+      <div class="field"><label for="rcDate">Received on</label><input class="inp" id="rcDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
+      <div class="field"><label for="rcBy">Received by</label><select class="inp" id="rcBy"><option value="">${esc(me)} (me)</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field" style="grid-column:1/-1"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
+    </div><div class="err-msg hide" data-err="rcSku"></div></form>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Receive</button>`,
+    onMount: (w, close) => {
+      $('#rcSku', w).onchange = () => { const it = spBySku(spSkuFrom($('#rcSku', w).value)); if (it) { if (!$('#rcPrice', w).value && it.unit_price) $('#rcPrice', w).value = num(it.unit_price); if (!$('#rcSup', w).value && it.supplier) $('#rcSup', w).value = it.supplier; } };
+      const sv = $('[data-save]', w);
+      sv.onclick = async () => {
+        clearErrors(w);
+        const receipt = { sku: spSkuFrom($('#rcSku', w).value), qty: $('#rcQty', w).value, unit_price: $('#rcPrice', w).value, invoice_no: $('#rcInv', w).value.trim(),
+          supplier: $('#rcSup', w).value.trim(), date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim() };
+        if (!spBySku(receipt.sku)) return setErr('rcSku', 'Pick the part from the list.', w);
+        if (!(+receipt.qty > 0)) return setErr('rcSku', 'Enter the quantity received.', w);
+        if (!(+receipt.unit_price > 0)) return setErr('rcSku', 'Enter the unit price from the invoice.', w);
+        if (!receipt.invoice_no || !receipt.supplier) return setErr('rcSku', 'The invoice number and the supplier are needed.', w);
+        sv.disabled = true;
+        try { const r = await api('/webhook/engineering/api/spares/receipt', { method:'POST', body:{ receipt } }); close(); toast('Received ' + r.move.entry, receipt.sku + ' x ' + receipt.qty, 'ok'); await spRefresh(); }
+        catch (err) { setErr('rcSku', err.message, w); sv.disabled = false; }
+      };
+    },
+  });
+}
+function spIssue(sku){
+  const x = sku ? spBySku(sku) : null;
+  openModal({
+    title:'Issue parts', size:'wide', sub:'Parts leaving the store. Say which equipment they are for and who collected them.',
+    body: `<form novalidate><div class="grid g2">
+      <div class="field" style="grid-column:1/-1"><label for="isSku">Part</label><input class="inp" id="isSku" list="isSkus" value="${x ? esc(spLabel(x)) : ''}" placeholder="Type the SKU or the part name"><datalist id="isSkus">${spSkuOptions()}</datalist>
+        <div class="small muted" id="isStock" style="margin-top:4px"></div></div>
+      <div class="field"><label for="isQty">Quantity</label><input class="inp" id="isQty" type="number" min="0" step="any"></div>
+      <div class="field"><label for="isDate">Date</label><input class="inp" id="isDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
+      <div class="field" style="grid-column:1/-1"><label for="isAsset">For which equipment</label><input class="inp" id="isAsset" list="isAssets" placeholder="Type a machine, AHU, utility..."><datalist id="isAssets">${spAssetOptions()}</datalist></div>
+      <div class="field"><label for="isWho">Collected by</label><select class="inp" id="isWho"><option value="">Choose...</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label for="isNote">Note (optional)</label><input class="inp" id="isNote" maxlength="300"></div>
+    </div><div class="err-msg hide" data-err="isSku"></div></form>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Issue</button>`,
+    onMount: (w, close) => {
+      const show = () => { const it = spBySku(spSkuFrom($('#isSku', w).value)); $('#isStock', w).textContent = it ? 'In stock: ' + num(it.stock) + ' ' + it.unit + (it.location ? ' - ' + it.location : '') : ''; };
+      $('#isSku', w).onchange = show; show();
+      const sv = $('[data-save]', w);
+      sv.onclick = async () => {
+        clearErrors(w);
+        const issue = { sku: spSkuFrom($('#isSku', w).value), qty: $('#isQty', w).value, date: $('#isDate', w).value, asset: spAssetFrom($('#isAsset', w).value),
+          collected_by: $('#isWho', w).value, note: $('#isNote', w).value.trim() };
+        const it = spBySku(issue.sku);
+        if (!it) return setErr('isSku', 'Pick the part from the list.', w);
+        if (!(+issue.qty > 0)) return setErr('isSku', 'Enter the quantity.', w);
+        if (+issue.qty > +it.stock) return setErr('isSku', 'Only ' + num(it.stock) + ' ' + it.unit + ' in stock. Count it first if the shelf has more.', w);
+        if (!(EQ.list || []).some(a => a.code === issue.asset)) return setErr('isSku', 'Pick the equipment from the list.', w);
+        if (!issue.collected_by) return setErr('isSku', 'Choose who collected it.', w);
+        sv.disabled = true;
+        try { const r = await api('/webhook/engineering/api/spares/issue', { method:'POST', body:{ issue } }); close(); toast('Issued ' + r.move.entry, issue.sku + ' x ' + issue.qty, 'ok'); await spRefresh(); }
+        catch (err) { setErr('isSku', err.message, w); sv.disabled = false; }
+      };
+    },
+  });
+}
+function spReverse(id, kind){
+  const m = (SP.moves[kind] || []).find(x => x.id === id); if (!m) return;
+  openModal({
+    title:'Reverse ' + m.entry, size:'narrow', sub: m.sku + ' x ' + num(m.qty) + ' ' + (m.unit || '') + ' on ' + m.date,
+    body:`<div class="small" style="margin-bottom:8px">A reversal adds an opposite entry; nothing is deleted. ${kind === 'receipt' ? 'The parts come off the stock.' : 'The parts go back into stock.'}</div>
+      <div class="field"><label for="rvWhy">Why?</label><input class="inp" id="rvWhy" maxlength="300" placeholder="e.g. entered on the wrong machine"></div><div class="err-msg hide" data-err="rvWhy"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-danger" data-save>Reverse</button>`,
+    onMount: (w, close) => { const sv = $('[data-save]', w); sv.onclick = async () => {
+      clearErrors(w); const reason = $('#rvWhy', w).value.trim(); if (reason.length < 5) return setErr('rvWhy', 'Say why.', w);
+      sv.disabled = true;
+      try { await api('/webhook/engineering/api/spares/reverse', { method:'POST', body:{ id, reason } }); close(); toast('Reversed', m.entry, 'ok'); await spRefresh(); }
+      catch (err) { setErr('rvWhy', err.message, w); sv.disabled = false; } }; },
+  });
+}
+
+/* ---- Inbound / Outbound */
+function spMovesView(kind){
+  const cur = kind === 'receipt' ? '/spares/inbound' : '/spares/outbound';
+  if (!SP.list) { spLoad(); return spWait(cur); }
+  if (!SP.moves[kind]) { spLoadMoves(kind); }
+  const rows = SP.moves[kind], canEdit = canEditHere();
+  const head = spHead(kind === 'receipt' ? 'Deliveries into the store. Each needs the invoice number and the supplier.' : 'Parts leaving the store, with the equipment and who collected them.', spActions()) + spTabs(cur)
+    + `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="mvFrom" value="${esc(SP.from)}" style="width:auto"></label>
+       <label class="small">to <input class="inp" type="date" id="mvTo" value="${esc(SP.to)}" style="width:auto"></label><span class="small muted">Default: the last 90 days.</span></div>`;
+  const bind = () => { ['#mvFrom', '#mvTo'].forEach((id, i) => { const el = $(id); if (el) el.onchange = e => { SP[i ? 'to' : 'from'] = e.target.value; SP.moves = { receipt: null, issue: null }; render(); }; }); };
+  if (SP.movesErr) return { title:'Spares', crumb:'Store', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(SP.movesErr), `<button class="btn btn-primary" onclick="spLoadMoves('${kind}', true)">Try again</button>`)}</div></div>`, bind };
+  if (!rows) return { title:'Spares', crumb:'Store', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>`, bind };
+  const stat = m => m.reversal ? '<span class="badge b-slate">Reversal</span>' : m.reversed_by ? '<span class="badge b-slate">Reversed</span>'
+    : m.status === 'waiting' ? '<span class="badge b-warn">Waiting hand-over</span>' : m.status === 'cancelled' ? '<span class="badge b-slate">Cancelled</span>'
+    : m.source === 'import' ? '<span class="badge">Old workbook</span>' : '<span class="badge b-ok">' + (kind === 'receipt' ? 'Received' : 'Issued') + '</span>';
+  const canRev = m => canEdit && !m.reversal && !m.reversed_by && m.source !== 'import' && m.status === 'issued';
+  const table = kind === 'receipt'
+    ? `<thead><tr><th>Entry</th><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount (NGN)</th><th>Invoice / supplier</th><th>Received by</th><th>Status</th><th></th></tr></thead>
+       <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="small">${esc(m.date)}</td>
+         <td><div class="strong">${esc(m.sku || '(no SKU)')}</div><div class="tiny muted">${esc(m.description || m.note || '')}</div></td>
+         <td style="text-align:right">${m.reversal ? '-' : ''}${num(m.qty)} ${esc(m.unit || '')}</td><td style="text-align:right">${m.amount == null ? '' : (m.reversal ? '-' : '') + money(m.amount)}</td>
+         <td class="small">${esc(m.invoice_no || '--')}<div class="tiny muted">${esc(m.supplier || '')}</div></td><td class="small">${esc(m.received_by_name || '')}</td>
+         <td>${stat(m)}${m.reason ? `<div class="tiny muted">${esc(m.reason)}</div>` : ''}</td>
+         <td style="text-align:right">${canRev(m) ? `<button class="btn btn-ghost btn-sm" onclick="spReverse(${m.id}, 'receipt')">Reverse</button>` : ''}</td></tr>`).join('')
+         || `<tr><td colspan="9" class="muted" style="padding:16px">No receipts in this period.</td></tr>`}</tbody>`
+    : `<thead><tr><th>Entry</th><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th>Equipment</th><th>Collected by</th><th>Job</th><th>Status</th><th></th></tr></thead>
+       <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="small">${esc(m.date)}</td>
+         <td><div class="strong">${esc(m.sku || '(no SKU)')}</div><div class="tiny muted">${esc(m.description || m.note || '')}</div></td>
+         <td style="text-align:right">${m.reversal ? '-' : ''}${num(m.qty)} ${esc(m.unit || '')}</td>
+         <td class="small">${esc(m.asset_name || '')}${!m.asset && m.purpose_text ? `<div class="tiny muted">old: ${esc(m.purpose_text)}</div>` : ''}</td>
+         <td class="small">${esc(m.collected_by_name || '')}</td><td class="mono small">${esc(m.job || '')}</td>
+         <td>${stat(m)}${m.reason || m.decision_reason ? `<div class="tiny muted">${esc(m.reason || m.decision_reason)}</div>` : ''}</td>
+         <td style="text-align:right">${canRev(m) ? `<button class="btn btn-ghost btn-sm" onclick="spReverse(${m.id}, 'issue')">Reverse</button>` : ''}</td></tr>`).join('')
+         || `<tr><td colspan="9" class="muted" style="padding:16px">No issues in this period.</td></tr>`}</tbody>`;
+  return { title:'Spares', crumb:'Store', keepScroll: true, html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">${table}</table></div>
+    <div class="small muted" style="padding:12px 18px">${rows.length} entries.</div></div>`, bind };
+}
+route('/spares/inbound', () => spMovesView('receipt'));
+route('/spares/outbound', () => spMovesView('issue'));
+
+/* ---- Hand-overs: parts technicians recorded on jobs, waiting for the storekeeper */
+function viewHandovers(){
+  if (!SP.list) { spLoad(); return spWait('/spares/handovers'); }
+  if (!SP.handovers) { spLoadHandovers(); return spWait('/spares/handovers'); }
+  const rows = SP.handovers, canEdit = canEditHere();
+  return { title:'Spares', crumb:'Store', keepScroll: true,
+    html: spHead('Parts technicians recorded on their jobs. Stock moves only when the hand-over is confirmed.', spActions()) + spTabs('/spares/handovers') + `
+    <div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Entry</th><th>Job</th><th>Part</th><th style="text-align:right">Qty</th><th>Taken by</th><th>Equipment</th><th>Waiting</th><th></th></tr></thead>
+      <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="mono small">${esc(m.job || '')}</td>
+        <td><div class="strong">${esc(m.sku)}</div><div class="tiny muted">${esc(m.description || '')}</div></td><td style="text-align:right">${num(m.qty)} ${esc(m.unit || '')}</td>
+        <td class="small">${esc(m.collected_by_name || '')}</td><td class="small">${esc(m.asset_name || '')}</td>
+        <td>${m.working_days >= 2 ? `<span class="badge b-warn">${m.working_days} working days</span>` : `<span class="small">${m.working_days ? m.working_days + ' working day' + (m.working_days === 1 ? '' : 's') : 'today'}</span>`}</td>
+        <td style="text-align:right">${canEdit ? `<div class="row" style="gap:6px;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="spHandover(${m.id}, 'confirm')">Confirm</button>
+          <button class="btn btn-ghost btn-sm" onclick="spHandover(${m.id}, 'correct')">Correct</button><button class="btn btn-ghost btn-sm" onclick="spHandover(${m.id}, 'cancel')">Cancel</button></div>` : ''}</td>
+      </tr>`).join('') || `<tr><td colspan="8" class="muted" style="padding:16px">Nothing waiting.</td></tr>`}</tbody>
+    </table></div></div>` };
+}
+route('/spares/handovers', viewHandovers);
+function spHandover(id, action){
+  const m = (SP.handovers || []).find(x => x.id === id); if (!m) return;
+  const send = async (body, w, close) => {
+    try { await api('/webhook/engineering/api/spares/handover', { method:'POST', body: Object.assign({ id, action }, body) }); close && close();
+      toast(action === 'confirm' ? 'Confirmed' : action === 'correct' ? 'Corrected' : 'Cancelled', m.entry, 'ok'); await spRefresh(); }
+    catch (err) { if (w) setErr('hoWhy', err.message, w); else toast('Could not do that', err.message, 'err', 7000); }
+  };
+  if (action === 'confirm') { confirmDialog('Confirm the hand-over', `${esc(m.collected_by_name)} took <b>${num(m.qty)} ${esc(m.unit)} of ${esc(m.sku)}</b> (${esc(m.description)}) for ${esc(m.asset_name)}. The stock goes down now.`, 'Confirm').then(ok => ok && send({})); return; }
+  openModal({
+    title: (action === 'correct' ? 'Correct ' : 'Cancel ') + m.entry, size:'narrow', sub: m.sku + ' x ' + num(m.qty) + ' ' + m.unit + ' recorded on ' + (m.job || 'a job'),
+    body: `${action === 'correct' ? `<div class="field"><label for="hoSku">Part actually taken</label><input class="inp" id="hoSku" list="hoSkus" value="${esc(spLabel(spBySku(m.sku) || { sku: m.sku, description: m.description }))}"><datalist id="hoSkus">${spSkuOptions()}</datalist></div>
+      <div class="field"><label for="hoQty">Quantity actually taken</label><input class="inp" id="hoQty" type="number" min="0" step="any" value="${num(m.qty)}"></div>` : '<div class="small" style="margin-bottom:8px">Nothing leaves the stock.</div>'}
+      <div class="field"><label for="hoWhy">Why?</label><input class="inp" id="hoWhy" maxlength="300"></div><div class="err-msg hide" data-err="hoWhy"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn ${action === 'cancel' ? 'btn-danger' : 'btn-primary'}" data-save>${action === 'correct' ? 'Save the correction' : 'Cancel the hand-over'}</button>`,
+    onMount: (w, close) => { $('[data-save]', w).onclick = () => {
+      clearErrors(w); const reason = $('#hoWhy', w).value.trim(); if (reason.length < 5) return setErr('hoWhy', 'Say why.', w);
+      const body = { reason }; if (action === 'correct') { body.sku = spSkuFrom($('#hoSku', w).value); body.qty = $('#hoQty', w).value; if (!spBySku(body.sku)) return setErr('hoWhy', 'Pick the part from the list.', w); }
+      send(body, w, close); }; },
+  });
+}
+
+/* ---- Weekly count */
+function viewCounts(){
+  if (!SP.list) { spLoad(); return spWait('/spares/counts'); }
+  if (!SP.counts) { spLoadCounts(); return spWait('/spares/counts'); }
+  const c = SP.counts, items = c.items || [], canEdit = canEditHere(), canApprove = levelOf('engineering.approvals') === 'edit';
+  const done = items.filter(i => i.status !== 'planned').length;
+  const shift = d => { const t = new Date(c.week_start + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + d); return t.toISOString().slice(0, 10); };
+  const label = { planned:'<span class="badge b-warn">Not counted yet</span>', matches:'<span class="badge b-ok">Matches</span>', adjusted:'<span class="badge b-ok">Adjusted</span>',
+    waiting_approval:'<span class="badge b-warn">Waiting approval</span>', approved:'<span class="badge b-ok">Approved</span>', rejected:'<span class="badge b-danger">Rejected</span>' };
+  return { title:'Spares', crumb:'Store', keepScroll: true,
+    html: spHead('A few parts each week, picked by the system (never-counted first). What you count becomes the stock.', spActions()) + spTabs('/spares/counts') + `
+    <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" onclick="spWeek('${shift(-7)}')">${I.chevL} Previous week</button>
+        <span class="strong">Week ${esc(c.week)} (from ${esc(c.week_start)})</span>
+        <button class="btn btn-ghost btn-sm" onclick="spWeek('')">This week</button></div>
+      <div class="small">${done} of ${items.length} counted. A difference over ${num(c.threshold)} needs the Engineering Manager's approval.</div>
+    </div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Part</th><th>Location</th><th style="text-align:right">On the shelf</th><th>Reason for a difference</th><th>Status</th><th></th></tr></thead>
+      <tbody>${items.map(i => `<tr>
+        <td><div class="strong">${esc(i.sku)}</div><div class="tiny muted">${esc(i.description)}</div>${+i.waiting_handovers ? `<div class="tiny" style="color:var(--warn)">${num(i.waiting_handovers)} ${esc(i.unit)} waiting hand-over: confirm those first</div>` : ''}</td>
+        <td class="small">${esc(i.location || 'not set')}</td>
+        ${i.status === 'planned' && canEdit
+          ? `<td style="text-align:right"><input class="inp" type="number" min="0" step="any" data-cnt="${i.id}" style="width:90px"> <span class="small muted">${esc(i.unit)}</span></td>
+             <td><input class="inp" data-why="${i.id}" maxlength="300" placeholder="only if it differs"></td><td>${label.planned}</td>
+             <td style="text-align:right"><button class="btn btn-primary btn-sm" onclick="spCount(${i.id})">Save</button><div class="err-msg hide" data-err="cnt${i.id}"></div></td>`
+          : `<td style="text-align:right">${i.counted_qty == null ? '--' : num(i.counted_qty) + ' ' + esc(i.unit)}${i.difference != null && +i.difference !== 0 ? `<div class="tiny muted">system ${num(i.system_qty)}, ${+i.difference > 0 ? '+' : ''}${num(i.difference)}</div>` : ''}</td>
+             <td class="small">${esc(i.reason || '')}${i.decision_note ? `<div class="tiny muted">${esc(i.decided_by)}: ${esc(i.decision_note)}</div>` : ''}</td><td>${label[i.status] || esc(i.status)}</td><td></td>`}
+      </tr>`).join('') || `<tr><td colspan="6" class="muted" style="padding:16px">No count planned for this week.</td></tr>`}</tbody>
+    </table></div></div>
+    ${(c.waiting_approval || []).length ? `<div class="card" style="margin-top:14px"><div class="card-h"><h3>Counts waiting for approval</h3><div class="sub">The stock changes only when the Engineering Manager approves.</div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Part</th><th style="text-align:right">System</th><th style="text-align:right">Shelf</th><th>Reason</th><th>Counted by</th><th></th></tr></thead>
+      <tbody>${c.waiting_approval.map(i => `<tr><td><div class="strong">${esc(i.sku)}</div><div class="tiny muted">${esc(i.description)}</div></td><td style="text-align:right">${num(i.system_qty)}</td>
+        <td style="text-align:right" class="strong">${num(i.counted_qty)}</td><td class="small">${esc(i.reason || '')}</td><td class="small">${esc(i.counted_by || '')}</td>
+        <td style="text-align:right">${canApprove ? `<div class="row" style="gap:6px;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="spDecide(${i.id}, true)">Approve</button><button class="btn btn-ghost btn-sm" onclick="spDecide(${i.id}, false)">Reject</button></div>` : '<span class="small muted">waiting for the manager</span>'}</td></tr>`).join('')}</tbody></table></div></div>` : ''}` };
+}
+route('/spares/counts', viewCounts);
+function spWeek(w){ SP.week = w; SP.counts = null; render(); }
+async function spCount(id){
+  const inp = $(`[data-cnt="${id}"]`), why = $(`[data-why="${id}"]`), err = $(`[data-err="cnt${id}"]`);
+  const show = m => { if (err) { err.textContent = m; err.classList.remove('hide'); } };
+  if (!inp || inp.value.trim() === '' || !(+inp.value >= 0)) return show('Enter the number on the shelf.');
+  try { const r = await api('/webhook/engineering/api/spares/count', { method:'POST', body:{ id, counted: inp.value.trim(), reason: why ? why.value.trim() : '' } });
+    toast(r.status === 'matches' ? 'Matches the system' : r.status === 'adjusted' ? 'Stock adjusted' : 'Sent for approval', '', 'ok'); await spRefresh(); }
+  catch (e) { show(e.message); }
+}
+function spDecide(id, approve){
+  const i = ((SP.counts || {}).waiting_approval || []).find(x => x.id === id); if (!i) return;
+  openModal({ title: (approve ? 'Approve ' : 'Reject ') + i.entry, size:'narrow', sub: i.sku + ': system ' + num(i.system_qty) + ', shelf ' + num(i.counted_qty),
+    body: `<div class="small" style="margin-bottom:8px">${approve ? 'The shelf count becomes the stock.' : 'The stock stays as it is; the part is counted again.'}</div>
+      <div class="field"><label for="dcNote">${approve ? 'Note (optional)' : 'Why?'}</label><input class="inp" id="dcNote" maxlength="300"></div><div class="err-msg hide" data-err="dcNote"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn ${approve ? 'btn-primary' : 'btn-danger'}" data-save>${approve ? 'Approve' : 'Reject'}</button>`,
+    onMount: (w, close) => { $('[data-save]', w).onclick = async () => {
+      clearErrors(w); const note = $('#dcNote', w).value.trim(); if (!approve && note.length < 5) return setErr('dcNote', 'Say why.', w);
+      try { await api('/webhook/engineering/api/spares/count/decide', { method:'POST', body:{ id, approve, note } }); close(); toast(approve ? 'Approved' : 'Rejected', i.sku, 'ok'); await spRefresh(); }
+      catch (e) { setErr('dcNote', e.message, w); } }; } });
+}
+
+
+/* ============================================================
+   Calls and jobs (migration 019: OKL_ENG_jobs)
+   The floor calls maintenance from a stopped machine ("Call maintenance"); the call arrives here as a breakdown job.
+   Technicians take it ("I'm coming"), report arrival, record what failed, what was done and the parts, and close it.
+   Jobs without a call (preventive, corrective, inspection, improvement, or a breakdown found on a round) start here too.
+   GET /webhook/engineering/api/jobs (the board), /jobs/one?id, /jobs/history, /stops; POST /jobs/action | start | parts.
+   Phones get a push notification for each new call once notifications are turned on (sw.js).
+   ============================================================ */
+const JOB_TYPES = [['breakdown', 'Breakdown'], ['preventive', 'Preventive'], ['corrective', 'Corrective'], ['inspection', 'Inspection'], ['improvement', 'Improvement']];
+const JOB_TYPE = Object.fromEntries(JOB_TYPES);
+let JB = { board: null, error: '', loading: false, tab: 'calls', one: {}, history: null, histFrom: '', histTo: '', histType: '', stops: null, stopsInfo: {},
+           timer: null, draft: null, push: { state: '', key: '' } };
+const hm = iso => iso ? new Date(iso).toLocaleTimeString('en-GB', { timeZone:'Africa/Lagos', hour:'2-digit', minute:'2-digit' }) : '';
+const dayHm = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : '';
+const minsBetween = (a, b) => (a ? Math.max(0, Math.round(((b ? new Date(b) : new Date()) - new Date(a)) / 60000)) : null);
+function dur(m){ if (m == null) return '--'; if (m < 60) return m + ' min'; const h = Math.floor(m / 60); return h + ' h ' + String(m % 60).padStart(2, '0') + ' min'; }
+function jbMe(){ return (JB.board && JB.board.me) || {}; }
+function jbOnIt(j){ return (j.technicians || []).some(t => t.enroll_id === jbMe().enroll_id); }
+function jbBadge(j){
+  const who = j.accepted_by_name ? (j.accepted_by === jbMe().enroll_id ? 'you' : j.accepted_by_name) : '';
+  const working = (j.technicians || []).map(t => t.enroll_id === jbMe().enroll_id ? 'you' : t.name).join(', ');
+  switch (j.status) {
+    case 'called': return '<span class="badge b-warn"><span class="dot"></span>Not accepted</span>';
+    case 'accepted': return `<span class="badge b-warn"><span class="dot"></span>On the way${who ? ' · ' + esc(who) : ''}</span>`;
+    case 'working': return `<span class="badge b-info"><span class="dot"></span>Working${working ? ' · ' + esc(working) : ''}</span>`;
+    case 'waiting_part': return '<span class="badge b-slate"><span class="dot"></span>Waiting for part</span>';
+    case 'done': return '<span class="badge b-ok">Done</span>';
+    case 'cancelled': return '<span class="badge b-slate">Cancelled</span>';
+  }
+  return esc(j.status);
+}
+// minutes shown on a card: waiting for a technician, then repairing, then waiting for the part
+function jbClock(j){
+  if (j.status === 'called' || j.status === 'accepted') return minsBetween(j.called_at || j.created_at);
+  if (j.status === 'waiting_part') return minsBetween(j.waiting_since);
+  if (j.status === 'working') return minsBetween(j.started_at || j.arrived_at);
+  return j.labour_minutes;
+}
+async function jbLoad(force){
+  if (JB.loading || (JB.board && !force)) return;
+  JB.loading = true;
+  try { JB.board = await api('/webhook/engineering/api/jobs'); JB.error = ''; }
+  catch (err) { JB.error = err.message; }
+  finally { JB.loading = false; render(); }
+}
+// the board refreshes itself while it is on screen (new calls appear without a reload)
+function jbAutoRefresh(on){
+  clearInterval(JB.timer); JB.timer = null;
+  if (on) JB.timer = setInterval(() => { if (/^\/jobs(\/|$)/.test(currentPath()) && !document.querySelector('#layers .overlay') && !JB.draft) jbLoad(true); else if (!/^\/jobs/.test(currentPath())) jbAutoRefresh(false); }, 30000);
+}
+function jbTabs(cur){
+  const b = JB.board || {}, n = k => (b[k] || []).length, open = (b.calls || []).filter(j => j.status === 'called').length;
+  const tabs = [['calls', 'Calls', n('calls'), open], ['mine', 'My jobs', n('mine')], ['open', 'Other open jobs', n('open')], ['history', 'History']];
+  return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k, l, c, warn]) => `<a class="tab ${k === cur ? 'on' : ''}" href="#/jobs${k === 'calls' ? '' : '?tab=' + k}">${esc(l)}${c != null ? ` <span class="badge ${warn ? 'b-warn' : ''}" style="padding:1px 7px">${c}</span>` : ''}</a>`).join('')}</div>`;
+}
+function jbCard(j){
+  const me = jbMe(), mine = jbOnIt(j), canAct = levelOf('engineering.jobs') && ['submit', 'edit'].includes(levelOf('engineering.jobs')) && me.staff;
+  let btn = '';
+  if (canAct && j.status === 'called') btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); jbDo('${esc(j.job_id)}', 'accept')">I'm coming</button>`;
+  else if (canAct && j.status === 'accepted' && mine) btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); jbDo('${esc(j.job_id)}', 'arrive')">I'm at the machine</button>`;
+  const where = [j.area || j.stage, j.source === 'console' ? JOB_TYPE[j.type] : (j.stop_reason || JOB_TYPE[j.type]), j.called_by_name].filter(Boolean).map(esc).join(' · ');
+  return `<div class="card job-card" onclick="go('/jobs/${esc(j.job_id)}')">
+    <div class="card-b">
+      <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div class="strong" style="font-size:16px">${esc(j.machine_name || j.asset || j.machine_code)}</div>
+        <div class="mono small muted" style="white-space:nowrap">${j.called_at ? 'called ' + hm(j.called_at) : 'started ' + hm(j.started_at || j.created_at)}</div></div>
+      <div class="small muted" style="margin:4px 0 10px">${where}</div>
+      <div class="row" style="gap:10px;margin-bottom:${btn ? '12px' : '0'}">${jbBadge(j)}<span class="mono strong">${dur(jbClock(j))}</span><span class="mono tiny muted" style="margin-left:auto">${esc(j.job_id)}</span></div>
+      ${btn}
+    </div></div>`;
+}
+function jbPushBanner(){
+  const p = JB.push;
+  if (p.state === 'on' || p.state === 'unsupported-quiet' || p.state === '') return '';
+  if (p.state === 'ios') return `<div class="notice info" style="margin-bottom:14px">${I.info}<div>To get a notification for each new call on an iPhone: tap <b>Share</b>, then <b>Add to Home Screen</b>, open the console from the new icon and turn notifications on there.</div></div>`;
+  if (p.state === 'denied') return `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>Notifications are blocked for this site in your browser settings. Allow them to hear about new calls.</div></div>`;
+  if (p.state === 'unsupported') return `<div class="notice" style="margin-bottom:14px">${I.info}<div>This browser cannot show notifications. Keep this page open: new calls appear by themselves.</div></div>`;
+  if (p.state === 'server') return '';
+  return `<div class="notice info row between" style="margin-bottom:14px">${I.info}<div style="flex:1">Get a notification on this phone or computer for each new call.</div>
+    <button class="btn btn-primary btn-sm" onclick="pushTurnOn()">Turn on notifications</button></div>`;
+}
+function viewJobs(){
+  const tab = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || 'calls';
+  if (tab === 'history') return viewJobsHistory();
+  if (!JB.board && !JB.error) jbLoad();
+  JB.draft = null; jbAutoRefresh(true); pushCheck();
+  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
+  const head = pageHead('Calls and jobs', 'Maintenance calls from the floor and the jobs Engineering is working on. This page refreshes by itself.',
+    canStart ? `<button class="btn btn-primary" onclick="go('/jobs/new')">${I.plus} Start a job without a call</button>` : '');
+  if (JB.error) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the jobs', esc(JB.error), `<button class="btn btn-primary" onclick="jbLoad(true)">Try again</button>`)}</div></div>` };
+  if (!JB.board) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  const b = JB.board, list = b[tab] || [];
+  const me = b.me || {};
+  const notStaff = canStart && !me.staff ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>Your account is not linked to an Engineering employee, so you can look but not take calls. Ask an admin to link it (Users).</div></div>` : '';
+  const open = (b.calls || []).filter(j => j.status === 'called');
+  const sum = tab === 'calls' ? `<div class="small" style="margin-bottom:10px"><span class="badge ${open.length ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${(b.calls || []).length} open call${(b.calls || []).length === 1 ? '' : 's'} · ${open.length} not accepted yet</span>
+    <span class="muted"> updated ${hm(b.now)}</span></div>` : '';
+  const empty = { calls: 'No open calls. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.' }[tab];
+  return {
+    title:'Calls and jobs', crumb:'Maintenance', keepScroll: true,
+    html: head + jbPushBanner() + notStaff + jbTabs(tab) + sum
+      + (list.length ? `<div class="grid g3 job-grid">${list.map(jbCard).join('')}</div>` : `<div class="card"><div class="card-b">${emptyState('wrench', empty, '')}</div></div>`)
+      + (tab === 'calls' ? `<div class="small muted" style="margin-top:12px">Machine stops nobody called in are on <a href="#/stops">Machine stops</a>.</div>` : ''),
+  };
+}
+route('/jobs', viewJobs);
+
+async function jbDo(id, action, extra){
+  try {
+    const r = await api('/webhook/engineering/api/jobs/action', { method:'POST', body: Object.assign({ id, action }, extra || {}) });
+    JB.one[id] = r.job;
+    toast({ accept: 'On your jobs', arrive: 'Started', wait: 'Waiting for the part', resume: 'Back on it', done: 'Job closed', cancel: 'Job cancelled', save: 'Saved', reopen: 'Reopened' }[action] || 'Done', r.job.job_id, 'ok');
+    await jbLoad(true);
+    if (action === 'accept' || action === 'arrive') go('/jobs/' + id);
+    return r.job;
+  } catch (err) { toast('Could not do that', err.message, 'err', 7000); throw err; }
+}
+
+/* ---- one job */
+async function jbLoadOne(id){
+  try { const r = await api('/webhook/engineering/api/jobs/one?id=' + encodeURIComponent(id)); JB.one[id] = r.job || false; if (r.failure_categories) JB.cats = r.failure_categories; }
+  catch (err) { JB.one[id] = { error: err.message }; }
+  render();
+}
+function viewJob(params){
+  const id = params.id;
+  if (!SP.list && !SP.loading) spLoad();
+  if (!EQ.list && !EQ.loading) eqLoad();
+  if (!JB.board && !JB.loading) jbLoad();
+  if (JB.one[id] === undefined) { JB.one[id] = null; jbLoadOne(id); }
+  const j = JB.one[id];
+  const back = `<a class="btn btn-ghost btn-sm" href="#/jobs">${I.chevL} Calls and jobs</a>`;
+  if (j === false) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'No such job', 'It may have been typed wrong.')}</div></div>` };
+  if (!j) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
+  if (j.error) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Could not load the job', esc(j.error), `<button class="btn btn-primary" onclick="jbLoadOne('${esc(id)}')">Try again</button>`)}</div></div>` };
+  const me = jbMe(), lvl = levelOf('engineering.jobs'), mgr = lvl === 'edit', can = ['submit', 'edit'].includes(lvl);
+  const onIt = jbOnIt(j), closed = j.status === 'done' || j.status === 'cancelled';
+  const canWrite = can && (onIt || mgr) && (!closed || (mgr && j.status === 'done'));
+  const partsUntil = j.parts_until ? new Date(j.parts_until) : null;
+  const canParts = can && (onIt || mgr) && j.status !== 'cancelled' && (j.status !== 'done' || mgr || (partsUntil && partsUntil > new Date()));
+  const cats = (JB.board && JB.board.failure_categories) || JB.cats || [];
+  const isCall = j.source === 'call';
+  const waited = isCall ? minsBetween(j.called_at, j.arrived_at) : null;
+  const repair = minsBetween(j.started_at || j.arrived_at, j.finished_at);
+  const tl = [];
+  if (j.stopped_since) tl.push(['Machine stopped', dayHm(j.stopped_since)]);
+  if (j.called_at) tl.push([`Called${j.called_by_name ? ' by ' + j.called_by_name : ''}`, hm(j.called_at)]);
+  if (j.accepted_at) tl.push([`Accepted by ${j.accepted_by === me.enroll_id ? 'you' : (j.accepted_by_name || '')}`, hm(j.accepted_at)]);
+  if (j.arrived_at) tl.push([`Arrived, ${j.arrival_by === 'operator' ? 'confirmed by the operator' : 'reported by the technician'}`, hm(j.arrived_at)]);
+  if (!isCall && j.started_at) tl.push(['Started', dayHm(j.started_at)]);
+  if (j.waiting_since) tl.push([`Waiting for part${j.waiting_note ? ': ' + j.waiting_note : ''}`, hm(j.waiting_since)]);
+  if (j.resumed_at) tl.push(['Machine running again (floor)', dayHm(j.resumed_at)]);
+  if (j.call_cancelled_at) tl.push(['Call cancelled on the floor', hm(j.call_cancelled_at)]);
+  if (j.finished_at) tl.push([`Closed${j.closed_by ? ' by ' + j.closed_by : ''}`, dayHm(j.finished_at)]);
+  const dis = canWrite && j.status !== 'called' && j.status !== 'accepted' ? '' : 'disabled';
+  const parts = (j.parts || []).filter(p => p.status !== 'cancelled');
+  const partStatus = p => p.reversed_by ? '<span class="badge b-slate">Reversed</span>' : p.status === 'waiting' ? '<span class="badge b-warn">Waiting hand-over</span>' : '<span class="badge b-ok">Handed over</span>';
+  let actions = '';
+  if (can && me.staff && j.status === 'called') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'accept')">I'm coming</button><button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">I'm already at the machine</button>`;
+  else if (can && me.staff && j.status === 'accepted' && !onIt) actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join: I'm at the machine</button>`;
+  else if (can && me.staff && j.status === 'accepted') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">I'm at the machine</button>`;
+  else if (can && me.staff && !onIt && (j.status === 'working' || j.status === 'waiting_part')) actions = `<button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join this job</button>`;
+  else if (canWrite && j.status === 'working') actions = `<button class="btn btn-ghost btn-lg" onclick="jbWait('${esc(id)}')">Waiting for part</button><button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">Job done</button>`;
+  else if (canWrite && j.status === 'waiting_part') actions = `<button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'resume')">Back on it</button><button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">Job done</button>`;
+  else if (mgr && j.status === 'done') actions = `<button class="btn btn-ghost" onclick="jbDo('${esc(id)}', 'reopen')">Reopen</button><button class="btn btn-primary" onclick="jbSave('${esc(id)}', 'save')">${I.check} Save changes</button>`;
+  return {
+    title: j.machine_name || 'Job', crumb:'Maintenance', keepScroll: true,
+    html: `<div class="row between" style="margin-bottom:12px">${back}<span class="mono small muted">${esc(j.job_id)} · ${esc(JOB_TYPE[j.type] || j.type)}</span></div>
+    <div class="card" style="margin-bottom:14px"><div class="card-b">
+      <div class="row between" style="align-items:flex-start;flex-wrap:nowrap"><div><h2 style="font-size:20px;margin:0">${esc(j.machine_name || j.machine_code)}</h2>
+        <div class="small muted" style="margin-top:4px">${[j.area || j.stage, j.stop_reason, j.called_by_name ? 'called by ' + j.called_by_name : ''].filter(Boolean).map(esc).join(' · ')}</div></div>${jbBadge(j)}</div>
+      ${!j.asset ? `<div class="notice warn" style="margin-top:12px">${I.alert}<div>The floor machine <b>${esc(j.machine_code)}</b> is not in the equipment register. Choose the equipment below before closing the job.</div></div>` : ''}
+      ${j.call_note ? `<div class="small" style="margin-top:8px"><b>Operator's note:</b> ${esc(j.call_note)}</div>` : ''}
+    </div></div>
+    <div class="grid g2" style="margin-bottom:14px">
+      ${isCall ? `<div class="stat"><div class="lbl">${j.arrived_at ? 'Waited for a technician' : 'Waiting for a technician'}</div><div class="val mono">${dur(waited)}</div></div>` : ''}
+      <div class="stat"><div class="lbl">${j.finished_at ? 'Repair time' : 'Repair so far'}</div><div class="val mono">${j.started_at || j.arrived_at ? dur(repair) : '--'}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:14px"><div class="card-b">${tl.map(([a, b]) => `<div class="row between small" style="padding:4px 0;border-bottom:1px solid var(--line-2)"><span>${esc(a)}</span><span class="mono strong">${esc(b)}</span></div>`).join('') || '<span class="small muted">Nothing yet.</span>'}
+      ${(j.technicians || []).length ? `<div class="small" style="margin-top:8px"><b>On the job:</b> ${j.technicians.map(t => esc(t.name)).join(', ')}</div>` : ''}</div></div>
+    ${j.status === 'cancelled' ? `<div class="notice" style="margin-bottom:14px">${I.info}<div>Cancelled: ${esc(j.cancel_reason || '')}</div></div>` : ''}
+    <form id="jbForm" novalidate>
+      ${!j.asset || (mgr && closed) ? `<div class="field"><label for="jbAsset">Machine or equipment</label><input class="inp" id="jbAsset" list="jbAssets" value="${esc(j.asset ? (j.asset_name + ' (' + j.asset + ')') : '')}" ${dis} placeholder="Type to search the register"><datalist id="jbAssets">${spAssetOptions()}</datalist></div>` : ''}
+      ${j.type === 'breakdown' ? `<div class="field"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${String(j.failure_category || '').toLowerCase() === c.toLowerCase() ? 'on' : ''}" data-cat="${esc(c)}" ${dis}>${esc(c)}</button>`).join('')}</div></div>` : ''}
+      <div class="field"><label for="jbCause">Cause (optional)</label><textarea class="inp" id="jbCause" rows="2" maxlength="1000" ${dis} placeholder="e.g. Air cylinder seal worn">${esc(j.cause || '')}</textarea></div>
+      <div class="field"><label for="jbDone">What was done?</label><textarea class="inp" id="jbDone" rows="3" maxlength="2000" ${dis} placeholder="e.g. Replaced the seal kit and tested ten cycles">${esc(j.work_done || '')}</textarea></div>
+      <div class="err-msg hide" data-err="jbDone"></div>
+    </form>
+    <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>Parts used <span class="muted" style="font-weight:500">(optional)</span></h3>
+        <div class="sub">The storekeeper confirms the hand-over; stock moves then.${j.status === 'done' && partsUntil ? ' Parts can be added until ' + esc(dayHm(j.parts_until)) + (mgr ? ' (you can add later too).' : '.') : ''}</div></div>
+        ${canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbAddPart('${esc(id)}')">${I.plus} Add part</button>` : ''}</div>
+      <div class="card-b">${parts.length ? parts.map(p => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line-2)">
+          <div><span class="mono strong">${esc(p.sku)}</span> · ${esc(p.description || '')}<div class="tiny muted">${esc(p.collected_by_name || '')} · ${esc(p.entry)}</div></div>
+          <div class="row" style="gap:8px"><span class="mono strong">× ${num(p.qty)}</span>${partStatus(p)}${p.status === 'waiting' && canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbRemovePart('${esc(id)}', ${p.id})">Remove</button>` : ''}</div></div>`).join('')
+        : '<span class="small muted">None added.</span>'}</div></div>
+    ${isCall && !closed ? `<div class="small muted" style="margin-bottom:10px">The operator restarts the machine on the floor. Closing the job here does not.</div>` : ''}
+    <div class="row job-actions" style="gap:10px">${actions}
+      ${canWrite && !closed && j.status !== 'called' && j.status !== 'accepted' ? `<button class="btn btn-ghost" onclick="jbSave('${esc(id)}', 'save')">Save for later</button>` : ''}
+      ${can && !closed && (onIt || mgr || j.status === 'called') && !(isCall && j.status !== 'called' && !mgr) ? `<button class="btn btn-ghost" style="margin-left:auto" onclick="jbCancel('${esc(id)}')">Cancel job</button>` : ''}
+    </div>`,
+    bind(){
+      $$('[data-cat]').forEach(b => b.onclick = () => { if (b.disabled) return; $$('[data-cat]').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+    },
+  };
+}
+route('/jobs/:id', params => params.id === 'new' ? viewJobNew() : viewJob(params));
+
+function jbFormValues(){
+  const cat = $('[data-cat].on'), a = $('#jbAsset');
+  return { failure_category: cat ? cat.dataset.cat : '', cause: ($('#jbCause') || {}).value || '', work_done: ($('#jbDone') || {}).value || '',
+           asset: a ? spAssetFrom(a.value) : undefined };
+}
+async function jbSave(id, action){
+  const v = jbFormValues(), j = JB.one[id] || {};
+  clearErrors(document);
+  if (action === 'done') {
+    if (j.type === 'breakdown' && !v.failure_category) return setErr('jbDone', 'Pick what failed.');
+    if (v.work_done.trim().length < 5) return setErr('jbDone', 'Say what was done.');
+    if (!j.asset && !(EQ.list || []).some(x => x.code === v.asset)) return setErr('jbDone', 'Choose the machine or equipment from the list.');
+    const waiting = (j.parts || []).filter(p => p.status === 'waiting').length;
+    const ok = await confirmDialog('Close the job', `Close <b>${esc(j.job_id)}</b> on ${esc(j.machine_name || '')}?${waiting ? ` ${waiting} part${waiting === 1 ? ' is' : 's are'} still waiting for the storekeeper; that is fine.` : ''}`, 'Job done');
+    if (!ok) return;
+  }
+  if (v.asset === '') delete v.asset;
+  try { await jbDo(id, action, v); } catch (e) { setErr('jbDone', e.message); }
+}
+function jbWait(id){
+  openModal({ title:'Waiting for part', size:'narrow', sub:'The floor sees "waiting for part" on the machine.',
+    body:`<div class="field"><label for="jwNote">Which part? (optional)</label><input class="inp" id="jwNote" maxlength="300" placeholder="e.g. Seal kit from the store"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn btn-primary" data-save>Waiting for part</button>`,
+    onMount: (w, close) => { $('[data-save]', w).onclick = async () => { close(); try { await jbSave(id, 'save'); await jbDo(id, 'wait', { note: $('#jwNote', w).value.trim() }); } catch (e) { /* toast shown */ } }; } });
+}
+function jbCancel(id){
+  openModal({ title:'Cancel job ' + id, size:'narrow', sub:'Parts waiting for the hand-over are cancelled with it.',
+    body:`<div class="field"><label for="jcWhy">Why?</label><input class="inp" id="jcWhy" maxlength="300" placeholder="e.g. opened by mistake"></div><div class="err-msg hide" data-err="jcWhy"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn btn-danger" data-save>Cancel the job</button>`,
+    onMount: (w, close) => { $('[data-save]', w).onclick = async () => {
+      clearErrors(w); const reason = $('#jcWhy', w).value.trim(); if (reason.length < 5) return setErr('jcWhy', 'Say why.', w);
+      try { await jbDo(id, 'cancel', { reason }); close(); } catch (e) { setErr('jcWhy', e.message, w); } }; } });
+}
+// a part: picked from the catalogue (search by SKU or name), whole numbers unless the unit is m, L or kg
+function jbPartModal(title, onPick){
+  openModal({ title, size:'narrow', sub:'The storekeeper confirms the hand-over before the stock changes.',
+    body:`<div class="field"><label for="jpSku">Part</label><input class="inp" id="jpSku" list="jpSkus" placeholder="Type the SKU or the name"><datalist id="jpSkus">${spSkuOptions()}</datalist><div class="hint" id="jpStock"></div></div>
+      <div class="field"><label for="jpQty">How many?</label><input class="inp" id="jpQty" type="number" min="0" step="any" value="1"></div>
+      <div class="field"><label for="jpNote">Note (optional)</label><input class="inp" id="jpNote" maxlength="300"></div><div class="err-msg hide" data-err="jpSku"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.plus} Add</button>`,
+    onMount: (w, close) => {
+      const show = () => { const it = spBySku(spSkuFrom($('#jpSku', w).value)); $('#jpStock', w).textContent = it ? 'In stock: ' + num(it.stock) + ' ' + it.unit + (it.location ? ' · ' + it.location : '') : ''; };
+      $('#jpSku', w).onchange = show;
+      $('[data-save]', w).onclick = async () => {
+        clearErrors(w);
+        const sku = spSkuFrom($('#jpSku', w).value), qty = $('#jpQty', w).value, it = spBySku(sku);
+        if (!it) return setErr('jpSku', 'Pick the part from the list.', w);
+        if (!(+qty > 0) || (!['m', 'L', 'kg'].includes(it.unit) && +qty !== Math.floor(+qty))) return setErr('jpSku', 'Enter a quantity above 0' + (['m', 'L', 'kg'].includes(it.unit) ? '.' : ', in whole ' + it.unit + '.'), w);
+        try { await onPick({ sku, qty, note: $('#jpNote', w).value.trim(), description: it.description, unit: it.unit }); close(); } catch (e) { setErr('jpSku', e.message, w); }
+      };
+    } });
+}
+function jbAddPart(id){
+  jbPartModal('Add a part to ' + id, async part => {
+    const r = await api('/webhook/engineering/api/jobs/parts', { method:'POST', body:{ id, sku: part.sku, qty: part.qty, note: part.note } });
+    JB.one[id] = r.job; toast('Part added', part.sku + ' × ' + part.qty, 'ok'); render();
+  });
+}
+async function jbRemovePart(id, moveId){
+  if (!await confirmDialog('Remove the part', 'Take this part off the job? It has not been handed over yet.', 'Remove')) return;
+  try { const r = await api('/webhook/engineering/api/jobs/parts', { method:'POST', body:{ remove: moveId } }); JB.one[id] = r.job; toast('Part removed', '', 'ok'); render(); }
+  catch (e) { toast('Could not remove it', e.message, 'err', 7000); }
+}
+
+/* ---- start a job without a call (or on a machine stop: /jobs/new?stop=<id>) */
+function viewJobNew(){
+  if (!EQ.list && !EQ.loading) eqLoad();
+  if (!SP.list && !SP.loading) spLoad();
+  if (!JB.board && !JB.loading) jbLoad();
+  const qs = new URLSearchParams(currentPath().split('?')[1] || ''), stopId = qs.get('stop');
+  if (stopId && !JB.stops && !JB.stopsLoading) jbLoadStops();
+  const stop = stopId ? (JB.stops || []).find(s => String(s.id) === stopId) : null;
+  const draftKey = currentPath();
+  if (!JB.draft || JB.draft.key !== draftKey) JB.draft = { key: draftKey, stop: stopId || '', type: stop ? 'breakdown' : (JOB_TYPE[qs.get('type')] ? qs.get('type') : ''), cat: '', parts: [], techs: [], when: stop ? 'set' : 'now', asset: qs.get('asset') || '' };
+  const d = JB.draft, cats = (JB.board && JB.board.failure_categories) || [], me = jbMe();
+  const back = `<a class="btn btn-ghost btn-sm" href="#/${stopId ? 'stops' : 'jobs'}">${I.chevL} ${stopId ? 'Machine stops' : 'Calls and jobs'}</a>`;
+  if (stopId && !JB.stops) return { title:'Start a job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
+  if (stopId && !stop) return { title:'Start a job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('info', 'That stop is not on the list any more', 'A job may already cover it.')}</div></div>` };
+  const localIso = iso => { const t = new Date(new Date(iso).getTime() + 60 * 60 * 1000); return t.toISOString().slice(0, 16); };   // Lagos time for the input
+  const people = (SP.people || []).filter(p => p.enroll_id !== me.enroll_id);
+  return {
+    title:'Start a job', crumb:'Maintenance', keepScroll: true,
+    html: back + pageHead(stopId ? 'Job on a machine stop' : 'Start a job', stopId ? 'A breakdown on a stop nobody called in. It is linked to the stop and leaves the Machine stops list.' : 'A job without a call: preventive, corrective, inspection, improvement, or a breakdown found on a round.') + `
+    ${stop ? `<div class="card" style="margin-bottom:14px"><div class="card-b"><div class="strong">${esc(stop.machine_name)}</div><div class="small muted">${esc(stop.reason)} · stopped ${esc(dayHm(stop.started_at))} · ${stop.still_down ? 'still down' : dur(stop.minutes)}</div></div></div>` : ''}
+    <form id="jnForm" novalidate>
+      ${stop && stop.asset ? '' : `<div class="field"><label for="jnAsset">Which machine or equipment?</label><input class="inp" id="jnAsset" list="jnAssets" value="${esc(d.assetText != null ? d.assetText : (d.asset && eqByCode(d.asset) ? eqByCode(d.asset).name + ' (' + d.asset + ')' : ''))}" placeholder="Type to search: compressor, Kunlong, AHU 1.4..."><datalist id="jnAssets">${spAssetOptions()}</datalist>
+        <div class="hint">${I.info}<span>Production machines and other equipment are in one list.</span></div></div>`}
+      ${stop ? '' : `<div class="field"><span class="lbl">Type of job</span><div class="row" style="gap:8px">${JOB_TYPES.map(([k, l]) => `<button type="button" class="chip big-chip ${d.type === k ? 'on' : ''}" data-type="${k}">${l}</button>`).join('')}</div></div>`}
+      <div class="field" id="jnCatWrap" style="${d.type === 'breakdown' ? '' : 'display:none'}"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${d.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>
+      <div class="field"><label for="jnDone">What did you find, and what was done?</label><textarea class="inp" id="jnDone" rows="3" maxlength="2000" placeholder="e.g. Oil level low and a loose belt. Topped up and re-tensioned.">${esc(d.work || '')}</textarea></div>
+      <div class="field"><label for="jnCause">Cause (optional)</label><input class="inp" id="jnCause" maxlength="1000" value="${esc(d.cause || '')}"></div>
+      ${people.length ? `<div class="field"><span class="lbl">Who else worked on it? (optional)</span><div class="row" style="gap:6px">${people.map(p => `<button type="button" class="chip ${d.techs.includes(p.enroll_id) ? 'on' : ''}" data-tech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+      <div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Parts used <span class="muted" style="font-weight:500">(optional)</span></h3><button type="button" class="btn btn-ghost btn-sm" id="jnAddPart">${I.plus} Add part</button></div>
+        <div class="card-b" id="jnParts">${d.parts.length ? d.parts.map((p, i) => `<div class="row between" style="padding:4px 0"><span><span class="mono strong">${esc(p.sku)}</span> · ${esc(p.description)}</span><span class="row" style="gap:8px"><span class="mono strong">× ${esc(p.qty)}</span><button type="button" class="btn btn-ghost btn-sm" data-unpart="${i}">Remove</button></span></div>`).join('') : '<span class="small muted">None added.</span>'}</div></div>
+      <div class="field"><span class="lbl">Start time</span><div class="row" style="gap:8px"><div class="seg"><button type="button" class="${d.when === 'now' ? 'on' : ''}" data-when="now">Now · ${hm(new Date().toISOString())}</button><button type="button" class="${d.when === 'set' ? 'on' : ''}" data-when="set">Earlier</button></div>
+        <input class="inp" type="datetime-local" id="jnStart" style="width:auto;${d.when === 'set' ? '' : 'display:none'}" value="${d.start || (stop ? localIso(stop.started_at) : '')}" max="${localIso(new Date().toISOString())}"></div></div>
+      <div class="err-msg hide" data-err="jnDone"></div>
+    </form>
+    <div class="row job-actions" style="gap:10px"><button class="btn btn-ghost btn-lg" id="jnLog">Log as already done</button><button class="btn btn-primary btn-lg" id="jnStartBtn">Start job</button></div>`,
+    bind(){
+      $$('[data-type]').forEach(b => b.onclick = () => { d.type = b.dataset.type; $$('[data-type]').forEach(x => x.classList.toggle('on', x === b)); $('#jnCatWrap').style.display = d.type === 'breakdown' ? '' : 'none'; });
+      $$('[data-cat]').forEach(b => b.onclick = () => { d.cat = b.dataset.cat; $$('[data-cat]').forEach(x => x.classList.toggle('on', x === b)); });
+      $$('[data-tech]').forEach(b => b.onclick = () => { const k = b.dataset.tech; d.techs = d.techs.includes(k) ? d.techs.filter(x => x !== k) : d.techs.concat(k); b.classList.toggle('on'); });
+      $$('[data-when]').forEach(b => b.onclick = () => { d.when = b.dataset.when; $$('[data-when]').forEach(x => x.classList.toggle('on', x === b)); $('#jnStart').style.display = d.when === 'set' ? '' : 'none'; });
+      const keep = () => { const a = $('#jnAsset'); if (a) d.assetText = a.value; d.work = $('#jnDone').value; d.cause = $('#jnCause').value; d.start = $('#jnStart').value; };
+      $$('[data-unpart]').forEach(b => b.onclick = () => { keep(); d.parts.splice(+b.dataset.unpart, 1); render(); });
+      $('#jnAddPart').onclick = () => jbPartModal('Add a part', async p => { keep(); d.parts.push(p); render(); });
+      const send = async done => {
+        clearErrors(document);
+        const a = $('#jnAsset'), asset = stop && stop.asset ? stop.asset : spAssetFrom(a ? a.value : '');
+        const work = $('#jnDone').value.trim(), start = $('#jnStart').value;
+        if (!stop && !(EQ.list || []).some(x => x.code === asset && x.status === 'Active')) return setErr('jnDone', 'Choose the machine or equipment from the list.');
+        if (!d.type) return setErr('jnDone', 'Pick the type of job.');
+        if (d.when === 'set' && !start) return setErr('jnDone', 'Enter the start time, or choose Now.');
+        if (done && work.length < 5) return setErr('jnDone', 'Say what was found and done.');
+        if (done && d.type === 'breakdown' && !d.cat) return setErr('jnDone', 'Pick what failed.');
+        const job = { asset, type: d.type, failure_category: d.type === 'breakdown' ? d.cat : '', work_done: work, cause: $('#jnCause').value.trim(), done,
+                      started_at: d.when === 'set' ? start + ':00+01:00' : '', technicians: d.techs, stop_id: stop ? stop.id : '',
+                      parts: d.parts.map(p => ({ sku: p.sku, qty: p.qty, note: p.note })) };
+        $$('.job-actions .btn').forEach(b => b.disabled = true);
+        try { const r = await api('/webhook/engineering/api/jobs/start', { method:'POST', body:{ job } }); JB.draft = null; JB.stops = null; JB.one[r.job.job_id] = r.job;
+              toast(done ? 'Job logged' : 'Job started', r.job.job_id, 'ok'); jbLoad(true); go('/jobs/' + r.job.job_id); }
+        catch (e) { setErr('jnDone', e.message); $$('.job-actions .btn').forEach(b => b.disabled = false); }
+      };
+      $('#jnLog').onclick = () => send(true);
+      $('#jnStartBtn').onclick = () => send(false);
+    },
+  };
+}
+
+/* ---- history */
+async function jbLoadHistory(){
+  try { const q = new URLSearchParams(); if (JB.histFrom) q.set('from', JB.histFrom); if (JB.histTo) q.set('to', JB.histTo); if (JB.histType) q.set('type', JB.histType);
+        const r = await api('/webhook/engineering/api/jobs/history?' + q.toString()); JB.history = r.jobs || []; }
+  catch (err) { JB.history = { error: err.message }; }
+  render();
+}
+function viewJobsHistory(){
+  if (!JB.board && !JB.loading) jbLoad();
+  if (!JB.history) { JB.history = 'loading'; jbLoadHistory(); }
+  const h = JB.history, head = pageHead('Calls and jobs', 'Every job, newest first (the last 30 days unless you pick dates).') + jbTabs('history')
+    + `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="jhFrom" value="${esc(JB.histFrom)}" style="width:auto"></label>
+       <label class="small">to <input class="inp" type="date" id="jhTo" value="${esc(JB.histTo)}" style="width:auto"></label>
+       <select class="inp" id="jhType" style="width:auto"><option value="">All types</option>${JOB_TYPES.map(([k, l]) => `<option value="${k}" ${JB.histType === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+  const bind = () => { [['#jhFrom', 'histFrom'], ['#jhTo', 'histTo'], ['#jhType', 'histType']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { JB[k] = e.target.value; JB.history = null; render(); }; }); };
+  if (h === 'loading') return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>`, bind };
+  if (h.error) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(h.error))}</div></div>`, bind };
+  return { title:'Calls and jobs', crumb:'Maintenance', keepScroll: true, bind,
+    html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Job</th><th>Equipment</th><th>Type</th><th>What failed / what was done</th><th>Technicians</th><th>Time</th><th>Status</th></tr></thead>
+      <tbody>${h.map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}<div class="tiny muted">${esc(dayHm(j.finished_at || j.created_at))}</div></td>
+        <td data-label="Equipment"><div class="strong">${esc(j.machine_name || '')}</div><div class="tiny muted">${esc(j.stop_reason || '')}</div></td><td data-label="Type">${esc(JOB_TYPE[j.type] || j.type)}</td>
+        <td data-label="Work" class="small">${j.failure_category ? `<b>${esc(j.failure_category)}</b>: ` : ''}${esc(j.work_done || j.cancel_reason || '')}</td>
+        <td data-label="Technicians" class="small">${esc((j.technicians || []).map(t => t.name).join(', '))}</td><td data-label="Time" class="mono small">${j.labour_minutes != null ? dur(j.labour_minutes) : ''}</td>
+        <td data-label="Status">${jbBadge(j)}</td></tr>`).join('') || `<tr><td colspan="7" class="muted" style="padding:16px">No jobs in this period.</td></tr>`}</tbody></table></div>
+      <div class="small muted" style="padding:12px 18px">${h.length} jobs. Mirrored to the Maintenance Google Sheet (Breakdowns tab).</div></div>` };
+}
+
+/* ---- Recent machine stops: floor stops with a machine reason that nobody called in (read from the floor system) */
+async function jbLoadStops(){
+  JB.stopsLoading = true;
+  try { const r = await api('/webhook/engineering/api/stops'); JB.stops = r.stops || []; JB.stopsInfo = r; }
+  catch (err) { JB.stops = { error: err.message }; }
+  finally { JB.stopsLoading = false; render(); }
+}
+function viewStops(){
+  if (!JB.stops && !JB.stopsLoading) jbLoadStops();
+  const info = JB.stopsInfo || {}, canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
+  const head = pageHead('Machine stops', `Stops on the floor with a machine reason, ${num(info.min_minutes) || 15} minutes or longer, in the last ${num(info.days) || 7} days, that no call or job covers yet. Short stops and operational reasons (breaks, changeovers, material) are left out. The limits are in Settings.`,
+    `<button class="btn btn-ghost" onclick="JB.stops = null; render()">Refresh</button>`);
+  const s = JB.stops;
+  if (!s) return { title:'Machine stops', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (s.error) return { title:'Machine stops', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the stops', esc(s.error))}</div></div>` };
+  return { title:'Machine stops', crumb:'Maintenance', keepScroll: true,
+    html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Machine</th><th>Reason</th><th>Stopped</th><th>Length</th><th>Operator's note</th><th></th></tr></thead>
+      <tbody>${s.map(x => `<tr><td data-label="Machine"><div class="strong">${esc(x.machine_name)}</div><div class="tiny muted">${esc(x.stage || '')}${x.asset ? '' : ' · not in the register'}</div></td>
+        <td data-label="Reason">${esc(x.reason)}</td><td data-label="Stopped" class="small">${esc(dayHm(x.started_at))}</td>
+        <td data-label="Length">${x.still_down ? `<span class="badge b-danger">still down · ${dur(x.minutes)}</span>` : `<span class="mono">${dur(x.minutes)}</span>`}</td>
+        <td data-label="Note" class="small">${esc(x.note || '')}</td>
+        <td style="text-align:right">${canStart && x.asset ? `<button class="btn btn-primary btn-sm" onclick="go('/jobs/new?stop=${x.id}')">Open a job</button>` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="6" class="muted" style="padding:16px">No machine stops to look at. Calls from the floor are on Calls and jobs.</td></tr>`}</tbody></table></div>
+      <div class="small muted" style="padding:12px 18px">${s.length} stop${s.length === 1 ? '' : 's'}.</div></div>` };
+}
+route('/stops', viewStops);
+
+/* ---- messages with the floor system (Engineering Manager): delivery problems show here */
+let FM = null;
+async function fmLoad(){ try { FM = await api('/webhook/engineering/api/floor/messages'); } catch (err) { FM = { error: err.message }; } render(); }
+function viewFloorMessages(){
+  if (!FM) { FM = 'loading'; fmLoad(); }
+  const head = pageHead('Floor messages', 'What the floor system sent us and what we send it (accepted, arrived, status, job closed). Undelivered messages are retried: 1 min, 5 min, 30 min, 2 h, 6 h, then daily for 7 days.',
+    `<button class="btn btn-ghost" onclick="FM = null; render()">Refresh</button>`);
+  if (FM === 'loading') return { title:'Floor messages', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (FM.error) return { title:'Floor messages', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(FM.error))}</div></div>` };
+  const c = FM.configured || {}, yes = ok => ok ? '<span class="badge b-ok">set</span>' : '<span class="badge b-warn">not set</span>';
+  const st = m => m.direction === 'in' ? (m.result === 'ok' ? '<span class="badge b-ok">applied</span>' : `<span class="badge b-slate">${esc(m.result)}</span>`)
+    : ({ sent: '<span class="badge b-ok">delivered</span>', pending: '<span class="badge b-warn">waiting</span>', failed: '<span class="badge b-danger">failed</span>', gave_up: '<span class="badge b-danger">gave up</span>' }[m.state] || esc(m.state));
+  return { title:'Floor messages', crumb:'Setup', keepScroll: true,
+    html: head + `<div class="grid g4" style="margin-bottom:14px">
+      <div class="stat"><div class="lbl">Receiving calls</div><div class="meta" style="margin-top:8px">${yes(c.receive)}</div></div>
+      <div class="stat"><div class="lbl">Sending to the floor</div><div class="meta" style="margin-top:8px">${yes(c.send)}</div></div>
+      <div class="stat"><div class="lbl">Push notifications</div><div class="meta" style="margin-top:8px">${yes(c.push)}</div></div>
+      <div class="stat"><div class="lbl">Not delivered</div><div class="val">${num(FM.failed)}</div><div class="meta">${num(FM.waiting)} waiting</div></div></div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>When</th><th>Way</th><th>Message</th><th>Call / job</th><th>Status</th><th></th></tr></thead>
+      <tbody>${(FM.messages || []).map(m => `<tr><td class="small" data-label="When">${esc(dayHm(m.created_at))}</td><td data-label="Way">${m.direction === 'in' ? 'from the floor' : 'to the floor'}</td>
+        <td data-label="Message"><span class="mono small">${esc(m.event_type)}</span>${m.body && m.body.status ? ` <span class="small">${esc(m.body.status)}</span>` : ''}</td>
+        <td data-label="Call / job" class="small"><a href="#/jobs/${esc(m.job_id || '')}">${esc(m.job_id || '')}</a><div class="tiny muted">${esc(m.call_id || '')}</div></td>
+        <td data-label="Status">${st(m)}${m.error || m.last_error ? `<div class="tiny muted">${esc(m.error || ((m.last_code ? m.last_code + ' ' : '') + m.last_error))}</div>` : ''}${m.direction === 'out' && m.attempts ? `<div class="tiny muted">${m.attempts} tries</div>` : ''}</td>
+        <td style="text-align:right">${m.direction === 'out' && (m.state === 'failed' || m.state === 'gave_up') ? `<button class="btn btn-ghost btn-sm" onclick="fmRetry(${m.id})">Send again</button>` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="6" class="muted" style="padding:16px">No messages in the last 7 days.</td></tr>`}</tbody></table></div></div>` };
+}
+route('/floor', viewFloorMessages);
+async function fmRetry(id){ try { await api('/webhook/engineering/api/floor/retry', { method:'POST', body:{ id } }); toast('Queued again', '', 'ok'); FM = null; render(); } catch (e) { toast('Could not', e.message, 'err'); } }
+
+/* ---- push notifications: a service worker shows a notification for each new call (payloadless push; the worker fetches the text) */
+function pushSupported(){ return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+function isIosBrowser(){ return /iPhone|iPad|iPod/.test(navigator.userAgent) && !(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)); }
+async function pushCheck(){
+  if (JB.push.checked) return;
+  JB.push.checked = true;
+  if (!pushSupported()) { JB.push.state = isIosBrowser() ? 'ios' : 'unsupported'; render(); return; }
+  if (Notification.permission === 'denied') { JB.push.state = 'denied'; render(); return; }
+  try {
+    const reg = await navigator.serviceWorker.register('sw.js');
+    const sub = await reg.pushManager.getSubscription();
+    const st = await api('/webhook/engineering/api/push');
+    if (!st.public_key) { JB.push.state = 'server'; render(); return; }
+    JB.push.publicKey = st.public_key;
+    JB.push.state = sub && Notification.permission === 'granted' ? 'on' : 'off';
+    if (sub && Notification.permission === 'granted') await pushRegister(sub);     // keep the server's copy linked to this person
+  } catch (e) { JB.push.state = 'unsupported'; }
+  render();
+}
+function b64urlToBytes(s){ const pad = '='.repeat((4 - s.length % 4) % 4), raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(raw, c => c.charCodeAt(0)); }
+async function pushRegister(sub){
+  const r = await api('/webhook/engineering/api/push/subscribe', { method:'POST', body:{ endpoint: sub.endpoint, device: (navigator.userAgent.match(/\(([^)]+)\)/) || [, 'browser'])[1].slice(0, 120) } });
+  try { const c = await caches.open('okl-push'); await c.put('key', new Response(r.key)); } catch (e) { /* the worker then shows a plain notice */ }
+}
+async function pushTurnOn(){
+  try {
+    if (await Notification.requestPermission() !== 'granted') { JB.push.state = 'denied'; render(); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(JB.push.publicKey) });
+    await pushRegister(sub);
+    JB.push.state = 'on'; toast('Notifications on', 'You will get one for each new call.', 'ok'); render();
+  } catch (e) { toast('Could not turn notifications on', e.message, 'err', 7000); }
+}
+
+
+/* ============================================================
+   Preventive maintenance (migration 020): what is due, and how well each PM held (worked out, never typed).
+   A PM = a preventive job, or any other job (not a breakdown) done on a Saturday or Sunday. The run ends at the first
+   breakdown, or the first floor machine stop of pm_failure_minutes or more. GET /webhook/engineering/api/pm.
+   ============================================================ */
+let PM = { data: null, from: '', to: '' };
+async function pmLoad(){
+  try { const q = new URLSearchParams(); if (PM.from) q.set('from', PM.from); if (PM.to) q.set('to', PM.to); PM.data = await api('/webhook/engineering/api/pm?' + q.toString()); }
+  catch (err) { PM.data = { error: err.message }; }
+  render();
+}
+function viewPm(){
+  if (!PM.data) { PM.data = 'loading'; pmLoad(); }
+  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
+  const head = pageHead('Preventive maintenance', 'What is due, and how long each PM held before the machine broke down again. Record a PM as a preventive job (Start a job).',
+    canStart ? `<button class="btn btn-primary" onclick="go('/jobs/new?type=preventive')">${I.plus} Record a PM</button>` : '');
+  const d = PM.data;
+  if (d === 'loading') return { title:'Preventive maintenance', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title:'Preventive maintenance', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const due = d.due || [], eff = d.effectiveness || [];
+  const stLabel = { overdue: '<span class="badge b-danger">Overdue</span>', due: '<span class="badge b-warn">Due this week</span>', ok: '<span class="badge b-ok">OK</span>', no_record: '<span class="badge b-slate">No PM recorded</span>' };
+  const effBadge = s => s === 'Failed early' ? '<span class="badge b-danger">Failed early</span>' : s === 'Running' ? '<span class="badge b-info">Running</span>' : '<span class="badge b-ok">Held to the next PM</span>';
+  const scored = eff.filter(x => x.effectiveness != null), avg = scored.length ? Math.round(scored.reduce((s, x) => s + +x.effectiveness, 0) / scored.length) : null;
+  const n = k => due.filter(x => x.state === k).length;
+  return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
+    html: head + `<div class="grid g4" style="margin-bottom:14px">
+      <div class="stat"><div class="lbl">Overdue</div><div class="val">${n('overdue')}</div></div>
+      <div class="stat"><div class="lbl">Due this week</div><div class="val">${n('due')}</div></div>
+      <div class="stat"><div class="lbl">No PM recorded yet</div><div class="val">${n('no_record')}</div></div>
+      <div class="stat"><div class="lbl">PM effectiveness</div><div class="val">${avg == null ? '--' : avg + '%'}</div><div class="meta">${scored.length} finished PM runs</div></div></div>
+    <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>PM effectiveness</h3><div class="sub">Target = days to the next PM date. Achieved = days until the first breakdown or a machine stop of ${num(d.failure_minutes)} min or more. The last 6 months unless you pick dates.</div></div>
+      <div class="row" style="gap:6px"><input class="inp" type="date" id="pmFrom" value="${esc(PM.from)}" style="width:auto"><input class="inp" type="date" id="pmTo" value="${esc(PM.to)}" style="width:auto"></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>PM</th><th>Equipment</th><th>PM date</th><th>Next PM</th><th style="text-align:right">Target</th><th>First failure</th><th style="text-align:right">Achieved</th><th style="text-align:right">%</th><th>Status</th></tr></thead>
+      <tbody>${eff.map(x => `<tr class="clickable" onclick="go('/jobs/${esc(x.job_id)}')"><td class="mono small" data-label="PM">${esc(x.job_id)}${x.weekend && x.type !== 'preventive' ? `<div class="tiny muted">weekend ${esc(x.type)}</div>` : ''}</td>
+        <td data-label="Equipment">${esc(x.asset_name)}</td><td data-label="PM date" class="small">${esc(x.pm_date)}</td><td data-label="Next PM" class="small">${esc(x.next_pm_date)}</td>
+        <td data-label="Target" style="text-align:right">${x.target_days} d</td><td data-label="First failure" class="small">${x.failure_date ? esc(x.failure_date) + `<div class="tiny muted">${esc(x.failure_ref || '')}${x.failure_minutes != null ? ', ' + x.failure_minutes + ' min' : ''}</div>` : '--'}</td>
+        <td data-label="Achieved" style="text-align:right">${x.achieved_days} d</td><td data-label="%" style="text-align:right" class="strong">${x.effectiveness == null ? '--' : x.effectiveness + '%'}</td><td data-label="Status">${effBadge(x.status)}</td></tr>`).join('')
+        || `<tr><td colspan="9" class="muted" style="padding:16px">No PM recorded in this period. A PM is recorded as a preventive job.</td></tr>`}</tbody></table></div></div>
+    <div class="card"><div class="card-h"><div><h3>PM due</h3><div class="sub">Equipment with a PM interval, and every floor machine (default ${num(d.default_interval)} days; set an interval per machine in Equipment).</div></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Area</th><th style="text-align:right">Every</th><th>Last PM</th><th>Next due</th><th>Status</th><th></th></tr></thead>
+      <tbody>${due.map(x => `<tr><td data-label="Equipment"><div class="strong">${esc(x.name)}</div><div class="tiny muted mono">${esc(x.asset)}</div></td><td data-label="Area" class="small">${esc(x.area || '')}</td>
+        <td data-label="Every" style="text-align:right">${x.interval_days} d</td><td data-label="Last PM" class="small">${esc(x.last_pm || '--')}</td><td data-label="Next due" class="small">${esc(x.due_date || '--')}</td>
+        <td data-label="Status">${stLabel[x.state] || ''}</td><td style="text-align:right">${canStart ? `<button class="btn btn-ghost btn-sm" onclick="go('/jobs/new?type=preventive&asset=${encodeURIComponent(x.asset)}')">Record PM</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`,
+    bind(){ [['#pmFrom', 'from'], ['#pmTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { PM[k] = e.target.value; PM.data = null; render(); }; }); },
+  };
+}
+route('/pm', viewPm);
+
+/* ============================================================
+   Corrective and preventive actions (migration 020): the register, and what the data suggests.
+   GET /webhook/engineering/api/actions; POST /actions/save, /actions/dismiss.
+   ============================================================ */
+let AC = { data: null, filter: 'open' };
+const AC_STATUS = { open: ['Open', 'b-warn'], in_progress: ['In progress', 'b-info'], done: ['Done, to check', 'b-brand'], verified: ['Effective', 'b-ok'],
+                    not_effective: ['Not effective', 'b-danger'], cancelled: ['Cancelled', 'b-slate'] };
+async function acLoad(){ try { AC.data = await api('/webhook/engineering/api/actions'); } catch (err) { AC.data = { error: err.message }; } render(); if (!EQ.list && !EQ.loading) eqLoad(); }
+function acBadge(a){ const s = AC_STATUS[a.status] || [a.status, '']; return `<span class="badge ${s[1]}">${esc(s[0])}</span>${a.overdue ? ' <span class="badge b-danger">Overdue</span>' : ''}`; }
+function viewActions(){
+  if (!AC.data) { AC.data = 'loading'; acLoad(); }
+  const can = ['submit', 'edit'].includes(levelOf('engineering.actions'));
+  const head = pageHead('Corrective and preventive actions', 'Root causes and the actions that stop a problem coming back. The system suggests one for a long stop or a repeated one; raise it or say why not.',
+    can ? `<button class="btn btn-primary" onclick="acOpen(null)">${I.plus} New action</button>` : '');
+  const d = AC.data;
+  if (d === 'loading') return { title:'Actions', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title:'Actions', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const s = d.settings || {}, sug = d.suggestions || [];
+  const list = (d.actions || []).filter(a => AC.filter === 'all' || (AC.filter === 'open' ? ['open', 'in_progress', 'done'].includes(a.status) : !['open', 'in_progress', 'done'].includes(a.status)));
+  return { title:'Actions', crumb:'Maintenance', keepScroll: true,
+    html: head + `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>Suggested (${sug.length})</h3>
+        <div class="sub">A machine stop or breakdown of ${num(s.long)} min or more, or the same machine stopping for the same reason ${num(s.repeat)} times within ${num(s.days)} days (last 30 days; limits in Settings).</div></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Why</th><th>Rule</th><th></th></tr></thead><tbody>
+      ${sug.map((x, i) => `<tr><td data-label="Why"><div class="strong">${esc(x.why)}</div>${x.job_ids.length ? `<div class="tiny muted">${x.job_ids.map(esc).join(', ')}</div>` : ''}</td>
+        <td data-label="Rule">${x.rule === 'repeat' ? '<span class="badge b-warn">Repeats</span>' : '<span class="badge b-danger">Long stop</span>'}</td>
+        <td style="text-align:right">${can ? `<div class="row" style="gap:6px;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="acRaise(${i})">Raise an action</button><button class="btn btn-ghost btn-sm" onclick="acDismiss(${i})">No action needed</button></div>` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="3" class="muted" style="padding:16px">Nothing suggested.</td></tr>`}</tbody></table></div></div>
+    <div class="row" style="gap:8px;margin-bottom:10px">${[['open', 'Open'], ['closed', 'Closed'], ['all', 'All']].map(([k, l]) => `<button class="chip ${AC.filter === k ? 'on' : ''}" onclick="AC.filter='${k}'; render()">${l}</button>`).join('')}</div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Action</th><th>Equipment</th><th>Title</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead>
+      <tbody>${list.map(a => `<tr class="clickable" onclick="acOpen(${a.id})"><td class="mono small" data-label="Action">${esc(a.action_no)}<div class="tiny muted">${a.kind === 'corrective' ? 'Corrective' : 'Preventive'}</div></td>
+        <td data-label="Equipment">${esc(a.asset_name || a.asset)}</td><td data-label="Title"><div class="strong">${esc(a.title)}</div>${a.trigger ? `<div class="tiny muted">${esc(a.trigger)}</div>` : ''}</td>
+        <td data-label="Owner" class="small">${esc(a.owner_name || '')}</td><td data-label="Due" class="small">${esc(a.due_date)}</td><td data-label="Status">${acBadge(a)}</td></tr>`).join('')
+        || `<tr><td colspan="6" class="muted" style="padding:16px">No actions here.</td></tr>`}</tbody></table></div>
+      <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Actions tab).</div></div>` };
+}
+route('/actions', viewActions);
+function acRaise(i){ const x = AC.data.suggestions[i]; acOpen(null, { kind: 'corrective', asset: x.asset, title: (x.machine_name + ': ' + x.reason).slice(0, 160), problem: x.why,
+  suggestion_key: x.key, trigger: x.why, job_ids: x.job_ids, stop_ids: x.stop_ids }); }
+function acDismiss(i){
+  const x = AC.data.suggestions[i];
+  openModal({ title:'No action needed', size:'narrow', sub: x.why,
+    body:`<div class="field"><label for="adWhy">Why not?</label><input class="inp" id="adWhy" maxlength="300" placeholder="e.g. one-off: foreign object in the feeder"></div><div class="err-msg hide" data-err="adWhy"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn btn-primary" data-save>Dismiss</button>`,
+    onMount: (w, close) => { $('[data-save]', w).onclick = async () => {
+      clearErrors(w); const reason = $('#adWhy', w).value.trim(); if (reason.length < 5) return setErr('adWhy', 'Say why.', w);
+      try { await api('/webhook/engineering/api/actions/dismiss', { method:'POST', body:{ key: x.key, reason } }); close(); toast('Dismissed', '', 'ok'); AC.data = null; render(); }
+      catch (e) { setErr('adWhy', e.message, w); } }; } });
+}
+function acOpen(id, preset){
+  const a = id ? (AC.data.actions || []).find(x => x.id === id) : Object.assign({ kind: 'corrective', status: 'open', job_ids: [], stop_ids: [] }, preset || {});
+  const lvl = levelOf('engineering.actions'), can = ['submit', 'edit'].includes(lvl), mgr = lvl === 'edit';
+  const closed = ['verified', 'not_effective', 'cancelled'].includes(a.status), dis = can && (!closed || mgr) ? '' : 'disabled';
+  const people = (AC.data.people || []);
+  const assetVal = a.asset ? ((eqByCode(a.asset) || {}).name || a.asset_name || a.asset) + ' (' + a.asset + ')' : '';
+  const nextStatus = !id ? [] : a.status === 'open' ? [['in_progress', 'Started']] : [];
+  openModal({ title: id ? a.action_no + ': ' + a.title : 'New action', size:'wide', sub: id ? 'Raised by ' + (a.created_by || '') + (a.trigger ? ' · ' + a.trigger : '') : (a.trigger || 'Corrective: removes the cause of a problem that happened. Preventive: stops one that could happen.'),
+    body:`<form novalidate><div class="grid g2">
+      <div class="field"><label for="acKind">Type</label><select class="inp" id="acKind" ${dis || (id ? 'disabled' : '')}><option value="corrective" ${a.kind === 'corrective' ? 'selected' : ''}>Corrective</option><option value="preventive" ${a.kind === 'preventive' ? 'selected' : ''}>Preventive</option></select></div>
+      <div class="field"><label for="acAsset">Machine or equipment</label><input class="inp" id="acAsset" list="acAssets" value="${esc(assetVal)}" ${dis}><datalist id="acAssets">${spAssetOptions()}</datalist></div>
+      <div class="field" style="grid-column:1/-1"><label for="acTitle">Title</label><input class="inp" id="acTitle" maxlength="160" value="${esc(a.title || '')}" ${dis}></div>
+      <div class="field" style="grid-column:1/-1"><label for="acProblem">What happened (or could happen)</label><textarea class="inp" id="acProblem" rows="2" maxlength="2000" ${dis}>${esc(a.problem || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label for="acCause">Root cause</label><textarea class="inp" id="acCause" rows="2" maxlength="2000" ${dis} placeholder="Why did it really happen? (ask why until the answer is something you can fix)">${esc(a.root_cause || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label for="acTodo">Action to take</label><textarea class="inp" id="acTodo" rows="2" maxlength="2000" ${dis}>${esc(a.action_to_take || '')}</textarea></div>
+      <div class="field"><label for="acOwner">Owner</label><select class="inp" id="acOwner" ${dis}><option value="">Choose...</option>${people.map(p => `<option value="${esc(p.enroll_id)}" ${p.enroll_id === a.owner ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label for="acDue">Due date</label><input class="inp" type="date" id="acDue" value="${esc(a.due_date || '')}" ${dis}></div>
+    </div>
+    ${(a.job_ids || []).length ? `<div class="small" style="margin-bottom:10px"><b>Linked jobs:</b> ${a.job_ids.map(j => `<a href="#/jobs/${esc(j)}" onclick="$$('#layers .overlay').forEach(o => o.remove())">${esc(j)}</a>`).join(', ')}</div>` : ''}
+    ${a.done_note ? `<div class="small" style="margin-bottom:6px"><b>Done:</b> ${esc(a.done_note)}</div>` : ''}${a.check_note ? `<div class="small" style="margin-bottom:6px"><b>Checked by ${esc(a.checked_by || '')}:</b> ${esc(a.check_note)}</div>` : ''}
+    ${id && can && ['open', 'in_progress'].includes(a.status) ? `<div class="field"><label for="acDoneNote">When done: what was done?</label><input class="inp" id="acDoneNote" maxlength="1000"></div>` : ''}
+    ${id && mgr && !closed ? `<div class="field"><label for="acCheck">${a.status === 'done' ? 'Did it work? How did you check?' : 'Why cancel it? (only to cancel)'}</label><input class="inp" id="acCheck" maxlength="1000" placeholder="${a.status === 'done' ? 'e.g. no stop for this reason in 4 weeks' : ''}"></div>` : ''}
+    <div class="err-msg hide" data-err="acTitle"></div></form>`,
+    footer:`<button class="btn btn-ghost" data-close>Close</button>
+      ${can && !id ? `<button class="btn btn-primary" data-act="open">${I.check} Raise</button>` : ''}
+      ${can && id && !closed ? `<button class="btn btn-ghost" data-act="">Save</button>` : ''}
+      ${can && id ? nextStatus.map(([k, l]) => `<button class="btn btn-ghost" data-act="${k}">${l}</button>`).join('') : ''}
+      ${can && id && ['open', 'in_progress'].includes(a.status) ? `<button class="btn btn-primary" data-act="done">Mark done</button>` : ''}
+      ${mgr && id && a.status === 'done' ? `<button class="btn btn-danger" data-act="not_effective">Not effective</button><button class="btn btn-primary" data-act="verified">Effective</button>` : ''}
+      ${mgr && id && !closed ? `<button class="btn btn-ghost" data-act="cancelled">Cancel action</button>` : ''}`,
+    onMount: (w, close) => { $$('[data-act]', w).forEach(b => b.onclick = async () => {
+      clearErrors(w);
+      const act = b.dataset.act;
+      const body = { id: id || '', kind: $('#acKind', w).value, asset: spAssetFrom($('#acAsset', w).value), title: $('#acTitle', w).value.trim(), problem: $('#acProblem', w).value.trim(),
+        root_cause: $('#acCause', w).value.trim(), action_to_take: $('#acTodo', w).value.trim(), owner: $('#acOwner', w).value, due_date: $('#acDue', w).value,
+        suggestion_key: a.suggestion_key || '', trigger: a.trigger || '', job_ids: a.job_ids || [], stop_ids: a.stop_ids || [] };
+      if (act) body.status = act;
+      if (act === 'done') body.done_note = ($('#acDoneNote', w) || {}).value || '';
+      if (['verified', 'not_effective', 'cancelled'].includes(act)) body.check_note = ($('#acCheck', w) || {}).value || '';
+      if (body.title.length < 3) return setErr('acTitle', 'Give the action a short title.', w);
+      b.disabled = true;
+      try { await api('/webhook/engineering/api/actions/save', { method:'POST', body:{ action: body } }); close(); toast('Saved', body.title, 'ok'); AC.data = null; render(); }
+      catch (e) { setErr('acTitle', e.message, w); b.disabled = false; }
+    }); } });
+}
+
+/* ============================================================
+   Overview (migration 020): the manager's figures for a period. GET /webhook/engineering/api/overview?days=
+   ============================================================ */
+let OV = { data: null, days: 30 };
+async function ovLoad(){ try { OV.data = await api('/webhook/engineering/api/overview?days=' + OV.days); } catch (err) { OV.data = { error: err.message }; } render(); }
+function viewOverview(){
+  if (!OV.data) { OV.data = 'loading'; ovLoad(); }
+  const head = pageHead('Overview', 'Maintenance at a glance.', `<div class="seg">${[7, 30, 90].map(n => `<button class="${OV.days === n ? 'on' : ''}" onclick="OV.days=${n}; OV.data=null; render()">${n} days</button>`).join('')}</div>`);
+  const d = OV.data;
+  if (d === 'loading') return { title:'Overview', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title:'Overview', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const c = d.calls || {}, j = d.jobs || {}, a = d.actions || {}, p = d.pm || {}, s = d.spares || {}, cw = s.count_week || {};
+  const stat = (lbl, val, meta, link, kind) => `<div class="stat ${link ? 'link' : ''} ${kind ? 'acc-' + kind : ''}" ${link ? `onclick="go('${link}')"` : ''}><div class="lbl">${esc(lbl)}</div><div class="val">${val == null ? '--' : val}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>`;
+  const hrs = m => m == null ? '--' : dur(m);
+  return { title:'Overview', crumb:'Maintenance', keepScroll: true,
+    html: head + `<h3 style="margin:4px 0 10px">Calls from the floor</h3><div class="grid g4" style="margin-bottom:16px">
+      ${stat('Calls', c.count, `${c.not_accepted_now || 0} not accepted right now`, '/jobs', c.not_accepted_now ? 'warn' : '')}
+      ${stat('Response (called to accepted)', hrs(c.response_min), 'average')}
+      ${stat('Wait for maintenance', hrs(c.wait_min), 'called to arrived, average')}
+      ${stat('Repair time', hrs(c.repair_min), 'arrived to running, average')}</div>
+    <h3 style="margin:4px 0 10px">Work</h3><div class="grid g4" style="margin-bottom:16px">
+      ${stat('Open jobs', j.open, `${j.waiting_part || 0} waiting for a part`, '/jobs')}
+      ${stat('Machine downtime (floor)', hrs(d.floor_downtime_min), 'machine reasons only', '/stops')}
+      ${stat('Parts cost', d.parts_cost_total == null ? '--' : 'NGN ' + money(d.parts_cost_total), 'handed over on jobs and issues')}
+      ${stat('PM effectiveness', d.pm_effectiveness == null ? '--' : d.pm_effectiveness + '%', `${p.overdue || 0} PM overdue, ${p.due || 0} due this week`, '/pm', p.overdue ? 'danger' : '')}</div>
+    <h3 style="margin:4px 0 10px">Follow-up</h3><div class="grid g4" style="margin-bottom:16px">
+      ${stat('Actions open', a.open, `${a.overdue || 0} overdue, ${a.to_check || 0} to check`, '/actions', a.overdue ? 'danger' : '')}
+      ${stat('Suggested actions', a.suggestions, 'long or repeated stops to look at', '/actions', a.suggestions ? 'warn' : '')}
+      ${stat('Spares hand-overs waiting', s.handovers_waiting, `${s.out_of_stock || 0} out of stock, ${s.reorder || 0} to reorder`, '/spares/handovers')}
+      ${stat('Weekly count', (cw.done || 0) + ' of ' + (cw.items || 0), 'this week', '/spares/counts')}</div>
+    ${d.floor_messages_failed ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>${d.floor_messages_failed} message(s) to the floor system could not be delivered. <a href="#/floor">See the floor messages</a>.</div></div>` : ''}
+    <div class="card" style="margin-bottom:14px"><div class="card-h"><h3>By job type</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Type</th><th style="text-align:right">Jobs</th><th style="text-align:right">Hours</th></tr></thead>
+      <tbody>${(j.by_type || []).map(t => `<tr><td>${esc(JOB_TYPE[t.type] || t.type)}</td><td style="text-align:right">${t.jobs}</td><td style="text-align:right">${num(t.hours)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted" style="padding:16px">No jobs in this period.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div class="card-h"><div><h3>Machines</h3><div class="sub">Most floor downtime first (machine reasons), with breakdown jobs, labour and parts.</div></div></div><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Equipment</th><th style="text-align:right">Floor stops</th><th style="text-align:right">Downtime</th><th style="text-align:right">Breakdown jobs</th><th style="text-align:right">Labour (h)</th><th style="text-align:right">Parts (NGN)</th></tr></thead>
+      <tbody>${(d.machines || []).map(m => `<tr><td data-label="Equipment" class="strong">${esc(m.name)}</td><td data-label="Floor stops" style="text-align:right">${m.floor_stops}</td><td data-label="Downtime" style="text-align:right">${hrs(m.downtime_min)}</td>
+        <td data-label="Breakdown jobs" style="text-align:right">${m.breakdowns}</td><td data-label="Labour" style="text-align:right">${m.labour_h == null ? '' : num(m.labour_h)}</td><td data-label="Parts" style="text-align:right">${m.parts_cost == null ? '' : money(m.parts_cost)}</td></tr>`).join('')
+        || '<tr><td colspan="6" class="muted" style="padding:16px">Nothing in this period.</td></tr>'}</tbody></table></div></div>` };
+}
+route('/overview', viewOverview);
+
+/* ============================================================
+   Outdoor units (migration 021): the monthly check, one month at a time. Filled in through the form link (WhatsApp
+   reminder from the 25th); people with submit access can open the form from here. GET /webhook/engineering/api/outdoor/month.
+   ============================================================ */
+let OD = { month: '', data: null };
+async function odLoad(){ try { OD.data = await api('/webhook/engineering/api/outdoor/month' + (OD.month ? '?month=' + OD.month : '')); } catch (err) { OD.data = { error: err.message }; } render(); }
+function odShift(n){ const base = OD.data && OD.data.month ? OD.data.month : new Date().toISOString().slice(0, 7) + '-01'; const t = new Date(base + 'T12:00:00Z'); t.setUTCMonth(t.getUTCMonth() + n); OD.month = t.toISOString().slice(0, 7); OD.data = null; render(); }
+async function odForm(){
+  try { const r = await api('/webhook/engineering/api/outdoor/link', { method:'POST', body:{} }); window.open(API_BASE + '/webhook/engineering/outdoor?t=' + encodeURIComponent(r.token), '_blank'); }
+  catch (e) { toast('Could not open the form', e.message, 'err'); }
+}
+function viewOutdoor(){
+  if (!OD.data) { OD.data = 'loading'; odLoad(); }
+  const canFill = ['submit', 'edit'].includes(levelOf('engineering.outdoor'));
+  const head = pageHead('Outdoor units', 'The monthly check of every outdoor unit, due from the 25th to the end of the month. Superheat (T1 - Evap) should be 8-12 °C, subcooling (Cond - T2) 5-10 °C.',
+    canFill ? `<button class="btn btn-primary" onclick="odForm()">${I.externalLink} Open this month's form</button>` : '');
+  const d = OD.data;
+  if (d === 'loading') return { title:'Outdoor units', crumb:'Logs', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title:'Outdoor units', crumb:'Logs', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const badge = s => s === 'OK' ? '<span class="badge b-ok">OK</span>' : s === 'Out of standard' ? '<span class="badge b-danger">Out of standard</span>' : s === 'Not running' ? '<span class="badge b-slate">Not running</span>' : s ? `<span class="badge">${esc(s)}</span>` : '<span class="badge b-warn">Not checked</span>';
+  const cell = (v, lo, hi) => v == null ? '' : `<span class="${+v < lo || +v > hi ? 'strong' : ''}" style="${+v < lo || +v > hi ? 'color:var(--danger)' : ''}">${num(v)}</span>`;
+  return { title:'Outdoor units', crumb:'Logs', keepScroll: true,
+    html: head + `<div class="row between" style="margin-bottom:12px"><div class="eng-nav"><button class="btn btn-ghost btn-sm" onclick="odShift(-1)">${I.chevL}</button><span class="lbl">${esc(d.label)}</span><button class="btn btn-ghost btn-sm" onclick="odShift(1)">${I.chevR}</button></div>
+      <div class="small">${d.logged} of ${d.total} units checked · ${d.out} out of standard · due ${esc(d.window_from)} to ${esc(d.window_to)}</div></div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Unit</th><th style="text-align:right">Amps</th><th style="text-align:right">Low psi</th><th style="text-align:right">High psi</th>
+      <th style="text-align:right">Superheat</th><th style="text-align:right">Subcooling</th><th>Checked</th><th>Status</th></tr></thead>
+      <tbody>${(d.units || []).map(u => `<tr><td data-label="Unit"><div class="strong">${esc(u.name)}</div>${u.note ? `<div class="tiny muted">${esc(u.note)}</div>` : ''}</td>
+        <td data-label="Amps" style="text-align:right">${num(u.amps)}</td><td data-label="Low psi" style="text-align:right">${num(u.low_psi)}</td><td data-label="High psi" style="text-align:right">${num(u.high_psi)}</td>
+        <td data-label="Superheat" style="text-align:right">${cell(u.superheat, 8, 12)}${u.t1 != null ? `<div class="tiny muted">${num(u.t1)} - ${num(u.evap)}</div>` : ''}</td>
+        <td data-label="Subcooling" style="text-align:right">${cell(u.subcooling, 5, 10)}${u.t2 != null ? `<div class="tiny muted">${num(u.cond)} - ${num(u.t2)}</div>` : ''}</td>
+        <td data-label="Checked" class="small">${u.checked_on ? esc(u.checked_on) + `<div class="tiny muted">${esc(u.checked_by || '')}${u.timing && u.timing !== 'On time' ? ' · ' + esc(u.timing) : ''}</div>` : ''}</td>
+        <td data-label="Status">${badge(u.status)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Outdoor Units tab).</div></div>` };
+}
+route('/outdoor', viewOutdoor);

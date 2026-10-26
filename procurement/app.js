@@ -61,12 +61,28 @@ function setToken(t){
 // One sign-in on the landing page serves every console; no token means go there.
 function toLanding(){ setToken(''); location.href = '../'; }
 function toLandingKeepToken(){ location.href = '../'; }
+// a link into this console (WhatsApp, e-mail) survives signing in: the landing page sends the person back here afterwards
+function rememberHere(){ try { if (currentPath() !== '/') sessionStorage.setItem('okl.return', location.pathname + location.hash); } catch(e) { /* ignore */ } }
+function noAccess(){
+  try { sessionStorage.setItem('okl.notice', 'You do not have access to Procurement. Ask an admin if you need it.'); } catch(e) { /* ignore */ }
+  toLandingKeepToken();
+}
 function meFromAuth(auth, scope){
   const u = (auth && auth.user) || {};
   const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
   return { id: u.id, name: u.name, role: u.is_admin ? 'admin' : '', is_admin: !!u.is_admin,
-           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change };
+           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change, access: (auth && auth.access) || {} };
 }
+// Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
+function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
+const PAGES = [["/items", "procurement.requests"], ["/new-request", "procurement"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
+function pageOf(path){
+  const p = String(path == null ? currentPath() : path).split('?')[0];
+  const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
+  return hit ? hit[1] : 'procurement';
+}
+function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canEditHere(){ return levelOf(pageOf()) === 'edit'; }
 
 const API_BASE = 'https://orangegroupsai.online';
 async function api(path, opts){
@@ -85,12 +101,12 @@ async function api(path, opts){
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
   if (res.status === 401){
-    toLanding();
+    rememberHere(); toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
   let json = {};
   try { json = await res.json(); } catch (e) { /* empty body */ }
-  if (!res.ok) throw new Error(json.error || 'Something went wrong.');
+  if (!res.ok){ const err = new Error(json.error || 'Something went wrong.'); err.status = res.status; throw err; }
   return json;
 }
 
@@ -194,19 +210,17 @@ function navModel(){
       { path:'/items', label:'Procurement Log', icon:'box' },
       { path:'/new-request', label:'New Request', icon:'plus' },
     ] },
-    { title:'Engineering Spares', items:[
-      { path:'/spares/inventory', label:'Inventory', icon:'box' },
-      { path:'/spares/inbound', label:'Inbound', icon:'arrowDown' },
-      { path:'/spares/outbound', label:'Outbound', icon:'arrowUp' },
-    ] },
   ];
   return groups;
 }
 
 /* ---------------- Shell ---------------- */
+function allowedNav(){
+  return navModel().map(g => Object.assign({}, g, { items: g.items.filter(it => canOpen(it.path)) })).filter(g => g.items.length);
+}
 function renderShell(inner, meta){
   const path = currentPath().split('?')[0];
-  const navHtml = navModel().map(g => `
+  const navHtml = allowedNav().map(g => `
     <div class="nav-group">${esc(g.title)}</div>
     ${g.items.map(it => {
       const active = path === it.path || path.startsWith(it.path + '/');
@@ -281,7 +295,7 @@ function fatalErrorHtml(err){
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
   const auth = await api('/webhook/auth/api/me');
-  if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
+  if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
   const data = await api('/webhook/procurement/api/items');
   S = { me: meFromAuth(auth, 'procurement'), items: data.items };
   resetIdleTimer();
@@ -291,6 +305,11 @@ function render(){
   try {
     if (!S){ toLanding(); return; }
     const path = currentPath();
+    if (!canOpen(path)){
+      const first = allowedNav()[0];
+      if (first && first.items[0].path !== path.split('?')[0]) { location.hash = '#' + first.items[0].path; return; }
+      if (!first) { noAccess(); return; }
+    }
     const m = matchRoute(path);
     if (!m){
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
@@ -317,9 +336,9 @@ window.addEventListener('hashchange', render);
 
 (async function boot(){
   try {
-    if (!getToken()){ toLanding(); return; }
+    if (!getToken()){ rememberHere(); toLanding(); return; }
     try { await bootstrap(); }
-    catch (e) { if (!getToken()) return; toLandingKeepToken(); return; }
+    catch (e) { if (!getToken()) return; if (e && e.status === 403) { noAccess(); return; } rememberHere(); toLandingKeepToken(); return; }
     if (!location.hash) location.hash = '#/';
     render();
   } catch (err) {
@@ -393,7 +412,7 @@ function openItemDetail(id){
   // that got us here embeds a bare numeric literal - compare as strings.
   const it = S.items.find(x => String(x.id) === String(id));
   if (!it) return;
-  const canEdit = S.me.permission === 'editor';
+  const canEdit = canEditHere();
   const readonlyRow = (label, value) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${esc(value||'--')}</div></div>`;
 
   const body = `
@@ -591,65 +610,18 @@ function viewNewRequest(){
 route('/new-request', () => viewNewRequest());
 
 /* ============================================================
-   Engineering Spares - simple read-only views straight off the same
-   .xlsx workbook the requisition form's SKU catalog already reads
-   (Plantilla stock/Inbound/Outbond tabs). Not part of the bootstrap
-   fetch since they're heavier and not needed on every visit - loaded
-   on demand, once per session, the first time each page is opened.
+   Engineering spares moved to the Engineering console (migration 018): stock, receipts, issues and counts live in the
+   database now. Old links land on a pointer.
    ============================================================ */
-const sparesCache = { inventory: null, inbound: null, outbound: null };
-const sparesLoading = { inventory: false, inbound: false, outbound: false };
-const sparesError = { inventory: '', inbound: '', outbound: '' };
-
-async function loadSpares(kind, path){
-  if (sparesCache[kind] || sparesLoading[kind]) return;
-  sparesLoading[kind] = true;
-  sparesError[kind] = '';
-  render();
-  try {
-    const data = await api('/webhook/procurement/api/spares/' + path);
-    sparesCache[kind] = Array.isArray(data.rows) ? data.rows : [];
-  } catch (err) {
-    sparesError[kind] = err.message;
-  } finally {
-    sparesLoading[kind] = false;
-    render();
-  }
+function viewSparesMoved(){
+  return { title:'Spares', crumb:'Procurement',
+    html: `${pageHead('Spares have moved', 'Engineering spares are now kept in the Engineering console, with live stock.')}
+      <div class="card"><div class="card-b">${emptyState('box', 'Spares are in the Engineering console', 'Inventory, receipts, issues and the weekly counts are there.',
+        `<a class="btn btn-primary" href="../engineering/#/spares">Open Engineering spares</a>`)}</div></div>` };
 }
-function retrySpares(kind, path){
-  sparesError[kind] = '';
-  loadSpares(kind, path);
-}
-
-function viewSpares(kind, path, title, desc){
-  if (!sparesCache[kind] && !sparesLoading[kind] && !sparesError[kind]) loadSpares(kind, path);
-  const rows = sparesCache[kind] || [];
-  const columns = [...new Set(rows.flatMap(r => Object.keys(r)))];
-
-  let bodyHtml;
-  if (sparesLoading[kind]) {
-    bodyHtml = `<div class="card"><div class="card-b">${emptyState('box', 'Loading...', 'Fetching the latest data from the sheet.')}</div></div>`;
-  } else if (sparesError[kind]) {
-    bodyHtml = `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(sparesError[kind]),
-      `<button class="btn btn-primary" onclick="retrySpares('${kind}','${path}')">Retry</button>`)}</div></div>`;
-  } else if (!rows.length) {
-    bodyHtml = `<div class="card"><div class="card-b">${emptyState('box', 'No rows found', '')}</div></div>`;
-  } else {
-    bodyHtml = `<div class="card"><div class="tbl-wrap"><table class="tbl">
-      <thead><tr>${columns.map(col => `<th>${esc(col)}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map(r => `<tr>${columns.map(col => `<td data-label="${esc(col)}">${esc(r[col] ?? '--')}</td>`).join('')}</tr>`).join('')}</tbody>
-    </table></div></div>`;
-  }
-
-  return {
-    title, crumb:'Engineering Spares',
-    html: `${pageHead(title, desc)}${bodyHtml}`,
-    bind(){},
-  };
-}
-route('/spares/inventory', () => viewSpares('inventory', 'inventory', 'Spares Inventory', 'Engineering spare parts stock, from the same sheet the requisition form looks SKUs up against.'));
-route('/spares/inbound', () => viewSpares('inbound', 'inbound', 'Spares Inbound', 'Engineering spare parts received.'));
-route('/spares/outbound', () => viewSpares('outbound', 'outbound', 'Spares Outbound', 'Engineering spare parts issued.'));
+route('/spares/inventory', viewSparesMoved);
+route('/spares/inbound', viewSparesMoved);
+route('/spares/outbound', viewSparesMoved);
 
 /* ============================================================
    Roles list (read-only data for the New Request page). Who can submit and who approves now lives in the central

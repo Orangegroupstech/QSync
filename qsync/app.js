@@ -95,6 +95,11 @@ const STATUS = {
   pending_qa_review: { label:'Pending QA Review',  badge:'b-info' },
   sent_to_qc:        { label:'With QC',            badge:'b-ok' },
   rejected:          { label:'Rejected',           badge:'b-danger' },
+  // QC laboratory (Phase 2, lab.js)
+  qc_received:       { label:'In the QC lab',      badge:'b-warn' },
+  qc_released:       { label:'Released by QC',     badge:'b-ok' },
+  qc_not_released:   { label:'Not released',       badge:'b-danger' },
+  qa_acknowledged:   { label:'Closed (QA)',        badge:'b-slate' },
 };
 const PRODUCTS_META = {
   Mixagrip:       { prefix:'A', type:'OSD', defaultBatchSize:1200000 },
@@ -145,6 +150,8 @@ function setToken(t){
 // One sign-in on the landing page serves every console; no token means go there.
 function toLanding(){ setToken(''); location.href = '../'; }
 function toLandingKeepToken(){ location.href = '../'; }
+// remember the page a link pointed to (e.g. an e-mail's "Open in QSync"), so the landing page returns here after sign-in
+function rememberHere(){ try { if (currentPath() !== '/') sessionStorage.setItem('okl.return', location.pathname + location.hash); } catch(e) { /* ignore */ } }
 function meFromAuth(auth, scope){
   const u = (auth && auth.user) || {};
   const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
@@ -169,6 +176,7 @@ async function api(path, opts){
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
   if (res.status === 401){
+    rememberHere();
     toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
@@ -257,7 +265,8 @@ async function pollTick(){
     if (path.startsWith('/reports')) {
       reportsCache = await api('/webhook/admin/api/reports');
     } else {
-      S = await api('/webhook/admin/api/bootstrap');
+      const keep = { me: S.me, lab: S.lab };
+      S = Object.assign(await api('/webhook/admin/api/bootstrap'), keep);
     }
     render();
   } catch (e) { /* transient failure - next tick retries; a real 401 already handles itself */ }
@@ -309,6 +318,12 @@ function queryParams(){
 function navModel(){
   return [
     ...(canEdit() ? [{ title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] }] : []),
+    ...(S.lab ? [{ title:'QC Laboratory', items:[
+      { path:'/lab/inbox', label:'QC inbox', icon:'inbox' },
+      { path:'/lab/my', label:'My analyses', icon:'doc' },
+      { path:'/lab/oos', label:'OOS log', icon:'alert' },
+      { path:'/lab/master', label:'Lab master data', icon:'settings' },
+    ]}] : []),
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
       { path:'/reports', label:'Reports and Trends', icon:'chart' },
@@ -391,10 +406,11 @@ function statusBadge(status){
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
   const auth = await api('/webhook/auth/api/me');
-  if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
+  if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
   const data = await api('/webhook/admin/api/bootstrap');
   S = data;
   S.me = meFromAuth(auth, 'qsync');
+  try { const lab = await api('/webhook/qsync/lab/api/my'); S.lab = { roles: lab.roles || [] }; } catch (e) { S.lab = null; }
   resetIdleTimer();
   startPolling();
 }
@@ -411,10 +427,11 @@ function fatalErrorHtml(err){
         onclick="location.reload()">Reload</button>
     </div></div>`;
 }
+let renderedPath = null;   // a redraw of the same page (a value added, data loaded) keeps the scroll position
 function render(){
   const app = document.getElementById('app');
   try {
-    if (!S){ toLanding(); return; }
+    if (!S){ rememberHere(); toLanding(); return; }
     const path = currentPath();
     const m = matchRoute(path);
     if (!m){
@@ -429,10 +446,12 @@ function render(){
         ${emptyState('alert','Something went wrong on this screen', esc(err.message),
           `<button class="btn btn-primary" onclick="go('/requests')">Back to requests</button>`)}</div></div>` };
     }
+    const samePage = path === renderedPath, keepY = window.scrollY;
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
-    window.scrollTo({ top:0 });
+    window.scrollTo({ top: samePage ? keepY : 0 });
+    renderedPath = path;
   } catch (err) {
     console.error(err);
     app.innerHTML = fatalErrorHtml(err);
@@ -442,9 +461,9 @@ window.addEventListener('hashchange', render);
 
 (async function boot(){
   try {
-    if (!getToken()){ toLanding(); return; }
+    if (!getToken()){ rememberHere(); toLanding(); return; }
     try { await bootstrap(); }
-    catch (e) { if (!getToken()) return; toLandingKeepToken(); return; }
+    catch (e) { if (!getToken()) return; rememberHere(); toLandingKeepToken(); return; }
     if (!location.hash) location.hash = '#/requests';
     render();
   } catch (err) {
@@ -565,13 +584,19 @@ function onNewReqProductChange(){
     STAGE_OPTIONS[meta.type].filter(s => !(meta.noStages || []).includes(s)).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   stageSel.disabled = false;
 }
+// this month in Lagos as yyyy-mm: the server refuses a later manufacturing month
+function thisMonthLagos(){
+  const p = {}; new Intl.DateTimeFormat('en-GB', { timeZone:'Africa/Lagos', year:'numeric', month:'2-digit' }).formatToParts(new Date()).forEach(x => { p[x.type] = x.value; });
+  return p.year + '-' + p.month;
+}
 // Same rule as the backend: expiry = manufacturing month + the product's shelf life (months)
 function updateNewReqExpiry(){
   const out = $('#rqExp'), hint = $('#rqExpHint');
   if (!out) return;
   const name = $('#rqProduct').value, mfg = $('#rqMfg').value;
   const prod = (S && S.products || []).find(p => p.name === name);
-  if (!name || !/^\d{4}-\d{2}$/.test(mfg)){ out.value = ''; hint.textContent = ''; return; }
+  const mfgEl = $('#rqMfg'); if (mfgEl) mfgEl.max = thisMonthLagos();
+  if (!name || !/^\d{4}-\d{2}$/.test(mfg) || mfg > thisMonthLagos()){ out.value = ''; hint.textContent = mfg > thisMonthLagos() ? 'The manufacturing month cannot be later than this month.' : ''; return; }
   const months = Number(prod && prod.shelfLifeMonths) || 60;
   const [y, m] = mfg.split('-').map(Number);
   const total = y * 12 + (m - 1) + months;
@@ -602,6 +627,7 @@ function bindNewRequest(){
     if (!stage) return setErr('rqStage', 'Select a stage.');
     const mfg = $('#rqMfg').value;
     if (!mfg) return setErr('rqMfg', 'Select a manufacturing month.');
+    if (mfg > thisMonthLagos()) return setErr('rqMfg', 'Manufacturing date cannot be later than the current month.');
 
     const prefixLetter = $('#rqPrefix').textContent;
     const btn = f.querySelector('button[type=submit]');
@@ -621,7 +647,8 @@ function bindNewRequest(){
       await bootstrap();
       go('/requests');
     } catch (err){
-      setErr('rqBatch', err.message || 'Could not submit this request.');
+      // the server's own reason when it gives one; a bare failure is not the batch number's fault
+      toast('Could not submit this request', err.message && err.message !== 'Something went wrong.' ? err.message : 'The server refused it. Check every field (the manufacturing month cannot be in the future) and try again.', 'err');
     } finally {
       btn.disabled = false;
     }
@@ -656,27 +683,27 @@ function overallResult(r){
 function resultBadge(r){
   const ev = overallResult(r);
   if (ev === null) return `<span class="badge b-slate">Not tested</span>`;
-  return ev === 'pass' ? `<span class="badge b-ok">${I.check} Pass</span>` : `<span class="badge b-danger">${I.x} Out of spec</span>`;
+  return ev === 'pass' ? `<span class="badge b-ok">${I.check} IPQA pass</span>` : `<span class="badge b-danger">${I.x} IPQA out of spec</span>`;   // IPQA checks only: QC results show on the batch pages
 }
 function viewRequests(){
   const rows = filterRequests();
   const productOptions = Object.keys(PRODUCTS_META).map(p => `<option value="${esc(p)}" ${listState.product===p?'selected':''}>${esc(p)}</option>`).join('');
   const statusOptions = Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${listState.status===k?'selected':''}>${esc(v.label)}</option>`).join('');
   const stageOptions = ALL_STAGES.map(s => `<option value="${esc(s)}" ${listState.stage===s?'selected':''}>${esc(s)}</option>`).join('');
-  const resultOptions = [['pass','Pass'],['fail','Out of spec'],['untested','Not tested']]
+  const resultOptions = [['pass','IPQA pass'],['fail','IPQA out of spec'],['untested','Not tested']]
     .map(([k,label]) => `<option value="${k}" ${listState.result===k?'selected':''}>${label}</option>`).join('');
   const years = yearsFromDates(S.requests, 'createdAt');
   const sortOptions = [['updated','Recently updated'],['created','Newest first'],['oldest','Oldest first']]
     .map(([k,label]) => `<option value="${k}" ${listState.sort===k?'selected':''}>${label}</option>`).join('');
   const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Status</th><th>Result</th><th>Updated</th><th></th></tr></thead>
+      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Status</th><th>IPQA result</th><th>Updated</th><th></th></tr></thead>
       <tbody>${rows.map(r => `
         <tr class="clickable" onclick="go('/sheet/${r.id}')">
           <td data-label="Request"><div class="req-no">${esc(r.requestNo)}</div></td>
           <td data-label="Product / Batch"><div class="strong">${esc(r.productName)}</div><div class="tiny muted mono">${esc(r.batchNo)}</div></td>
           <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
           <td data-label="Status">${statusBadge(r.status)}</td>
-          <td data-label="Result">${resultBadge(r)}</td>
+          <td data-label="IPQA result">${resultBadge(r)}</td>
           <td class="small muted" data-label="Updated">${relTime(r.updatedAt)}</td>
           <td style="text-align:right">${I.chevR}</td>
         </tr>`).join('')}</tbody></table></div>`
@@ -734,7 +761,7 @@ function reqById(id){ return S.requests.find(r => String(r.id) === String(id)); 
 function qsyncSheetHtml(r){
   const paramRows = (r.parameters||[]).map(p => {
     const value = p.valueText || p.valueNumeric;
-    const spec = p.specText ? p.specText : `${p.specMin ?? ''} - ${p.specMax ?? ''}${p.unit ? ' '+p.unit : ''}`;
+    const spec = p.specText ? htmlDecode(p.specText) : ipqaSpec({ spec_min: p.specMin, spec_max: p.specMax, unit: p.unit });
     const verdict = p.status === 'pass' ? 'PASS' : p.status === 'fail' ? 'FAIL' : 'N/A';
     return `<tr>
       <td>${esc(p.name)}</td>
@@ -784,13 +811,26 @@ function qsyncSheetHtml(r){
   </div>`;
 }
 
+const LAB_STAGE = ['sent_to_qc', 'pending_qc_notify', 'qc_received', 'qc_released', 'qc_not_released', 'qa_acknowledged'];
 function viewSheet(id){
   const r = reqById(id);
   if (!r) return { title:'Not found', crumb:'Records', html: notFound() };
+  // once QC has the batch, the page is the summary report: Phase 1 and QC so far, in one place
+  if (S.lab && LAB_STAGE.includes(r.status)){
+    const d = labGet('/request?id=' + r.id);
+    if (d && !d.error) return {
+      title:`${r.requestNo} - summary`, crumb:'Records',
+      html: `${pageHead(`${r.requestNo} - summary report`, `As complete as the current stage: ${esc(labStatusText(d.request.status))}`, batchNav(r.id, 'summary'))}
+        ${labReportHtml(d)}`
+    };
+    if (!d) return labWait('Summary report', 'Records');
+  }
   return {
     title:`QSync sheet - ${r.requestNo}`, crumb:'Records',
     html: `${pageHead(`QSync sheet - ${esc(r.requestNo)}`, '',
-      `<button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
+      `${S.lab && ['qc_received','qc_released','qc_not_released','qa_acknowledged','sent_to_qc','pending_qc_notify'].includes(r.status)
+          ? `<a class="btn btn-ghost" href="#/lab/request/${r.id}">${I.inbox} QC lab view</a>` : ''}
+       <button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
        <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`)}
       ${qsyncSheetHtml(r)}`
   };
@@ -898,7 +938,7 @@ function viewReports(){
    ============================================================ */
 const ROLE_LABELS = {
   production:'Production', ipqa:'IPQA', qa_supervisor:'QA Supervisor',
-  qc_supervisor:'QC Supervisor', admin:'Admin',
+  qc_supervisor:'QC Supervisor', admin:'Admin', qc_analyst:'QC Analyst', qc_manager:'QC Manager', qa_manager:'QA Manager',
 };
 
 
