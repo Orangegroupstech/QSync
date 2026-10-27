@@ -724,7 +724,15 @@ function wsPaint(){
   for (const t of ws.ctx.templates){
     const r = (c.apis || {})[t.id];
     const sst = $('#sst-' + t.id), just = $('#just-' + t.id);
-    if (sst) sst.innerHTML = r && r.sst ? `%RSD <b class="tnum">${Number(r.sst.rsd_reported).toFixed(2)}%</b> (${esc(r.sst.limit_text)}) ${r.sst.pass ? `<span class="badge b-ok">Pass</span>` : `<span class="badge b-danger">Fail</span>`}` : '--';
+    const big = v => (v === null || v === undefined || isNaN(Number(v)) ? '--' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 1 }));
+    if (sst) sst.innerHTML = r && r.sst
+      ? `<div class="row" style="gap:14px;align-items:baseline;flex-wrap:wrap">
+          <span><span class="muted">Average</span> <b class="tnum">${big(r.sst.mean)}</b></span>
+          <span><span class="muted">SD</span> <b class="tnum">${big(r.sst.sd)}</b></span>
+          <span><span class="muted">%RSD</span> <b class="tnum">${Number(r.sst.rsd_reported).toFixed(2)}%</b> <span class="muted">(${esc(r.sst.limit_text)})</span></span>
+          ${r.sst.pass ? `<span class="badge b-ok">Pass</span>` : `<span class="badge b-danger">Fail</span>`}
+        </div>`
+      : '--';
     if (just) just.classList.toggle('hide', !(r && r.sst && !r.sst.pass) && !(ws.inputs.apis[t.id] || {}).sst_justification);
     ws.inputs.samples.forEach((s, si) => {
       const rs = r && r.samples ? r.samples[si] : null;
@@ -984,63 +992,157 @@ function mdApprove(id){
   const t = (labCache['/masterdata'].templates || []).find(x => x.id === id); if (!t) return;
   signDialog({ title: 'Approve method template', sub: `${t.product_name} ${t.stage} - ${TEST_TYPES[t.test_type] || t.test_type} - ${t.api} v${t.version}`,
     ok: 'Sign approval', meaning: 'You approve this version for use (QA). It is then locked; the previous approved version is retired.',
-    body: mdParamsHtml(t.parameters),
+    body: mdParamsHtml(t.parameters, t.test_type),
     submit: async ({ password }) => { await labPost('/template/approve', { id, password }); toast('Template approved', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
 }
-function mdParamsHtml(P){
-  P = P || {};
+// what a template holds, per test type (the view QA signs and the read-only view)
+function mdParamsHtml(P, test){
+  P = P || {}; test = test || 'assay';
   const kv = (k, v) => `<div class="kv-item"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
-  const steps = s => (s || []).map((x, i) => (i === 0 ? `weight to ${x[1]} mL` : `${x[0]} to ${x[1]} mL`)).join(', ');
-  return `<div class="kv-grid" style="margin-bottom:12px">${kv('Label claim', (P.label_claim_mg ?? '--') + ' mg')}${kv('Theoretical avg weight', ((P.avg_weight || {}).theoretical_mg ?? '--') + ' mg')}
-    ${kv('Standard', `${(P.std || {}).nominal_mg ?? '--'} mg: ${steps((P.std || {}).steps)}`)}${kv('Sample', steps((P.sample || {}).steps))}
-    ${kv('Standard injections', `${(P.std_injections || {}).min} to ${(P.std_injections || {}).max}`)}${kv('Preparations x injections', `${P.preparations} x ${P.injections}`)}
-    ${kv('Samples per batch', `up to ${(P.samples || {}).max || 1}`)}${kv('Limits', `${(P.limits || {}).min}% to ${(P.limits || {}).max}%`)}
-    ${kv('System suitability', `%RSD NMT ${(P.sst || {}).limit_rsd}%`)}${kv('Reported to', `${P.dp ?? 1} decimal place(s)`)}</div>`;
+  const steps = (s, first) => (s || []).map((x, i) => (i === 0 ? `${first} to ${x[1]} mL` : `${x[0]} mL to ${x[1]} mL`)).join(', ');
+  const unit = P.dosage_form || 'caplet';
+  const hplc = [kv('Standard', `${(P.std || {}).nominal_mg ?? '--'} mg: ${steps((P.std || {}).steps, 'weight')}`),
+    kv('Standard injections', `${(P.std_injections || {}).min} to ${(P.std_injections || {}).max}`),
+    kv('System suitability', `%RSD NMT ${(P.sst || {}).limit_rsd}%`), kv('Reported to', `${P.dp ?? 1} decimal place(s)`)];
+  const tail = [kv('Samples per batch', `up to ${(P.samples || {}).max || 1}`), kv('Dosage form', unit)];
+  let rows;
+  if (test === 'assay') rows = [kv('Label claim', (P.label_claim_mg ?? '--') + ' mg'), kv('Theoretical avg weight', ((P.avg_weight || {}).theoretical_mg ?? '--') + ' mg'),
+    ...hplc, kv('Sample', steps((P.sample || {}).steps, 'weight')), kv('Preparations x injections', `${P.preparations} x ${P.injections}`),
+    kv('Limits', `${(P.limits || {}).min}% to ${(P.limits || {}).max}%`), ...tail];
+  else if (test === 'dissolution') rows = [kv('Label claim', (P.label_claim_mg ?? '--') + ' mg'), ...hplc,
+    kv('Sample', steps((P.sample || {}).steps, `1 ${unit}`)), kv('Medium / units', `${P.medium_ml ?? '--'} mL, ${P.units ?? '--'} ${unit}s`),
+    kv('Limit', `NLT ${(P.limits || {}).min}%`), ...tail];
+  else if (test === 'content_uniformity') rows = [kv('Label claim', (P.label_claim_mg ?? '--') + ' mg'), ...hplc,
+    kv('Sample', steps((P.sample || {}).steps, `1 ${unit}`)), kv('Acceptance', `10 ${unit}s, AV NMT ${P.l1 ?? 15}, k ${P.k1 ?? 2.4}`), ...tail];
+  else if (test === 'microbiology') rows = [kv('Unit', (P.limits || {}).unit || 'cfu/g'),
+    ...(((P.limits || {}).counts) || []).map(c => kv(c.label, `NMT ${c.max} ${(P.limits || {}).unit || ''}`)),
+    kv('Absent', (((P.limits || {}).absent) || []).map(a => a.label).join(', ') || '--'), tail[0]];
+  else rows = [kv('Calculation', 'Retention times recorded; the analyst decides whether the sample complies'), ...tail];
+  return `<div class="kv-grid" style="margin-bottom:12px">${rows.join('')}</div>`;
 }
 function mdTemplateView(id){
   const t = (labCache['/masterdata'].templates || []).find(x => x.id === id); if (!t) return;
   openModal({ title: `${t.api} - v${t.version} (${t.status})`, sub: `${t.product_name} ${t.stage} - ${TEST_TYPES[t.test_type] || t.test_type} - ${t.method_ref || ''} ${t.spec_ref || ''} ${t.form_ref || ''}`,
-    body: mdParamsHtml(t.parameters) + (t.change_note ? `<div class="small muted">Change note: ${esc(t.change_note)}</div>` : ''),
+    body: mdParamsHtml(t.parameters, t.test_type) + (t.change_note ? `<div class="small muted">Change note: ${esc(t.change_note)}</div>` : ''),
     footer: `<button class="btn btn-ghost" data-close>Close</button>` });
 }
+// fresh parameters for a new template, per test type: the reusable set-up for new products and new methods
+function mdTplDefaults(test){
+  const base = { std_injections: { min: 5, max: 6 }, samples: { min: 1, max: 3 }, sst: { limit_rsd: 2.0, dp: 2 }, dp: 1, dosage_form: 'tablet' };
+  if (test === 'assay') return { label_claim_mg: '', std: { nominal_mg: '', steps: [[null, 100], [1, 1], [1, 1]] }, sample: { nominal_mg: '', steps: [[null, 100], [1, 1], [1, 1]] },
+    avg_weight: { theoretical_mg: '' }, preparations: 2, injections: 2, limits: { min: 90.0, max: 110.0 }, ...base };
+  if (test === 'dissolution') return { label_claim_mg: '', std: { nominal_mg: '', steps: [[null, 100], [1, 1], [1, 1]] }, sample: { steps: [[1, 900], [1, 1], [1, 1]] },
+    medium_ml: 900, units: 6, limits: { min: 80.0 }, ...base };
+  if (test === 'content_uniformity') return { label_claim_mg: '', std: { nominal_mg: '', steps: [[null, 100], [1, 1]] }, sample: { steps: [[1, 100]] },
+    k1: 2.4, l1: 15.0, ...base };
+  if (test === 'microbiology') return { samples: base.samples, dosage_form: base.dosage_form,
+    limits: { unit: 'cfu/g', counts: [{ key: 'tamc', label: 'TAMC', max: 100 }, { key: 'tymc', label: 'TYMC', max: 50 }],
+      absent: [{ key: 's_aureus', label: 'Staphylococcus aureus' }, { key: 'salmonella', label: 'Salmonella spp' },
+               { key: 'p_aeruginosa', label: 'Pseudomonas aeruginosa' }, { key: 'e_coli', label: 'Escherichia coli' }] } };
+  return { samples: base.samples, dosage_form: base.dosage_form };                     // identification: the analyst decides
+}
+// draft editor: the fields follow the test type; anything a field does not show is kept as it was (never dropped)
 function mdTemplate(id, mode){
   const md = labCache['/masterdata'];
   const src = id ? md.templates.find(x => x.id === id) : null;
-  const P = (src && src.parameters) || { label_claim_mg:'', std:{ nominal_mg:'', steps:[[null, 100], [1, 1], [1, 1]] }, sample:{ nominal_mg:'', steps:[[null, 100], [1, 1], [1, 1]] },
-    avg_weight:{ theoretical_mg:'' }, std_injections:{ min:5, max:6 }, samples:{ min:1, max:3 }, preparations:2, injections:2, sst:{ limit_rsd:2.0, dp:2 }, limits:{ min:90.0, max:110.0 }, dp:1 };
-  const f = (id2, label, val, type) => `<div class="field"><label for="tp_${id2}">${esc(label)}</label><input class="inp" id="tp_${id2}" type="${type || 'number'}" step="any" value="${esc(val ?? '')}"></div>`;
-  const stepRows = (pre, s) => [0, 1, 2].map(i => `<div class="row" style="gap:6px;flex-wrap:nowrap;margin-bottom:6px"><span class="small" style="width:70px">${i === 0 ? 'Weigh into' : 'Then take'}</span>
-      ${i === 0 ? '' : `<input class="inp" id="tp_${pre}_t${i}" type="number" step="any" value="${esc((s[i] || [1])[0])}" style="width:90px"><span class="small">mL to</span>`}
-      <input class="inp" id="tp_${pre}_v${i}" type="number" step="any" value="${esc((s[i] || [null, 1])[1])}" style="width:90px"><span class="small">mL</span></div>`).join('');
   const isNew = !src;
+  let test = src ? src.test_type : 'assay';
+  let P = src ? JSON.parse(JSON.stringify(src.parameters || {})) : mdTplDefaults(test);
+  const getP = path => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), P);
+  const setP = (path, val) => { const ks = path.split('.'); let o = P; ks.slice(0, -1).forEach(k => { if (o[k] == null) o[k] = {}; o = o[k]; }); o[ks[ks.length - 1]] = val; };
   openModal({ title: isNew ? 'New method template (draft)' : mode === 'edit' ? `Edit draft - ${src.api} v${src.version}` : `New version of ${src.api} (from v${src.version})`, size: 'wide',
     body: `${isNew ? `<div class="grid g2">
         <div class="field"><label for="tp_product">Product</label><select class="inp" id="tp_product">${(md.products || []).map(p => `<option>${esc(p)}</option>`).join('')}</select></div>
         <div class="field"><label>Stage</label><div class="small" style="padding-top:8px">All stages (a method belongs to the product)</div></div>
         <div class="field"><label for="tp_test">Test</label><select class="inp" id="tp_test">${testOptions('assay')}</select></div>
         <div class="field"><label for="tp_api">API</label><input class="inp" id="tp_api" placeholder="e.g. Paracetamol"></div></div>` : ''}
-      <div class="grid g3">${f('lc', 'Label claim (mg)', P.label_claim_mg)}${f('avg', 'Theoretical average weight (mg)', (P.avg_weight || {}).theoretical_mg)}${f('stdnom', 'Standard nominal weight (mg)', (P.std || {}).nominal_mg)}</div>
-      <div class="grid g2"><div class="fieldset"><div class="sec-title">Standard dilution</div>${stepRows('std', (P.std || {}).steps || [])}</div>
-        <div class="fieldset"><div class="sec-title">Sample dilution</div>${stepRows('spl', (P.sample || {}).steps || [])}</div></div>
-      <div class="grid g4">${f('injmin', 'Std injections min', (P.std_injections || {}).min)}${f('injmax', 'Std injections max', (P.std_injections || {}).max)}
-        ${f('preps', 'Preparations', P.preparations)}${f('inj', 'Injections per prep', P.injections)}
-        ${f('smax', 'Samples per batch (max)', (P.samples || {}).max)}${f('min', 'Lower limit (%)', (P.limits || {}).min)}${f('max', 'Upper limit (%)', (P.limits || {}).max)}${f('rsd', 'SST %RSD limit', (P.sst || {}).limit_rsd)}</div>
-      <div class="grid g3">${f('mref', 'Method ref', src ? src.method_ref : 'QC/MOA/FP/005', 'text')}${f('sref', 'Spec ref', src ? src.spec_ref : '', 'text')}${f('fref', 'Form / Excel ref', src ? src.form_ref : '', 'text')}</div>
+      <div id="tpParams"></div>
+      <div class="grid g3">
+        <div class="field"><label for="tp_mref">Method ref</label><input class="inp" id="tp_mref" type="text" placeholder="e.g. QC/MOA/FP/002" value="${esc(src ? src.method_ref || '' : '')}"></div>
+        <div class="field"><label for="tp_sref">Spec ref</label><input class="inp" id="tp_sref" type="text" placeholder="e.g. OKL/QC/SP/FP/002" value="${esc(src ? src.spec_ref || '' : '')}"></div>
+        <div class="field"><label for="tp_fref">Form / Excel ref</label><input class="inp" id="tp_fref" type="text" value="${esc(src ? src.form_ref || '' : '')}"></div></div>
       <div class="field"><label for="tp_note">Change note</label><input class="inp" id="tp_note" value="${esc(mode === 'edit' && src ? src.change_note || '' : '')}"></div>
       <div class="err-msg hide" id="tpErr" style="color:var(--danger)"></div>`,
     footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="tpOk">Save draft</button>`,
-    onMount: (w, close) => { $('#tpOk', w).onclick = async () => {
-      const v = k => $('#tp_' + k, w).value, n = k => (v(k) === '' ? null : Number(v(k)));
-      const steps = pre => [0, 1, 2].map(i => (i === 0 ? [null, n(pre + '_v0')] : [n(pre + '_t' + i), n(pre + '_v' + i)]));
-      const params = { label_claim_mg: n('lc'), std: { nominal_mg: n('stdnom'), steps: steps('std') }, sample: { nominal_mg: n('avg'), steps: steps('spl') },
-        avg_weight: { theoretical_mg: n('avg') }, std_injections: { min: n('injmin'), max: n('injmax') }, samples: { min: 1, max: n('smax') || 1 },
-        preparations: n('preps'), injections: n('inj'), sst: { limit_rsd: n('rsd'), dp: 2 }, limits: { min: n('min'), max: n('max') }, dp: (P.dp == null ? 1 : P.dp) };
-      const body = { parameters: params, method_ref: v('mref'), spec_ref: v('sref'), form_ref: v('fref'), change_note: v('note') };
-      if (isNew) Object.assign(body, { product_name: v('product'), test_type: v('test'), api: v('api') });
-      else if (mode === 'edit') body.id = src.id; else body.from_id = src.id;
-      try { await labPost('/template/draft', body); close(); toast('Draft saved', 'QA approves it before it can be used.', 'ok'); labRefresh(); }
-      catch (e) { const er = $('#tpErr', w); er.textContent = e.message; er.classList.remove('hide'); }
-    }; } });
+    onMount: (w, close) => {
+      const box = $('#tpParams', w);
+      const f = (path, label, type) => `<div class="field"><label>${esc(label)}</label><input class="inp" data-p="${path}" type="${type || 'number'}" step="any" value="${esc(getP(path) ?? '')}"></div>`;
+      const formSel = () => `<div class="field"><label>Dosage form (unit word)</label><select class="inp" data-p="dosage_form">
+          ${['tablet', 'caplet', 'capsule'].map(u => `<option ${((P.dosage_form || 'caplet') === u) ? 'selected' : ''}>${u}</option>`).join('')}</select></div>`;
+      const stepRows = (key, title, first) => { const s = getP(key + '.steps') || [];
+        return `<div class="fieldset"><div class="sec-title">${esc(title)}</div>
+          ${s.map((x, i) => `<div class="row" style="gap:6px;flex-wrap:nowrap;margin-bottom:6px">
+            ${i === 0 ? `<span class="small" style="width:110px">${esc(first)}</span>`
+              : `<span class="small" style="width:70px">Then take</span><input class="inp" data-p="${key}.steps.${i}.0" type="number" step="any" value="${esc(x[0] ?? '')}" style="width:84px"><span class="small">mL to</span>`}
+            <input class="inp" data-p="${key}.steps.${i}.1" type="number" step="any" value="${esc(x[1] ?? '')}" style="width:84px"><span class="small">mL</span>
+            ${i === s.length - 1 && i > 0 ? `<button class="btn btn-ghost btn-sm" data-step="${key}:-1" title="Remove this step">${I.x}</button>` : ''}</div>`).join('')}
+          ${s.length < 4 ? `<button class="btn btn-ghost btn-sm" data-step="${key}:1">${I.plus} Dilution step</button>` : ''}</div>`; };
+      const draw = () => {
+        const unit = P.dosage_form || 'caplet';
+        const hplcTop = `<div class="grid g4">${f('std_injections.min', 'Std injections min')}${f('std_injections.max', 'Std injections max')}
+          ${f('sst.limit_rsd', 'SST %RSD limit (NMT)')}${f('samples.max', 'Samples per batch (max)')}</div>`;
+        if (test === 'assay') box.innerHTML = `
+          <div class="grid g3">${f('label_claim_mg', 'Label claim (mg)')}${f('avg_weight.theoretical_mg', 'Theoretical average weight (mg)')}${f('std.nominal_mg', 'Standard nominal weight (mg)')}</div>
+          <div class="grid g2">${stepRows('std', 'Standard dilution', 'Weigh into')}${stepRows('sample', 'Sample dilution', 'Weigh into')}</div>
+          ${hplcTop}
+          <div class="grid g4">${f('preparations', 'Preparations')}${f('injections', 'Injections per prep')}${f('limits.min', 'Lower limit (%)')}${f('limits.max', 'Upper limit (%)')}</div>
+          <div class="grid g3">${formSel()}</div>`;
+        else if (test === 'dissolution') box.innerHTML = `
+          <div class="grid g3">${f('label_claim_mg', 'Label claim (mg)')}${f('std.nominal_mg', 'Standard nominal weight (mg)')}${f('units', `Units per run (${unit}s)`)}</div>
+          <div class="grid g2">${stepRows('std', 'Standard dilution', 'Weigh into')}${stepRows('sample', `Sample dilution (1 ${unit} into the medium)`, `1 ${unit} into`)}</div>
+          ${hplcTop}
+          <div class="grid g3">${f('limits.min', 'Limit: NLT (%)')}${formSel()}</div>`;
+        else if (test === 'content_uniformity') box.innerHTML = `
+          <div class="grid g3">${f('label_claim_mg', 'Label claim (mg)')}${f('std.nominal_mg', 'Standard nominal weight (mg)')}${formSel()}</div>
+          <div class="grid g2">${stepRows('std', 'Standard dilution', 'Weigh into')}${stepRows('sample', `Sample dilution (1 ${unit} each, 10 ${unit}s)`, `1 ${unit} into`)}</div>
+          ${hplcTop}
+          <div class="grid g3">${f('k1', 'k (acceptability constant)')}${f('l1', 'AV limit (NMT)')}</div>`;
+        else if (test === 'microbiology') box.innerHTML = `
+          <div class="grid g3">
+            <div class="field"><label>Unit</label><select class="inp" data-p="limits.unit">${['cfu/g', 'cfu/ml'].map(u => `<option ${(((P.limits || {}).unit || 'cfu/g') === u) ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
+            ${(((P.limits || {}).counts) || []).map((c, i) => f(`limits.counts.${i}.max`, `${c.label} (NMT)`)).join('')}</div>
+          <div class="field"><label>Organisms that must be absent (one per line)</label>
+            <textarea class="inp" id="tp_absent" rows="4">${esc((((P.limits || {}).absent) || []).map(a => a.label).join('\n'))}</textarea></div>
+          <div class="grid g3">${f('samples.max', 'Samples per batch (max)')}</div>`;
+        else box.innerHTML = `
+          <div class="notice" style="margin-bottom:12px">${I.info} Identification has no calculation: the retention times are recorded and the analyst decides whether the sample complies.</div>
+          <div class="grid g3">${f('samples.max', 'Samples per batch (max)')}${formSel()}</div>`;
+      };
+      const sync = e => { const p = e.target.dataset && e.target.dataset.p; if (p) { setP(p, e.target.value); if (p === 'dosage_form') draw(); } };
+      box.addEventListener('input', sync); box.addEventListener('change', sync);
+      box.addEventListener('click', e => { const b = e.target.closest ? e.target.closest('[data-step]') : null; if (!b) return;
+        const [key, d] = b.dataset.step.split(':'); const s = getP(key + '.steps');
+        if (d === '1') s.push([1, 1]); else s.pop(); draw(); });
+      if (isNew) $('#tp_test', w).onchange = () => { test = $('#tp_test', w).value; P = mdTplDefaults(test); draw(); };
+      draw();
+      $('#tpOk', w).onclick = async () => {
+        const v = k => $('#tp_' + k, w).value;
+        const num = x => (x === '' || x === null || x === undefined ? null : Number(x));
+        // numbers typed as text -> numbers; dilution steps keep their shape (first take: a weight -> null, 1 unit -> 1)
+        const numPaths = { assay: ['label_claim_mg', 'std.nominal_mg', 'sample.nominal_mg', 'avg_weight.theoretical_mg', 'std_injections.min', 'std_injections.max', 'samples.max', 'preparations', 'injections', 'sst.limit_rsd', 'limits.min', 'limits.max', 'dp'],
+          dissolution: ['label_claim_mg', 'std.nominal_mg', 'medium_ml', 'units', 'std_injections.min', 'std_injections.max', 'samples.max', 'sst.limit_rsd', 'limits.min', 'dp'],
+          content_uniformity: ['label_claim_mg', 'std.nominal_mg', 'k1', 'l1', 'std_injections.min', 'std_injections.max', 'samples.max', 'sst.limit_rsd', 'dp'],
+          identification: ['samples.max'], microbiology: ['samples.max'] }[test] || [];
+        numPaths.forEach(p => { if (getP(p) !== undefined) setP(p, num(getP(p))); });
+        const unitFirst = test === 'dissolution' || test === 'content_uniformity';
+        ['std', 'sample'].forEach(k => { const s = getP(k + '.steps');
+          if (s) s.forEach((x, i) => { s[i] = i === 0 ? [k === 'sample' && unitFirst ? 1 : null, num(x[1])] : [num(x[0]), num(x[1])]; }); });
+        if (P.samples) P.samples.min = P.samples.min || 1;
+        if (test === 'dissolution' && P.sample && P.sample.steps) P.medium_ml = P.sample.steps[0][1];
+        if (test === 'microbiology' && P.limits) { const old = (P.limits.absent) || [];
+          (P.limits.counts || []).forEach(c => { c.max = num(c.max); });
+          P.limits.absent = $('#tp_absent', w).value.split('\n').map(x => x.trim()).filter(Boolean).map(label => {
+            const prev = old.find(a => a.label.toLowerCase() === label.toLowerCase());
+            return { key: prev ? prev.key : label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), label }; });
+        }
+        if (P.sample && P.sample.nominal_mg === undefined && test === 'assay') P.sample.nominal_mg = (P.avg_weight || {}).theoretical_mg;
+        const body = { parameters: P, method_ref: v('mref'), spec_ref: v('sref'), form_ref: v('fref'), change_note: v('note') };
+        if (isNew) Object.assign(body, { product_name: v('product'), test_type: test, api: v('api') });
+        else if (mode === 'edit') body.id = src.id; else body.from_id = src.id;
+        try { await labPost('/template/draft', body); close(); toast('Draft saved', 'QA approves it before it can be used.', 'ok'); labRefresh(); }
+        catch (e) { const er = $('#tpErr', w); er.textContent = e.message; er.classList.remove('hide'); }
+      };
+    } });
 }
 
 /* ============================================================ Printable worksheet and batch QC report ============================================================ */
@@ -1083,12 +1185,12 @@ function printWorksheetHtml(d, opt){
     let html = `<h4>${esc(t.api)} - template v${esc(t.version)}${t.form_ref ? ' (replaces ' + esc(t.form_ref) + ')' : ''}</h4>`;
     if (hplc){
       const s = r.sst || {};
-      html += `<table><tr><th>Working standard</th><th>Potency</th><th>Weight</th><th>Dilution</th><th>Standard areas</th><th>Mean</th><th>%RSD</th><th>SST</th></tr>
+      html += `<table><tr><th>Working standard</th><th>Potency</th><th>Weight</th><th>Dilution</th><th>Standard areas</th><th>Mean</th><th>SD</th><th>%RSD</th><th>SST</th></tr>
         <tr><td>${esc(ws ? ws.ws_no : r.ws_no || '--')}</td><td>${esc(ws ? ws.potency_pct + '%' : '--')}</td><td>${esc(x.std_weight || '--')} mg</td>
           <td>${esc(stepsText((P.std || {}).steps, 'mg'))}</td><td class="mono">${esc((x.std_areas || []).filter(v => v !== '').join(', '))}</td>
-          <td>${nfix(s.mean, 1)}</td><td>${nfix(s.rsd_reported, 2)}% (${esc(s.limit_text || '')})</td><td><b>${s.pass === true ? 'PASS' : s.pass === false ? 'FAIL' : '--'}</b></td></tr>
-        ${x.sst_justification ? `<tr><td colspan="8">SST justification: ${esc(x.sst_justification)}</td></tr>` : ''}
-        ${(x.ws_changes || []).map(ch => `<tr><td colspan="8">Working standard changed from ${esc(ch.from_no || '?')} to ${esc(ch.to_no || 'none')}${ch.at ? ' (' + fmtDateTime(ch.at) + ')' : ''}: ${esc(ch.reason)}</td></tr>`).join('')}</table>`;
+          <td>${nfix(s.mean, 1)}</td><td>${nfix(s.sd, 1)}</td><td>${nfix(s.rsd_reported, 2)}% (${esc(s.limit_text || '')})</td><td><b>${s.pass === true ? 'PASS' : s.pass === false ? 'FAIL' : '--'}</b></td></tr>
+        ${x.sst_justification ? `<tr><td colspan="9">SST justification: ${esc(x.sst_justification)}</td></tr>` : ''}
+        ${(x.ws_changes || []).map(ch => `<tr><td colspan="9">Working standard changed from ${esc(ch.from_no || '?')} to ${esc(ch.to_no || 'none')}${ch.at ? ' (' + fmtDateTime(ch.at) + ')' : ''}: ${esc(ch.reason)}</td></tr>`).join('')}</table>`;
     }
     if (test === 'assay'){
       html += `<table><tr><th>Sample</th><th>Average weight</th><th>Prep</th><th>Sample weight</th><th>Areas</th><th>% of label claim</th><th>Result (mean)</th><th>Limit</th><th>Verdict</th></tr>
