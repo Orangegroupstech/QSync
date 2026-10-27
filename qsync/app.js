@@ -156,7 +156,23 @@ function meFromAuth(auth, scope){
   const u = (auth && auth.user) || {};
   const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
   return { id: u.id, name: u.name, role: u.is_admin ? 'admin' : '', is_admin: !!u.is_admin,
-           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change };
+           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change, access: (auth && auth.access) || {} };
+}
+// Access per page (migration 022): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
+function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
+const PAGES = [['/lab/oos', 'qsync.oos'], ['/lab/master', 'qsync.master'], ['/lab', 'qsync.lab'],
+  ['/reports', 'qsync.reports'], ['/products', 'qsync.master'],
+  ['/new', 'qsync.requests'], ['/requests', 'qsync.requests'], ['/sheet', 'qsync.requests'], ['/audit', 'qsync.requests']];   // route prefix -> page, first match wins
+function pageOf(path){
+  const p = String(path == null ? currentPath() : path).split('?')[0];
+  const hit = PAGES.find(([pre]) => p === pre || p.startsWith(pre + '/'));
+  return hit ? hit[1] : 'qsync';
+}
+function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canRaiseRequest(){ return ['submit', 'edit'].includes(levelOf('qsync.requests')); }
+function noAccess(){
+  try { sessionStorage.setItem('okl.notice', 'You do not have access to QSync. Ask an admin if you need it.'); } catch(e) { /* ignore */ }
+  toLandingKeepToken();
 }
 
 const API_BASE = 'https://orangegroupsai.online';
@@ -317,7 +333,7 @@ function queryParams(){
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   return [
-    ...(canEdit() ? [{ title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] }] : []),
+    ...(canRaiseRequest() ? [{ title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] }] : []),
     ...(S.lab ? [{ title:'QC Laboratory', items:[
       { path:'/lab/inbox', label:'QC inbox', icon:'inbox' },
       { path:'/lab/my', label:'My analyses', icon:'doc' },
@@ -334,12 +350,16 @@ function navModel(){
     ]},
   ];
 }
+// only the pages the person may open (their roles and page access; migration 022)
+function allowedNav(){
+  return navModel().map(g => Object.assign({}, g, { items: g.items.filter(it => canOpen(it.path)) })).filter(g => g.items.length);
+}
 
 /* ---------------- Shell ---------------- */
 function renderShell(inner, meta){
   const me = S.me;
   const path = currentPath().split('?')[0];
-  const navHtml = navModel().map(g => `
+  const navHtml = allowedNav().map(g => `
     <div class="nav-group">${esc(g.title)}</div>
     ${g.items.map(it => {
       const active = path.startsWith(it.path);
@@ -433,6 +453,11 @@ function render(){
   try {
     if (!S){ rememberHere(); toLanding(); return; }
     const path = currentPath();
+    if (!canOpen(path)){
+      const first = allowedNav()[0];
+      if (first && first.items[0].path !== path.split('?')[0]) { location.hash = '#' + first.items[0].path; return; }
+      if (!first) { noAccess(); return; }
+    }
     const m = matchRoute(path);
     if (!m){
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
@@ -464,7 +489,10 @@ window.addEventListener('hashchange', render);
     if (!getToken()){ rememberHere(); toLanding(); return; }
     try { await bootstrap(); }
     catch (e) { if (!getToken()) return; rememberHere(); toLandingKeepToken(); return; }
-    if (!location.hash) location.hash = '#/requests';
+    if (!location.hash){
+      const first = allowedNav()[0];
+      location.hash = '#' + (first ? first.items[0].path : '/requests');
+    }
     render();
   } catch (err) {
     console.error(err);
@@ -477,9 +505,10 @@ window.addEventListener('hashchange', render);
 /* ============================================================
    New Test Request
    ============================================================ */
-function canEdit(){ return !!(S && S.me && S.me.permission === 'editor'); }
+// may edit products, specs and the lab master data (the 'qsync.master' page; admins always may)
+function canEdit(){ return levelOf('qsync.master') === 'edit'; }
 function viewNewRequest(){
-  if (!canEdit()) return { title:'New test request', crumb:'Workspace', html:`<div class="card"><div class="card-b">${emptyState('lock','View-only access','Raising a test request needs edit access to QSync. Ask an admin to grant it in User Management.')}</div></div>` };
+  if (!canRaiseRequest()) return { title:'New test request', crumb:'Workspace', html:`<div class="card"><div class="card-b">${emptyState('lock','View-only access','Raising a test request needs "submit" access to Test requests. Ask an admin to grant it in User Management.')}</div></div>` };
   const productOptions = Object.keys(PRODUCTS_META)
     .map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
   return {

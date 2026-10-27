@@ -950,7 +950,7 @@ function viewLabMaster(){
   return {
     title:'Lab master data', crumb:'QC Laboratory',
     html: `${pageHead('Lab master data', 'Working standards, equipment and the locked method templates that replace the Excel sheets.')}
-      ${!ed ? `<div class="notice" style="margin-bottom:16px">${I.info} Editing needs QSync edit access; template approval needs the QA Manager or QA Supervisor sign-off.</div>` : ''}
+      ${!ed ? `<div class="notice" style="margin-bottom:16px">${I.info} Editing needs "edit" access to Products and master data; template approval needs the QA Manager or QA Supervisor sign-off.</div>` : ''}
       <div class="tabs">${tabs.map(([k, l]) => `<div class="tab ${k === mdTab ? 'active' : ''}" onclick="mdTab='${k}';render()">${esc(l)}</div>`).join('')}</div>${body}`
   };
 }

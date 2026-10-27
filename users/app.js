@@ -358,6 +358,11 @@ const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procureme
 const SIGNOFFS = [ { key:'signoff.production', label:'Production' }, { key:'signoff.ipqa', label:'IPQA' },
                    { key:'signoff.qa_supervisor', label:'QA Supervisor' }, { key:'signoff.qc_supervisor', label:'QC Supervisor' },
                    { key:'signoff.qc_analyst', label:'QC Analyst' }, { key:'signoff.qc_manager', label:'QC Manager' }, { key:'signoff.qa_manager', label:'QA Manager' } ];
+// A signature is a personal act, so sign-offs are never part of a role: ticking one of these roles only SUGGESTS
+// the matching sign-off, and the admin confirms it with one click.
+const ROLE_SIGNOFF = { 'Production Supervisor':'signoff.production', 'IPQA Inspector':'signoff.ipqa',
+                       'QA Supervisor':'signoff.qa_supervisor', 'QC Supervisor':'signoff.qc_supervisor',
+                       'QC Analyst':'signoff.qc_analyst', 'QC Manager':'signoff.qc_manager', 'QA Manager':'signoff.qa_manager' };
 const LEVELS = [ { key:'', label:'No access' }, { key:'view', label:'View' }, { key:'submit', label:'Submit' }, { key:'edit', label:'Edit' } ];
 const LEVEL_HELP = 'View = can open and read. Submit = can also record their own work (for example a technician closing a job). Edit = can change everything on that page.';
 // "Engineering - Spares", or just "Engineering" for a whole console
@@ -644,16 +649,18 @@ function openManage(id){
       ${(a.seats || []).length ? `<div class="small muted" style="margin-top:8px">Approver seat${a.seats.length === 1 ? '' : 's'}: ${a.seats.map(esc).join(', ')} (change these in Approvers; approvals work by email link).</div>` : ''}
       <div class="divider"></div>
       <div class="strong" style="margin-bottom:4px">Roles</div>
-      <div class="small muted" style="margin-bottom:6px">A role is a set of pages. People only see the consoles and pages their roles and their own access below allow; the higher level wins. Change roles in <a href="#/roles">Roles</a>.</div>
+      <div class="small muted" style="margin-bottom:6px">Start here: one role usually covers the whole job. People only see the consoles and pages their roles and their own access below allow; the higher level wins. Change what a role covers in <a href="#/roles">Roles</a>.</div>
       <div class="grid g2">${(S.roles || []).map(roleBox).join('') || '<div class="small muted">No roles yet.</div>'}</div>
-      <details style="margin-top:10px" ${(a.grants || []).length ? 'open' : ''}><summary class="strong" style="cursor:pointer">Own access, page by page${(a.grants || []).length ? ' (' + a.grants.length + ')' : ''}</summary>
-        <div class="small muted" style="margin:6px 0">${esc(LEVEL_HELP)} Only for what their roles do not cover.</div>
+      <details style="margin-top:10px" ${(a.grants || []).length ? 'open' : ''}><summary class="strong" style="cursor:pointer">Access exceptions, page by page${(a.grants || []).length ? ' (' + a.grants.length + ')' : ''}</summary>
+        <div class="small muted" style="margin:6px 0">${esc(LEVEL_HELP)} Only for what their roles do not cover; prefer a role when several people need the same thing.</div>
         <div class="tbl-wrap" style="max-height:320px;overflow:auto"><table class="tbl"><tbody>${pageRows}</tbody></table></div>
       </details>
+      <div style="margin-top:10px"><span class="strong">Will be able to open:</span> <span id="mgPreview" class="small"></span></div>
       <div class="divider"></div>
       <div class="strong" style="margin-bottom:4px">QC sign-off roles</div>
-      <div class="small muted" style="margin-bottom:6px">Who may sign QC stages with their password.</div>
+      <div class="small muted" style="margin-bottom:6px">Who may sign QC stages with their password. A signature is personal, so it is always ticked here, never part of a role.</div>
       <div class="grid g2">${SIGNOFFS.map(c => box(c.key, c.label)).join('')}</div>
+      <div id="mgSignHint" class="small" style="margin-top:6px"></div>
       ${a.is_admin ? `<div class="notice info" style="margin-top:12px">${I.info}<div>Admins can open and edit everything and manage people, and always keep console access. Sign-off roles are still ticked individually.</div></div>` : ''}
       <div class="divider"></div>
       <div class="strong" style="margin-bottom:4px">Employee record</div>
@@ -680,6 +687,35 @@ function openManage(id){
       };
       paintEmp(); loadEmployees().then(paintEmp).catch(() => {});
       $('#mgFind', w).oninput = debounce(paintEmp, 120);
+      // live preview of the final access (roles + exceptions, highest level wins; a console row covers its pages)
+      const RANK = { view:1, submit:2, edit:3 };
+      const paintPreview = () => {
+        const lv = {};
+        const put = (scope, level) => { if ((RANK[level] || 0) > (RANK[lv[scope]] || 0)) lv[scope] = level; };
+        $$('input[data-role]', w).filter(c => c.checked).forEach(c => {
+          const r = (S.roles || []).find(x => x.role === c.dataset.role);
+          ((r && r.pages) || []).forEach(p => put(p.scope, p.level));
+        });
+        $$('select[data-grant]', w).filter(x => x.value).forEach(x => put(x.dataset.grant, x.value));
+        const shown = Object.keys(lv).filter(k => !Object.keys(lv).some(o => o !== k && k.startsWith(o + '.') && (RANK[lv[o]] || 0) >= (RANK[lv[k]] || 0)));
+        $('#mgPreview', w).innerHTML = a.is_admin ? '<span class="chip on">Everything (admin)</span>'
+          : shown.length ? shown.sort().map(k => `<span class="chip" style="margin:2px 4px 2px 0">${esc(pageLabel(k))}: ${esc(levelWord(lv[k]))}</span>`).join('')
+          : '<span class="muted">Nothing - they cannot open any console.</span>';
+      };
+      // ticking a role suggests its matching sign-off; the admin confirms it deliberately
+      const paintSignHint = () => {
+        const missing = $$('input[data-role]', w).filter(c => c.checked).map(c => ROLE_SIGNOFF[c.dataset.role])
+          .filter(k => k && !$('input[data-scope="' + k + '"]', w).checked);
+        $('#mgSignHint', w).innerHTML = missing.length
+          ? 'Suggested for their role' + (missing.length > 1 ? 's' : '') + ': '
+            + missing.map(k => `<button type="button" class="btn btn-ghost btn-sm" data-suggest="${k}">Also signs ${esc(scopeLabel(k))}</button>`).join(' ')
+          : '';
+        $$('[data-suggest]', w).forEach(b => b.onclick = () => { $('input[data-scope="' + b.dataset.suggest + '"]', w).checked = true; paintSignHint(); });
+      };
+      const repaint = () => { paintPreview(); paintSignHint(); };
+      $$('input[data-role], input[data-scope]', w).forEach(c => c.addEventListener('change', repaint));
+      $$('select[data-grant]', w).forEach(x => x.addEventListener('change', paintPreview));
+      repaint();
       const link = async enrollId => {
         try { await api('/webhook/users/api/link-employee', { method:'POST', body:{ id: a.id, enroll_id: enrollId } }); await loadPeople(); close(); render(); openManage(a.id);
           toast(enrollId ? 'Linked' : 'Unlinked', enrollId ? a.name + ' is linked to staff no. ' + enrollId + '.' : a.name + ' is no longer linked (and is off the machine app).', 'ok'); }
