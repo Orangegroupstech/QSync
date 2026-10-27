@@ -865,7 +865,7 @@ function viewEmployees(){
           <tr class="clickable" data-eid="${esc(e.enroll_id)}" onclick="toggleEmployeeRow('${esc(e.enroll_id)}')">
             ${canEdit ? `<td onclick="event.stopPropagation()"><input type="checkbox" data-sel="${esc(e.enroll_id)}" ${selectedEmployees.has(e.enroll_id)?'checked':''} aria-label="Select ${esc(e.name)}"></td>` : ''}
             <td class="mono" data-label="Enroll ID">${esc(e.enroll_id)}</td>
-            <td data-label="Name"><div class="row" style="gap:10px">${avatarEl(e.name)}<div class="strong">${esc(e.name)}</div></div></td>
+            <td data-label="Name"><div class="person">${avatarEl(e.name)}<div class="person-txt"><span class="strong" title="${esc(e.name)}">${esc(e.name)}</span></div></div></td>
             <td data-label="Gender">${esc(e.gender||'--')}</td>
             <td data-label="Type"><span class="badge ${e.employment_type==='staff'?'b-brand':'b-slate'}">${esc(e.employment_type)}</span></td>
             <td data-label="Role">${esc(e.role||'--')}</td>
@@ -1207,7 +1207,7 @@ function viewOvertimeList(mode){
     title:'Overtime', crumb:'Attendance',
     html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, day by day, totals by person, and every entry.', (mode === 'overview' ? '' : `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`) + (mode === 'totals' ? `<button class="btn btn-primary" id="olReport">${I.download} Download report</button>` : ''))}
       ${hrTabs([['overview', 'Overview', '/overtime/records'], ['daily', 'Daily', '/overtime/records/daily'], ['totals', 'By person', '/overtime/records/people'], ['entries', 'Entries', '/overtime/records/entries']], mode)}
-      ${hrFilterBar(s, 'ol', `<div class="field" style="margin:0"><label>Day type</label><div id="olDay"></div></div><label class="row" style="gap:8px;margin:0;align-self:flex-end;padding-bottom:10px;font-weight:500"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>`)}
+      ${hrFilterBar(s, 'ol', `<div class="field" style="margin:0"><label>Day type</label><div id="olDay"></div></div><label class="check" style="margin:0;align-self:flex-end;padding-bottom:10px"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>`)}
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
       bindHrFilters(s, 'ol', loadOtList, paintOtList);
@@ -1235,7 +1235,7 @@ function openEditOvertime(id){
         <div class="field"><label for="eoStart">Start time</label><input class="inp" type="time" id="eoStart" value="${esc(hhmm(r.start_time))}"></div>
         <div class="field"><label for="eoEnd">End time</label><input class="inp" type="time" id="eoEnd" value="${esc(hhmm(r.end_time))}"></div></div>
       <div class="small muted" id="eoHours"></div><div class="err-msg hide" data-err="eoStart"></div>
-      <label class="row" style="gap:8px;margin:12px 0 0;font-weight:600"><input type="checkbox" id="eoHol" ${otDayType(r) === 'public_holiday' ? 'checked' : ''}> Tick here if date is a public holiday</label>
+      <label class="check" style="margin:12px 0 0;font-weight:600"><input type="checkbox" id="eoHol" ${otDayType(r) === 'public_holiday' ? 'checked' : ''}> Tick here if date is a public holiday</label>
       <div class="small muted" id="eoDay" style="margin-top:4px"></div>
       ${r.start_time ? '' : `<div class="hint">${I.info}<span>This entry was recorded with hours only (${esc(fmtHours(r.hours))} h). Enter start and end times to replace it.</span></div>`}`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
@@ -1778,7 +1778,7 @@ function paintAttUpload(){
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>People</th><th>Punches</th><th>Status</th><th>Replace?</th></tr></thead>
       <tbody>${u.days.map(d => { const en = u.entered.has(d.date); return `<tr><td data-label="Date" class="strong">${esc(fmtDay(d.date))}</td><td data-label="People" class="tnum">${d.people}</td><td data-label="Punches" class="tnum">${d.punches}</td>
         <td data-label="Status">${en ? (u.replace.has(d.date) ? '<span class="badge b-warn">Will replace</span>' : '<span class="badge b-slate">Already entered - skipped</span>') : '<span class="badge b-ok">New</span>'}</td>
-        <td data-label="Replace?">${en ? `<label class="row" style="gap:6px;margin:0;font-weight:500"><input type="checkbox" data-rep="${d.date}" ${u.replace.has(d.date) ? 'checked' : ''}> replace this day</label>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
+        <td data-label="Replace?">${en ? `<label class="check" style="margin:0"><input type="checkbox" data-rep="${d.date}" ${u.replace.has(d.date) ? 'checked' : ''}> replace this day</label>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
       ${unknown.length ? `<div class="card-b small" style="border-top:1px solid var(--line-2)"><span class="strong">${unknown.length} ID${unknown.length === 1 ? '' : 's'} in the file ${unknown.length === 1 ? 'is' : 'are'} not in the employee list</span> and will be ignored: <span class="mono">${esc(unknown.slice(0, 12).join(', '))}${unknown.length > 12 ? ' ...' : ''}</span></div>` : ''}
       <div class="card-b row between" style="border-top:1px solid var(--line-2);flex-wrap:wrap;gap:10px"><div class="small muted">${todo.length ? todo.length + ' ' + (todo.length === 1 ? 'day' : 'days') + ' will be imported.' : 'Every day in this file is already entered.'}</div>
         <button class="btn btn-primary" id="upGo" ${todo.length ? '' : 'disabled'}>${I.check} Import ${todo.length || ''} ${todo.length === 1 ? 'day' : 'days'}</button></div></div>`;
@@ -2209,7 +2209,7 @@ function holAddPeriod(){
   openModal({ title:'Add a period', size:'narrow', sub:'Every day in the range is marked with this name (for example Eid, 2 days).',
     body:`<div class="grid g2"><div class="field"><label for="hpFrom">From</label><input class="inp" type="date" id="hpFrom" value="${hol.year}-01-01"></div><div class="field"><label for="hpTo">To</label><input class="inp" type="date" id="hpTo" value="${hol.year}-01-01"></div></div>
       <div class="field"><label for="hpName">Holiday name</label><input class="inp" id="hpName" maxlength="100" placeholder="e.g. Eid-el-Fitr"></div>
-      <label class="row" style="gap:8px;font-weight:500"><input type="checkbox" id="hpSkip" checked> Skip Saturdays and Sundays</label><div class="err-msg hide" data-err="hpName"></div>`,
+      <label class="check"><input type="checkbox" id="hpSkip" checked> Skip Saturdays and Sundays</label><div class="err-msg hide" data-err="hpName"></div>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Add</button>`,
     onMount:(w, close) => { $('[data-save]', w).onclick = async () => {
       clearErrors(w); const a = $('#hpFrom', w).value, b = $('#hpTo', w).value, name = $('#hpName', w).value.trim(), skip = $('#hpSkip', w).checked;

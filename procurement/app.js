@@ -542,7 +542,7 @@ function viewItems(){
           <tr class="clickable" onclick="openItemDetail(${it.id})">
             <td data-label="Request Date">${esc(formatDate(it.request_date))}</td>
             <td class="mono" data-label="Item ID">${esc(it.item_id||'--')}</td>
-            <td data-label="Requestor"><div class="row" style="gap:10px">${avatarEl(it.requestor)}<div class="strong">${esc(it.requestor)}</div></div></td>
+            <td data-label="Requestor"><div class="person">${avatarEl(it.requestor)}<div class="person-txt"><span class="strong" title="${esc(it.requestor)}">${esc(it.requestor)}</span></div></div></td>
             <td data-label="Material">${esc(it.material_name||'--')}</td>
             <td data-label="Material Type">${esc(it.material_type||'--')}</td>
             <td data-label="Qty & Unit">${esc(formatQty(it))}</td>

@@ -380,16 +380,20 @@ let peopleState = { q:'', status:'console', tab:'accounts' };
 const hasConsole = a => a.console_access !== false || a.is_admin;   // accounts from before the machine app have it
 
 const fmtWhen = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', dateStyle:'medium', timeStyle:'short' }) : 'Never';
+// The access column keeps one line: the most telling chips first (Admin, roles), the rest counted as "+N more"
+// with the full list on hover.
 function accessChips(a){
   const chips = [];
-  if (a.is_admin) chips.push(`<span class="badge b-brand">Admin</span>`);
-  if (!hasConsole(a)) chips.push(`<span class="badge b-slate">No console</span>`);
-  if (a.app_access) chips.push(`<span class="chip">Machine app</span>`);
-  (a.roles || []).forEach(r => chips.push(`<span class="chip on" title="${esc(pagesSummary((S.roles.find(x => x.role === r) || {}).pages))}">${esc(r)}</span>`));
-  (a.grants || []).forEach(g => chips.push(`<span class="chip">${esc(pageLabel(g.scope))}: ${esc(levelWord(g.level))}</span>`));
-  (a.signoff || []).forEach(k => chips.push(`<span class="chip">Signs ${esc(scopeLabel(k))}</span>`));
-  (a.seats || []).forEach(s => chips.push(`<span class="chip">Approver: ${esc(s)}</span>`));
-  return chips.length ? chips.join(' ') : '<span class="muted small">No access yet</span>';
+  if (a.is_admin) chips.push({ h: `<span class="badge b-brand">Admin</span>`, t: 'Admin' });
+  if (!hasConsole(a)) chips.push({ h: `<span class="badge b-slate">No console</span>`, t: 'No console' });
+  (a.roles || []).forEach(r => chips.push({ h: `<span class="chip on">${esc(r)}</span>`, t: r + ' (' + roleSummary((S.roles || []).find(x => x.role === r) || {}) + ')' }));
+  if (a.app_access) chips.push({ h: `<span class="chip">Machine app</span>`, t: 'Machine app' });
+  accessLines(expandAccess(a.grants)).forEach(l => chips.push({ h: `<span class="chip">${esc(l)}</span>`, t: l + ' (own access)' }));
+  (a.signoff || []).forEach(k => chips.push({ h: `<span class="chip">Signs ${esc(scopeLabel(k))}</span>`, t: 'Signs ' + scopeLabel(k) }));
+  (a.seats || []).forEach(s => chips.push({ h: `<span class="chip">Approver: ${esc(s)}</span>`, t: 'Approver: ' + s }));
+  if (!chips.length) return '<span class="muted small">No access yet</span>';
+  const SHOW = 2, rest = chips.slice(SHOW);
+  return `<div class="chips-line" title="${esc(chips.map(c => c.t).join('\n'))}">${chips.slice(0, SHOW).map(c => c.h).join('')}${rest.length ? `<span class="chip more">+${rest.length} more</span>` : ''}</div>`;
 }
 function statusBadges(a){
   const out = [];
@@ -439,11 +443,11 @@ function viewPeople(){
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Person</th><th>Access</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
         <tbody>${shown.length ? shown.map(a => `<tr>
-          <td data-label="Person"><div class="row" style="gap:10px">${avatarEl(a.name)}
-            <div style="min-width:0"><div class="strong">${esc(a.name)}</div>
-            <div class="tiny muted">${esc(a.email || 'no email')} &middot; ${a.linked ? 'staff no. ' + esc(a.enroll_id) : 'not linked to an employee'}</div></div></div></td>
-          <td data-label="Access">${accessChips(a)}</td>
-          <td data-label="Status">${statusBadges(a)}</td>
+          <td data-label="Person" class="cell-person"><div class="person">${avatarEl(a.name)}
+            <div class="person-txt"><span class="strong" title="${esc(a.name)}">${esc(a.name)}</span>
+            <span class="tiny muted" title="${esc((a.email || 'no email') + ' - ' + (a.linked ? 'staff no. ' + a.enroll_id : 'not linked to an employee'))}">${esc(a.email || 'no email')} &middot; ${a.linked ? 'staff no. ' + esc(a.enroll_id) : 'not linked'}</span></div></div></td>
+          <td data-label="Access" class="cell-access">${accessChips(a)}</td>
+          <td data-label="Status"><div class="chips-line">${statusBadges(a)}</div></td>
           <td class="small" data-label="Last sign-in">${esc(fmtWhen(a.last_login_at))}</td>
           <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="openManage(${a.id})">${I.edit} Manage</button></td>
         </tr>`).join('') : `<tr><td colspan="5" class="muted" style="padding:16px">No matching people.</td></tr>`}</tbody>
@@ -623,99 +627,236 @@ async function loadEmployees(){
   return empCache;
 }
 
+/* ---------------- Access tree (shared by People > Manage and Roles) ----------------
+   The database rule (migrations 016/022): a grant on a console covers all its pages, a page grant covers that page,
+   and when several apply the HIGHER level wins. Roles therefore give a minimum: a person's own access can add to a
+   role, never take away from it. The tree works page by page: choosing a level on a console sets every page under
+   it, then single pages can be changed. On save it is stored compactly: one console grant when all its pages are the
+   same, page grants when they differ. */
+const ACCESS_RANK = { view:1, submit:2, edit:3 };
+const higher = (a, b) => (ACCESS_RANK[a] || 0) >= (ACCESS_RANK[b] || 0) ? (a || '') : (b || '');
+function modulesList(){ return (S.pages || []).filter(x => x.scope === x.module); }
+function childrenOf(m){ return (S.pages || []).filter(x => x.module === m && x.scope !== m); }
+// the pages a level is really set on: a console's pages, or the console itself when it has none
+function leavesOf(m){ const k = childrenOf(m); return k.length ? k.map(x => x.scope) : [m]; }
+// [{scope, level}] -> { page: level } over every page (console grants spread to their pages; higher wins)
+function expandAccess(list){
+  const out = {};
+  (list || []).forEach(g => {
+    if (!g || !g.level || String(g.scope).startsWith('signoff.')) return;
+    const pg = (S.pages || []).find(p => p.scope === g.scope); if (!pg) return;
+    (pg.scope === pg.module ? leavesOf(pg.scope) : [pg.scope]).forEach(k => { out[k] = higher(out[k], g.level); });
+  });
+  return out;
+}
+// { page: level } -> [{scope, level}]: one console grant when all its pages share a level, else page grants
+function compressAccess(lv){
+  const out = [];
+  modulesList().forEach(m => {
+    const keys = leavesOf(m.scope), vals = keys.map(k => lv[k] || '');
+    if (vals[0] && vals.every(v => v === vals[0])) out.push({ scope: m.scope, level: vals[0] });
+    else keys.forEach(k => { if (lv[k]) out.push({ scope: k, level: lv[k] }); });
+  });
+  return out;
+}
+// one short line per console: "Engineering: edit" (every page alike), "QSync: Test requests (submit)" (one or two pages),
+// "QSync: all 5 pages (2 edit, 3 view)" / "Engineering: 4 of 9 pages (4 view)" (more)
+const pageName = k => ((S.pages || []).find(p => p.scope === k) || { label: k }).label;
+function accessLines(lv){
+  return modulesList().map(m => {
+    const keys = leavesOf(m.scope), got = keys.filter(k => lv[k]);
+    if (!got.length) return '';
+    if (got.length === keys.length && got.every(k => lv[k] === lv[got[0]])) return m.label + ': ' + levelWord(lv[got[0]]);
+    if (got.length <= 2) return m.label + ': ' + got.map(k => pageName(k) + ' (' + levelWord(lv[k]) + ')').join(', ');
+    const by = ['edit', 'submit', 'view'].map(l => [l, got.filter(k => lv[k] === l).length]).filter(x => x[1]).map(([l, n]) => n + ' ' + l).join(', ');
+    return m.label + ': ' + (got.length === keys.length ? 'all ' + keys.length : got.length + ' of ' + keys.length) + ' pages (' + by + ')';
+  }).filter(Boolean);
+}
+const roleSummary = r => accessLines(expandAccess(r.pages)).join(' · ') || 'No pages';
+// where each page's minimum comes from: { page: { level, from: [role names] } }
+function roleFloor(roleNames){
+  const out = {};
+  (roleNames || []).forEach(n => {
+    const r = (S.roles || []).find(x => x.role === n); if (!r) return;
+    Object.entries(expandAccess(r.pages)).forEach(([k, l]) => {
+      const cur = out[k];
+      if (!cur || (ACCESS_RANK[l] || 0) > (ACCESS_RANK[cur.level] || 0)) out[k] = { level: l, from: [n] };
+      else if (cur.level === l) cur.from.push(n);
+    });
+  });
+  return out;
+}
+/* The tree. opts: { own: {page: level}, floor: {page: {level, from}} (People only), locked: bool (admin) }.
+   Returns { html, bind(root, onChange), value() -> {page: level} (own level per page; at least the floor is implied) } */
+function accessTree(opts){
+  const own = Object.assign({}, opts.own || {}), floor = opts.floor || {}, locked = !!opts.locked;
+  const eff = k => higher(own[k], (floor[k] || {}).level);
+  const opt = (cur, min) => LEVELS.map(l => `<option value="${l.key}" ${cur === l.key ? 'selected' : ''} ${(ACCESS_RANK[l.key] || 0) < (ACCESS_RANK[min] || 0) ? 'disabled' : ''}>${l.label}</option>`).join('');
+  const src = k => {
+    const f = floor[k];
+    if (f && (ACCESS_RANK[f.level] || 0) >= (ACCESS_RANK[own[k]] || 0)) return `<span class="tree-src role" title="${esc(f.from.join(', '))}">from role ${esc(f.from[0])}${f.from.length > 1 ? ' +' + (f.from.length - 1) : ''}</span>`;
+    return own[k] ? '<span class="tree-src own">added here</span>' : '';
+  };
+  const modSrc = m => {
+    const keys = leavesOf(m.scope), f = keys.map(k => floor[k]);
+    if (!f.every(Boolean) || keys.some(k => own[k])) return '';
+    const who = f[0].from[0];
+    return f.every(x => x.from.includes(who)) ? `<span class="tree-src role">from role ${esc(who)}</span>` : '';
+  };
+  const modState = m => {
+    const keys = leavesOf(m.scope), vals = keys.map(eff), set = vals.filter(Boolean);
+    const same = vals.every(v => v === vals[0]);
+    return { value: same ? vals[0] : 'mixed', note: !set.length ? '' : same ? (keys.length > 1 ? 'all ' + keys.length + ' pages' : '') : set.length + ' of ' + keys.length + ' pages' };
+  };
+  // the lowest level a console row may be set to: what every one of its pages already gets from roles
+  const minOf = m => { const ls = leavesOf(m.scope).map(k => (floor[k] || {}).level || ''); return ls.every(Boolean) ? ls.reduce((a, b) => (ACCESS_RANK[a] || 0) <= (ACCESS_RANK[b] || 0) ? a : b) : ''; };
+  const body = () => modulesList().map(m => {
+    const kids = childrenOf(m.scope), st = modState(m), open = st.value === 'mixed';
+    const modSel = `<select class="inp tree-sel" data-mod="${esc(m.scope)}" ${locked ? 'disabled' : ''}>
+        ${st.value === 'mixed' ? '<option value="mixed" selected>Mixed</option>' : ''}${opt(st.value === 'mixed' ? null : st.value, minOf(m))}</select>`;
+    return `<div class="tree-mod${open ? ' open' : ''}" data-m="${esc(m.scope)}">
+      <div class="tree-row tree-head">
+        ${kids.length ? `<button type="button" class="tree-tog" data-tog aria-label="Show the pages">${I.chevR}</button>` : '<span class="tree-tog"></span>'}
+        <div class="tree-name"><span class="strong">${esc(m.label)}</span><span class="tiny muted">${esc(st.note)}</span></div>
+        <div class="tree-src-cell">${kids.length ? modSrc(m) : src(m.scope)}</div>${modSel}
+      </div>
+      ${kids.map(pg => `<div class="tree-row tree-page"><span class="tree-tog"></span><div class="tree-name">${esc(pg.label)}</div>
+        <div class="tree-src-cell">${src(pg.scope)}</div>
+        <select class="inp tree-sel" data-leaf="${esc(pg.scope)}" ${locked ? 'disabled' : ''}>${opt(eff(pg.scope), (floor[pg.scope] || {}).level)}</select></div>`).join('')}
+    </div>`;
+  }).join('');
+  let root = null, onChange = () => {};
+  const paint = () => {
+    const openNow = new Set(Array.from(root.querySelectorAll('.tree-mod.open')).map(e => e.dataset.m));
+    root.innerHTML = body();
+    openNow.forEach(m => { const e = root.querySelector(`.tree-mod[data-m="${m}"]`); if (e) e.classList.add('open'); });
+    wire(); onChange();
+  };
+  const wire = () => {
+    root.querySelectorAll('[data-tog]').forEach(b => b.onclick = () => b.closest('.tree-mod').classList.toggle('open'));
+    root.querySelectorAll('select[data-mod]').forEach(s => s.onchange = () => {
+      if (s.value === 'mixed') return;
+      // a console level sets every page under it (never below what a role gives)
+      leavesOf(s.dataset.mod).forEach(k => { own[k] = s.value; if ((ACCESS_RANK[s.value] || 0) <= (ACCESS_RANK[(floor[k] || {}).level] || 0)) own[k] = ''; });
+      paint();
+    });
+    root.querySelectorAll('select[data-leaf]').forEach(s => s.onchange = () => {
+      const k = s.dataset.leaf; own[k] = (ACCESS_RANK[s.value] || 0) <= (ACCESS_RANK[(floor[k] || {}).level] || 0) ? '' : s.value;
+      const mod = s.closest('.tree-mod'); paint(); const again = root.querySelector(`.tree-mod[data-m="${mod.dataset.m}"]`); if (again) again.classList.add('open');
+    });
+  };
+  return {
+    html: `<div class="tree${locked ? ' locked' : ''}"></div>`,
+    bind(container, cb){ root = container.querySelector('.tree'); onChange = cb || onChange; root.innerHTML = body(); wire(); onChange(); },
+    setFloor(f){ Object.keys(floor).forEach(k => delete floor[k]); Object.assign(floor, f);
+      Object.keys(own).forEach(k => { if ((ACCESS_RANK[own[k]] || 0) <= (ACCESS_RANK[(floor[k] || {}).level] || 0)) own[k] = ''; }); if (root) paint(); },
+    value(){ const out = {}; Object.keys(own).forEach(k => { if (own[k]) out[k] = own[k]; }); return out; },
+    effective(){ const out = {}; new Set(Object.keys(own).concat(Object.keys(floor))).forEach(k => { const v = eff(k); if (v) out[k] = v; }); return out; },
+  };
+}
+
 function openManage(id){
   const a = S.accounts.find(x => x.id === id); if (!a) return;
-  const has = k => (a.signoff || []).includes(k);
-  const box = (k, label) => `<label class="row" style="gap:8px;margin:6px 0;font-weight:500"><input type="checkbox" data-scope="${k}" ${has(k)?'checked':''}> ${esc(label)}</label>`;
-  const own = k => ((a.grants || []).find(g => g.scope === k) || {}).level || '';
-  const roleBox = r => `<label class="row" style="gap:8px;margin:6px 0;font-weight:500;align-items:flex-start"><input type="checkbox" data-role="${esc(r.role)}" ${(a.roles || []).includes(r.role) ? 'checked' : ''} style="margin-top:3px">
-      <span>${esc(r.role)}<span class="tiny muted" style="display:block;font-weight:400">${esc(pagesSummary(r.pages))}</span></span></label>`;
-  const modules = (S.pages || []).filter(x => x.scope === x.module);
-  const levelSel = (k, cur) => `<select class="inp" data-grant="${esc(k)}" style="width:auto;min-width:120px;padding:4px 8px">${LEVELS.map(l => `<option value="${l.key}" ${cur === l.key ? 'selected' : ''}>${l.label}</option>`).join('')}</select>`;
-  const pageRows = modules.map(m => `
-      <tr style="background:var(--surface-2,#f6f7f8)"><td class="strong">${esc(m.label)} <span class="tiny muted">(whole console, every page)</span></td><td style="text-align:right">${levelSel(m.scope, own(m.scope))}</td></tr>
-      ${(S.pages || []).filter(x => x.module === m.scope && x.scope !== m.scope).map(pg => `<tr><td style="padding-left:22px">${esc(pg.label)}</td><td style="text-align:right">${levelSel(pg.scope, own(pg.scope))}</td></tr>`).join('')}`).join('');
   const isSelf = a.id === S.me.id;
+  const has = k => (a.signoff || []).includes(k);
+  const signBox = (k, label) => `<label class="check"><input type="checkbox" data-scope="${k}" ${has(k) ? 'checked' : ''}><span>${esc(label)}</span></label>`;
+  const roleCard = r => `<label class="check role-card" data-rname="${esc(r.role.toLowerCase())}"><input type="checkbox" data-role="${esc(r.role)}" ${(a.roles || []).includes(r.role) ? 'checked' : ''}>
+      <span><span class="strong">${esc(r.role)}</span><span class="hint">${esc(roleSummary(r))}</span></span></label>`;
+  const tree = accessTree({ own: expandAccess(a.grants), floor: roleFloor(a.roles), locked: a.is_admin });
+  const tabs = [['roles', 'Roles'], ['access', 'Access'], ['signoff', 'QC sign-offs'], ['account', 'Account']];
   openModal({
     title: a.name, size:'wide', sub: (a.email || 'no email') + (a.linked ? ' - staff no. ' + a.enroll_id : ' - not linked to an employee'),
     body:`
-      <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px">${statusBadges(a)} ${a.is_admin ? '<span class="badge b-brand">Admin</span>' : ''}</div>
-      <div class="strong" style="margin-bottom:4px">Can use</div>
-      <div class="small muted" style="margin-bottom:6px">One password for everything they can use.</div>
-      <div class="row" style="gap:24px;flex-wrap:wrap">
-        <label class="row" style="gap:8px;font-weight:500"><input type="checkbox" id="mgConsole" ${hasConsole(a) ? 'checked' : ''} ${a.is_admin || isSelf ? 'disabled' : ''}> Console (sign in here)</label>
-        <label class="row" style="gap:8px;font-weight:500"><input type="checkbox" id="mgApp" ${a.app_access ? 'checked' : ''}> Machine app (picked at a machine, confirms with PIN)</label>
+      <div class="mg-top">
+        <div class="chips-line" style="flex-wrap:wrap">${statusBadges(a)} ${a.is_admin ? '<span class="badge b-brand">Admin</span>' : ''}</div>
+        <div class="mg-opens"><span class="strong">Opens:</span> <span id="mgPreview"></span></div>
       </div>
-      ${(a.seats || []).length ? `<div class="small muted" style="margin-top:8px">Approver seat${a.seats.length === 1 ? '' : 's'}: ${a.seats.map(esc).join(', ')} (change these in Approvers; approvals work by email link).</div>` : ''}
-      <div class="divider"></div>
-      <div class="strong" style="margin-bottom:4px">Roles</div>
-      <div class="small muted" style="margin-bottom:6px">Start here: one role usually covers the whole job. People only see the consoles and pages their roles and their own access below allow; the higher level wins. Change what a role covers in <a href="#/roles">Roles</a>.</div>
-      <div class="grid g2">${(S.roles || []).map(roleBox).join('') || '<div class="small muted">No roles yet.</div>'}</div>
-      <details style="margin-top:10px" ${(a.grants || []).length ? 'open' : ''}><summary class="strong" style="cursor:pointer">Access exceptions, page by page${(a.grants || []).length ? ' (' + a.grants.length + ')' : ''}</summary>
-        <div class="small muted" style="margin:6px 0">${esc(LEVEL_HELP)} Only for what their roles do not cover; prefer a role when several people need the same thing.</div>
-        <div class="tbl-wrap" style="max-height:320px;overflow:auto"><table class="tbl"><tbody>${pageRows}</tbody></table></div>
-      </details>
-      <div style="margin-top:10px"><span class="strong">Will be able to open:</span> <span id="mgPreview" class="small"></span></div>
-      <div class="divider"></div>
-      <div class="strong" style="margin-bottom:4px">QC sign-off roles</div>
-      <div class="small muted" style="margin-bottom:6px">Who may sign QC stages with their password. A signature is personal, so it is always ticked here, never part of a role.</div>
-      <div class="grid g2">${SIGNOFFS.map(c => box(c.key, c.label)).join('')}</div>
-      <div id="mgSignHint" class="small" style="margin-top:6px"></div>
-      ${a.is_admin ? `<div class="notice info" style="margin-top:12px">${I.info}<div>Admins can open and edit everything and manage people, and always keep console access. Sign-off roles are still ticked individually.</div></div>` : ''}
-      <div class="divider"></div>
-      <div class="strong" style="margin-bottom:4px">Employee record</div>
-      <div class="small muted" style="margin-bottom:6px">${a.linked ? `Linked to staff no. <b>${esc(a.enroll_id)}</b>.` : 'Not linked. Link it so the same person never gets a second account, and so the machine app can find them.'}</div>
-      <div class="row" style="gap:8px;flex-wrap:wrap">
-        <input class="inp" id="mgFind" placeholder="Type a name or staff number to link" style="max-width:280px" autocomplete="off">
-        <select class="inp" id="mgEmp" style="max-width:340px"><option value="">Choose...</option></select>
-        <button class="btn btn-ghost btn-sm" data-link>Link</button>
-        ${a.linked ? `<button class="btn btn-ghost btn-sm" data-unlink>Unlink</button>` : ''}
+      <div class="tabs mg-tabs">${tabs.map(([k, l], i) => `<div class="tab${i ? '' : ' on'}" data-tab="${k}">${l}<span class="tab-n" data-n="${k}"></span></div>`).join('')}</div>
+
+      <div data-pane="roles">
+        <div class="small muted" style="margin-bottom:10px">One role usually covers the whole job. What a role gives is a minimum: their own access in the next tab can add to it, never take it away. Change what a role covers in <a href="#/roles">Roles</a>.</div>
+        ${(S.roles || []).length > 6 ? `<div class="search" style="max-width:280px;margin-bottom:8px"><span class="ic">${I.search}</span><input class="inp" id="mgRoleQ" style="padding-left:34px" placeholder="Find a role"></div>` : ''}
+        <div class="role-grid">${(S.roles || []).map(roleCard).join('') || '<div class="small muted">No roles yet. Make one in Roles.</div>'}</div>
       </div>
-      <div class="divider"></div>
-      <div class="row" style="gap:8px;flex-wrap:wrap">
-        <button class="btn btn-ghost btn-sm" data-reset>${I.key} Reset PIN</button>
-        ${a.locked ? `<button class="btn btn-ghost btn-sm" data-act="unlock">Unlock</button>` : ''}
-        <button class="btn btn-ghost btn-sm" data-act="${a.active ? 'deactivate' : 'activate'}" ${isSelf && a.active ? 'disabled' : ''}>${a.active ? 'Deactivate' : 'Reactivate'}</button>
-        <button class="btn btn-ghost btn-sm" data-act="${a.is_admin ? 'remove_admin' : 'make_admin'}" ${isSelf && a.is_admin ? 'disabled' : ''}>${a.is_admin ? 'Remove admin' : 'Make admin'}</button>
+
+      <div data-pane="access" class="hide">
+        <div class="small muted" style="margin-bottom:10px">${esc(LEVEL_HELP)} Choosing a level on a console sets all its pages; open it to change single pages. Pages marked "from role" cannot go lower here.</div>
+        ${a.is_admin ? `<div class="notice info" style="margin-bottom:10px">${I.info}<div>Admins open and edit everything and manage people. Nothing to set here.</div></div>` : ''}
+        ${tree.html}
       </div>
-      <div class="small muted" style="margin-top:10px">Last sign-in: ${esc(fmtWhen(a.last_login_at))}</div>`,
+
+      <div data-pane="signoff" class="hide">
+        <div class="small muted" style="margin-bottom:10px">Who may sign QC stages with their password. A signature is personal, so it is always ticked here, never part of a role.</div>
+        <div class="role-grid">${SIGNOFFS.map(c => signBox(c.key, c.label)).join('')}</div>
+        <div id="mgSignHint" class="small" style="margin-top:8px"></div>
+      </div>
+
+      <div data-pane="account" class="hide">
+        <div class="strong" style="margin-bottom:4px">Can use</div>
+        <div class="small muted" style="margin-bottom:6px">One password for everything they can use.</div>
+        <label class="check"><input type="checkbox" id="mgConsole" ${hasConsole(a) ? 'checked' : ''} ${a.is_admin || isSelf ? 'disabled' : ''}><span>Console (sign in here)</span></label>
+        <label class="check"><input type="checkbox" id="mgApp" ${a.app_access ? 'checked' : ''}><span>Machine app (picked at a machine, confirms with PIN)</span></label>
+        ${(a.seats || []).length ? `<div class="small muted" style="margin-top:8px">Approver seat${a.seats.length === 1 ? '' : 's'}: ${a.seats.map(esc).join(', ')} (change these in Approvers; approvals work by email link).</div>` : ''}
+        <div class="divider"></div>
+        <div class="strong" style="margin-bottom:4px">Employee record</div>
+        <div class="small muted" style="margin-bottom:6px">${a.linked ? `Linked to staff no. <b>${esc(a.enroll_id)}</b>.` : 'Not linked. Link it so the same person never gets a second account, and so the machine app can find them.'}</div>
+        <div class="row" style="gap:8px">
+          <input class="inp" id="mgFind" placeholder="Type a name or staff number to link" style="max-width:280px" autocomplete="off">
+          <select class="inp" id="mgEmp" style="max-width:340px"><option value="">Choose...</option></select>
+          <button class="btn btn-ghost btn-sm" data-link>Link</button>
+          ${a.linked ? `<button class="btn btn-ghost btn-sm" data-unlink>Unlink</button>` : ''}
+        </div>
+        <div class="divider"></div>
+        <div class="row" style="gap:8px">
+          <button class="btn btn-ghost btn-sm" data-reset>${I.key} Reset PIN</button>
+          ${a.locked ? `<button class="btn btn-ghost btn-sm" data-act="unlock">Unlock</button>` : ''}
+          <button class="btn btn-ghost btn-sm" data-act="${a.active ? 'deactivate' : 'activate'}" ${isSelf && a.active ? 'disabled' : ''}>${a.active ? 'Deactivate' : 'Reactivate'}</button>
+          <button class="btn btn-ghost btn-sm" data-act="${a.is_admin ? 'remove_admin' : 'make_admin'}" ${isSelf && a.is_admin ? 'disabled' : ''}>${a.is_admin ? 'Remove admin' : 'Make admin'}</button>
+        </div>
+        <div class="small muted" style="margin-top:10px">Last sign-in: ${esc(fmtWhen(a.last_login_at))}. Reset PIN, unlock, deactivate and admin act at once; "Save access" saves the other tabs and "Can use".</div>
+      </div>`,
     footer:`<button class="btn btn-ghost" data-close>Close</button><button class="btn btn-primary" data-save>Save access</button>`,
     onMount:(w, close) => {
+      // tabs
+      $$('[data-tab]', w).forEach(t => t.onclick = () => {
+        $$('[data-tab]', w).forEach(x => x.classList.toggle('on', x === t));
+        $$('[data-pane]', w).forEach(p => p.classList.toggle('hide', p.dataset.pane !== t.dataset.tab));
+      });
+      const checkedRoles = () => $$('input[data-role]', w).filter(c => c.checked).map(c => c.dataset.role);
+      const counts = () => {
+        const n = { roles: checkedRoles().length, signoff: $$('input[data-scope]', w).filter(c => c.checked).length, access: Object.keys(tree.value()).length };
+        Object.entries(n).forEach(([k, v]) => { const e = $(`[data-n="${k}"]`, w); if (e) e.textContent = v ? ' (' + v + ')' : ''; });
+      };
+      // what they will be able to open: roles + their own access, highest wins, one line per console
+      const paintPreview = () => {
+        const lines = accessLines(tree.effective());
+        $('#mgPreview', w).innerHTML = a.is_admin ? '<span class="chip on">Everything (admin)</span>'
+          : lines.length ? lines.map(l => `<span class="chip">${esc(l)}</span>`).join(' ')
+          : '<span class="muted small">Nothing yet - they cannot open any console.</span>';
+        counts();
+      };
+      // ticking a role suggests its matching sign-off; the admin confirms it deliberately
+      const paintSignHint = () => {
+        const missing = checkedRoles().map(r => ROLE_SIGNOFF[r]).filter(k => k && !$('input[data-scope="' + k + '"]', w).checked);
+        $('#mgSignHint', w).innerHTML = missing.length
+          ? 'Suggested for their role' + (missing.length > 1 ? 's' : '') + ': '
+            + missing.map(k => `<button type="button" class="btn btn-ghost btn-sm" data-suggest="${k}">Also signs ${esc(scopeLabel(k))}</button>`).join(' ')
+          : '';
+        $$('[data-suggest]', w).forEach(b => b.onclick = () => { $('input[data-scope="' + b.dataset.suggest + '"]', w).checked = true; paintSignHint(); counts(); });
+      };
+      tree.bind($('[data-pane="access"]', w), paintPreview);
+      $$('input[data-role]', w).forEach(c => c.addEventListener('change', () => { tree.setFloor(roleFloor(checkedRoles())); paintSignHint(); }));
+      $$('input[data-scope]', w).forEach(c => c.addEventListener('change', () => { paintSignHint(); counts(); }));
+      const rq = $('#mgRoleQ', w);
+      if (rq) rq.oninput = () => { const q = rq.value.trim().toLowerCase(); $$('.role-card', w).forEach(c => c.classList.toggle('hide', !!q && !c.dataset.rname.includes(q))); };
+      paintSignHint(); paintPreview();
+
       const paintEmp = () => {
         const q = $('#mgFind', w).value.trim().toLowerCase(), list = (empCache || []).filter(e => !q || (e.name + ' ' + e.enroll_id).toLowerCase().includes(q)).slice(0, 60);
         $('#mgEmp', w).innerHTML = `<option value="">${empCache ? 'Choose...' : 'Loading...'}</option>` + list.map(e => `<option value="${esc(e.enroll_id)}">${esc(e.name)} - ${esc(e.enroll_id)}${e.department ? ' - ' + esc(e.department) : ''}</option>`).join('');
       };
       paintEmp(); loadEmployees().then(paintEmp).catch(() => {});
       $('#mgFind', w).oninput = debounce(paintEmp, 120);
-      // live preview of the final access (roles + exceptions, highest level wins; a console row covers its pages)
-      const RANK = { view:1, submit:2, edit:3 };
-      const paintPreview = () => {
-        const lv = {};
-        const put = (scope, level) => { if ((RANK[level] || 0) > (RANK[lv[scope]] || 0)) lv[scope] = level; };
-        $$('input[data-role]', w).filter(c => c.checked).forEach(c => {
-          const r = (S.roles || []).find(x => x.role === c.dataset.role);
-          ((r && r.pages) || []).forEach(p => put(p.scope, p.level));
-        });
-        $$('select[data-grant]', w).filter(x => x.value).forEach(x => put(x.dataset.grant, x.value));
-        const shown = Object.keys(lv).filter(k => !Object.keys(lv).some(o => o !== k && k.startsWith(o + '.') && (RANK[lv[o]] || 0) >= (RANK[lv[k]] || 0)));
-        $('#mgPreview', w).innerHTML = a.is_admin ? '<span class="chip on">Everything (admin)</span>'
-          : shown.length ? shown.sort().map(k => `<span class="chip" style="margin:2px 4px 2px 0">${esc(pageLabel(k))}: ${esc(levelWord(lv[k]))}</span>`).join('')
-          : '<span class="muted">Nothing - they cannot open any console.</span>';
-      };
-      // ticking a role suggests its matching sign-off; the admin confirms it deliberately
-      const paintSignHint = () => {
-        const missing = $$('input[data-role]', w).filter(c => c.checked).map(c => ROLE_SIGNOFF[c.dataset.role])
-          .filter(k => k && !$('input[data-scope="' + k + '"]', w).checked);
-        $('#mgSignHint', w).innerHTML = missing.length
-          ? 'Suggested for their role' + (missing.length > 1 ? 's' : '') + ': '
-            + missing.map(k => `<button type="button" class="btn btn-ghost btn-sm" data-suggest="${k}">Also signs ${esc(scopeLabel(k))}</button>`).join(' ')
-          : '';
-        $$('[data-suggest]', w).forEach(b => b.onclick = () => { $('input[data-scope="' + b.dataset.suggest + '"]', w).checked = true; paintSignHint(); });
-      };
-      const repaint = () => { paintPreview(); paintSignHint(); };
-      $$('input[data-role], input[data-scope]', w).forEach(c => c.addEventListener('change', repaint));
-      $$('select[data-grant]', w).forEach(x => x.addEventListener('change', paintPreview));
-      repaint();
       const link = async enrollId => {
         try { await api('/webhook/users/api/link-employee', { method:'POST', body:{ id: a.id, enroll_id: enrollId } }); await loadPeople(); close(); render(); openManage(a.id);
           toast(enrollId ? 'Linked' : 'Unlinked', enrollId ? a.name + ' is linked to staff no. ' + enrollId + '.' : a.name + ' is no longer linked (and is off the machine app).', 'ok'); }
@@ -724,10 +865,9 @@ function openManage(id){
       $('[data-link]', w).onclick = () => { const v = $('#mgEmp', w).value; if (!v) { toast('Choose the employee first', '', 'err'); return; } link(v); };
       const ul = $('[data-unlink]', w); if (ul) ul.onclick = async () => { if (await confirmDialog('Unlink?', `Unlink <b>${esc(a.name)}</b> from staff no. ${esc(a.enroll_id)}? They also come off the machine app.`, 'Unlink')) link(''); };
       $('[data-save]', w).onclick = async () => {
-        const roles = $$('input[data-role]', w).filter(c => c.checked).map(c => c.dataset.role);
-        const grants = $$('select[data-grant]', w).filter(x => x.value).map(x => ({ scope: x.dataset.grant, level: x.value }))
+        const grants = (a.is_admin ? (a.grants || []).filter(g => !String(g.scope).startsWith('signoff.')) : compressAccess(tree.value()))
           .concat($$('input[data-scope]', w).filter(c => c.checked).map(c => ({ scope: c.dataset.scope })));
-        const body = { id: a.id, roles, grants, app: $('#mgApp', w).checked };
+        const body = { id: a.id, roles: checkedRoles(), grants, app: $('#mgApp', w).checked };
         if (!$('#mgConsole', w).disabled) body.console = $('#mgConsole', w).checked;
         try { await api('/webhook/users/api/grants', { method:'POST', body }); await loadPeople(); close(); render(); toast('Access saved', a.name + "'s access has been updated.", 'ok'); }
         catch (err) { toast('Could not save', err.message, 'err', 8000); }
@@ -753,7 +893,8 @@ function openManage(id){
   });
 }
 
-/* ---------------- Roles (migration 016) ---------------- */
+/* ---------------- Roles (migrations 016 / 022) ---------------- */
+const roleHolders = name => (S.accounts || []).filter(x => (x.roles || []).includes(name));
 function viewRoles(){
   const rows = S.roles || [];
   return {
@@ -761,12 +902,12 @@ function viewRoles(){
     html: `${pageHead('Roles', 'A role is a named set of pages with a level for each. Give roles to people in People &gt; Manage. Changing a role changes it for everyone who has it.',
       `<button class="btn btn-primary" onclick="openRole('')">${I.plus} New role</button>`)}
     <div class="card"><div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Role</th><th>Pages</th><th>People</th><th></th></tr></thead>
+      <thead><tr><th>Role</th><th>Covers</th><th>People</th><th></th></tr></thead>
       <tbody>${rows.length ? rows.map(r => `<tr>
         <td class="strong" data-label="Role">${esc(r.role)}</td>
-        <td class="small" data-label="Pages">${(r.pages || []).map(x => `<span class="chip" style="margin:2px 4px 2px 0">${esc(pageLabel(x.scope))}: ${esc(levelWord(x.level))}</span>`).join('')}</td>
+        <td class="small" data-label="Covers"><span title="${esc(pagesSummary(r.pages))}">${esc(roleSummary(r))}</span></td>
         <td data-label="People">${Number(r.people) || 0}</td>
-        <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="openRole('${esc(r.role).replace(/'/g, '&#39;')}')">${I.edit} Edit</button></td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="openRole('${esc(r.role).replace(/'/g, '&#39;')}')">${I.edit} Edit</button></td>
       </tr>`).join('') : `<tr><td colspan="4" class="muted" style="padding:16px">No roles yet.</td></tr>`}</tbody>
     </table></div></div>
     <div class="small muted" style="margin-top:10px">${esc(LEVEL_HELP)}</div>`,
@@ -775,21 +916,22 @@ function viewRoles(){
 route('/roles', () => viewRoles());
 function openRole(name){
   const r = (S.roles || []).find(x => x.role === name) || { role: '', pages: [], people: 0 };
-  const cur = k => ((r.pages || []).find(x => x.scope === k) || {}).level || '';
-  const modules = (S.pages || []).filter(x => x.scope === x.module);
-  const sel = k => `<select class="inp" data-page="${esc(k)}" style="width:auto;min-width:120px;padding:4px 8px">${LEVELS.map(l => `<option value="${l.key}" ${cur(k) === l.key ? 'selected' : ''}>${l.label}</option>`).join('')}</select>`;
-  const rows = modules.map(m => `
-    <tr style="background:var(--surface-2,#f6f7f8)"><td class="strong">${esc(m.label)} <span class="tiny muted">(whole console, every page)</span></td><td style="text-align:right">${sel(m.scope)}</td></tr>
-    ${(S.pages || []).filter(x => x.module === m.scope && x.scope !== m.scope).map(pg => `<tr><td style="padding-left:22px">${esc(pg.label)}</td><td style="text-align:right">${sel(pg.scope)}</td></tr>`).join('')}`).join('');
+  const holders = r.role ? roleHolders(r.role) : [];
+  const tree = accessTree({ own: expandAccess(r.pages) });
   openModal({
     title: r.role ? 'Role: ' + r.role : 'New role', size:'wide',
-    sub: r.role ? (Number(r.people) || 0) + ' active ' + ((Number(r.people) || 0) === 1 ? 'person has' : 'people have') + ' this role.' : 'Give it a clear name, for example "Technician".',
+    sub: r.role ? holders.length + ' ' + (holders.length === 1 ? 'person has' : 'people have') + ' this role.' : 'Give it a clear name, for example "Technician".',
     body: `${r.role ? '' : `<div class="field"><label for="rlName">Name</label><input class="inp" id="rlName" maxlength="40" placeholder="e.g. Shift supervisor"></div>`}
-      <div class="small muted" style="margin-bottom:8px">${esc(LEVEL_HELP)}</div>
-      <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table class="tbl"><tbody>${rows}</tbody></table></div>
+      <div class="mg-opens" style="margin-bottom:10px"><span class="strong">Covers:</span> <span id="rlPreview"></span></div>
+      <div class="small muted" style="margin-bottom:10px">${esc(LEVEL_HELP)} Choosing a level on a console sets all its pages; open it to change single pages.</div>
+      <div id="rlTree">${tree.html}</div>
       <div class="err-msg hide" data-err="rlName" style="margin-top:8px"></div>`,
-    footer: `${r.role ? `<button class="btn btn-ghost" data-del style="margin-right:auto">Remove role</button>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save role</button>`,
+    footer: `${r.role ? `<button class="btn btn-ghost" data-del style="margin-right:auto">Delete role</button>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save role</button>`,
     onMount: (w, close) => {
+      tree.bind($('#rlTree', w), () => {
+        const lines = accessLines(tree.value());
+        $('#rlPreview', w).innerHTML = lines.length ? lines.map(l => `<span class="chip">${esc(l)}</span>`).join(' ') : '<span class="muted small">Nothing yet.</span>';
+      });
       const save = async (pages, okMsg) => {
         clearErrors(w);
         const role = r.role || ($('#rlName', w).value || '').trim();
@@ -800,12 +942,20 @@ function openRole(name){
       $('[data-save]', w).onclick = () => {
         clearErrors(w);
         if (!r.role && !($('#rlName', w).value || '').trim()) return setErr('rlName', 'Give the role a name.', w);
-        const pages = $$('select[data-page]', w).filter(x => x.value).map(x => ({ scope: x.dataset.page, level: x.value }));
-        if (!pages.length) return setErr('rlName', r.role ? 'Choose at least one page, or use Remove role.' : 'Choose at least one page.', w);
+        const pages = compressAccess(tree.value());
+        if (!pages.length) return setErr('rlName', r.role ? 'Choose at least one page, or use Delete role.' : 'Choose at least one page.', w);
         save(pages, 'Role saved');
       };
       const d = $('[data-del]', w);
-      if (d) d.onclick = async () => { if (await confirmDialog('Remove role?', `Remove the role <b>${esc(r.role)}</b>? Only possible when nobody has it.`, 'Remove', 'danger')) save([], 'Role removed'); };
+      if (d) d.onclick = async () => {
+        if (holders.length) {
+          // the database refuses to delete a role someone holds: say who, so the admin takes it off them first
+          await confirmDialog('Take it off people first', `<b>${esc(r.role)}</b> is held by ${holders.map(h => '<b>' + esc(h.name) + '</b>').join(', ')}.
+            Open each of them in People &gt; Manage, untick the role and save; then delete it here.`, 'OK');
+          return;
+        }
+        if (await confirmDialog('Delete role?', `Delete the role <b>${esc(r.role)}</b>? Nobody holds it, so nobody's access changes.`, 'Delete', 'danger')) save([], 'Role deleted');
+      };
     },
   });
 }
@@ -899,7 +1049,7 @@ function aprPaint(){
       ${rows.map(r => `<tr>
         <td data-label="Department" class="strong">${esc(aprDept(r))}</td>
         <td data-label="Role">${esc(r.label || r.stage)}${hr(r) ? ' <span class="badge b-info">HR approver</span>' : ''}</td>
-        <td data-label="Person"><div class="strong">${esc(r.name)}</div><div class="small muted">${esc(r.email)}</div></td>
+        <td data-label="Person" class="wrap-any"><div class="strong">${esc(r.name)}</div><div class="small muted">${esc(r.email)}</div></td>
         <td data-label="Employee record">${r.enroll_id ? `${esc(proper(r.employee_name || ''))} <span class="tiny muted mono">${esc(r.enroll_id)}</span>` : '<span class="muted">--</span>'}
           ${aprIssues(r).map(([t, c]) => `<div style="margin-top:3px"><span class="badge ${c}">${esc(t)}</span></div>`).join('')}</td>
         <td data-label="Used by" class="small">${esc(r.used_by)}</td>

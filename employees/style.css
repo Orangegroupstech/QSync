@@ -584,7 +584,7 @@ html[data-theme="dark"] .fieldset > legend,html[data-theme="dark"] .sec-title{co
   .sticky-actions{
     position:sticky;bottom:calc(var(--botnav-h) + env(safe-area-inset-bottom));z-index:30;
     background:var(--surface);border-top:1px solid var(--line);
-    box-shadow:0 -3px 14px rgba(16,25,20,.08);border-radius:0;margin:0 -15px -15px;padding:12px 15px;
+    box-shadow:0 -3px 14px rgba(16,25,20,.08);border-radius:0;margin:0;padding:12px 15px;   /* no negative side margins: they made it wider than a phone screen */
     flex-direction:column-reverse}
   .sticky-actions .btn{width:100%}
 
@@ -691,3 +691,19 @@ input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
 @media (max-width:900px){.g3-hol{grid-template-columns:minmax(0,1fr)}}
 
 .tbl-tight th,.tbl-tight td{padding-left:9px;padding-right:9px}
+
+/* Layout helpers that never wrap (27 Oct 2026). .row wraps on purpose (toolbars); these do not. */
+/* a person: avatar + name (+ a second line), always side by side; long text is cut with "..." (full text in title) */
+.person{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;min-width:0}
+.person > .avatar{flex:0 0 auto}
+.person-txt{min-width:0;flex:1 1 auto}
+.person-txt > *{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* a tick box (or radio) and its label: the box keeps its own column, the label wraps beside it */
+.check{display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:8px;align-items:start;margin:6px 0;font-weight:500;cursor:pointer}
+.check > input{margin:3px 0 0;width:16px;height:16px}
+.check .hint{display:block;font-weight:400;font-size:12px;color:var(--muted,#667);margin-top:2px}
+/* chips on one line, the rest counted (see "+N more") */
+.chips-line{display:flex;gap:6px;flex-wrap:nowrap;align-items:center;min-width:0;overflow:hidden}
+.chips-line > *{flex:0 0 auto;white-space:nowrap}
+/* long words (e-mails, codes) wrap inside their cell instead of spilling out */
+.wrap-any{overflow-wrap:anywhere;word-break:break-word}

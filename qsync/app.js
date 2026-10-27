@@ -1175,7 +1175,7 @@ function viewAudit(){
         <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th><th>Reference</th></tr></thead>
         <tbody>${rows.length ? rows.map(e => `<tr>
           <td class="small" style="white-space:nowrap" data-label="When">${fmtDateTime(e.at)}<div class="tiny muted">${relTime(e.at)}</div></td>
-          <td data-label="Who"><div class="row" style="gap:8px">${avatarEl(e.actor_name,'sm')}<span class="small strong">${esc(e.actor_name)}</span></div></td>
+          <td data-label="Who"><div class="person" style="gap:8px">${avatarEl(e.actor_name,'sm')}<div class="person-txt"><span class="small strong" title="${esc(e.actor_name)}">${esc(e.actor_name)}</span></div></div></td>
           <td class="small strong" data-label="Action">${esc(e.action)}</td>
           <td class="small muted" style="max-width:380px" data-label="Detail">${esc(e.detail||'--')}</td>
           <td data-label="Reference">${e.ref?`<span class="mono small">${esc(e.ref)}</span>`:'<span class="muted">--</span>'}</td>

@@ -706,19 +706,22 @@ function viewSettings(){
   if (ES.error) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the settings', esc(ES.error), `<button class="btn btn-primary" onclick="esLoad(true)">Try again</button>`)}</div></div>` };
   if (!ES.list) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   const when = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', dateStyle:'medium', timeStyle:'short' }) : '';
+  const about = x => `<div class="strong">${esc(x.label)}</div><div class="small muted">${esc(x.help || '')}</div>
+          ${x.updated_by ? `<div class="tiny muted">Changed by ${esc(x.updated_by)}, ${esc(when(x.updated_at))}</div>` : ''}`;
+  // number settings in the table; list settings (one entry per line) each get their own block below it, so no row grows tall
+  const nums = ES.list.filter(x => x.unit !== 'list'), lists = ES.list.filter(x => x.unit === 'list');
   return {
     title:'Settings', crumb:'Setup',
     html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Setting</th><th style="width:170px">Value</th><th>Allowed</th></tr></thead>
-      <tbody>${ES.list.map(x => `<tr>
-        <td data-label="Setting"><div class="strong">${esc(x.label)}</div><div class="small muted">${esc(x.help || '')}</div>
-          ${x.updated_by ? `<div class="tiny muted">Changed by ${esc(x.updated_by)}, ${esc(when(x.updated_at))}</div>` : ''}</td>
-        ${x.unit === 'list'
-          ? `<td data-label="Value"><textarea class="inp" data-list="${esc(x.key)}" rows="${Math.min(10, (x.list || []).length + 1)}" style="min-width:170px" ${dis}>${esc((x.list || []).join('\n'))}</textarea></td>
-             <td data-label="Allowed" class="small muted">one per line, 2 to 20</td>`
-          : `<td data-label="Value"><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" type="number" data-set="${esc(x.key)}" min="${Number(x.min)}" max="${Number(x.max)}" step="1" value="${Number(x.value)}" style="width:90px" ${dis}><span class="small muted">${esc(x.unit || '')}</span></div></td>
-             <td data-label="Allowed" class="small muted">${Number(x.min)} to ${Number(x.max)}</td>`}
+      <tbody>${nums.map(x => `<tr>
+        <td data-label="Setting">${about(x)}</td>
+        <td data-label="Value"><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" type="number" data-set="${esc(x.key)}" min="${Number(x.min)}" max="${Number(x.max)}" step="1" value="${Number(x.value)}" style="width:90px" ${dis}><span class="small muted">${esc(x.unit || '')}</span></div></td>
+        <td data-label="Allowed" class="small muted">${Number(x.min)} to ${Number(x.max)}</td>
       </tr>`).join('')}</tbody></table></div>
+      ${lists.map(x => `<div class="card-b" style="border-top:1px solid var(--line-2)">${about(x)}
+        <textarea class="inp" data-list="${esc(x.key)}" rows="${Math.min(10, (x.list || []).length + 1)}" style="width:100%;max-width:460px;margin-top:8px" ${dis}>${esc((x.list || []).join('\n'))}</textarea>
+        <div class="tiny muted" style="margin-top:4px">One per line, 2 to 20.</div></div>`).join('')}
       ${canEdit ? `<div class="card-b row" style="gap:10px;border-top:1px solid var(--line-2)"><button class="btn btn-primary" id="esSave">${I.check} Save changes</button><span class="err-msg hide" data-err="esSave"></span></div>` : ''}
     </div>`,
     bind(){
