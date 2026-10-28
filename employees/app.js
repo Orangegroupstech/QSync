@@ -357,7 +357,7 @@ async function bootstrap(){
     api('/webhook/employees/api/list'),
     api('/webhook/employees/api/departments').catch(() => ({ departments: [] })),
   ]);
-  S = { me: meFromAuth(auth, 'employees'), employees: (data.employees || []).map(e => Object.assign(e, { name: properName(e.name) })), departments: dep.departments || [] };
+  S = { me: meFromAuth(auth, 'employees'), employees: (data.employees || []).map(e => Object.assign(e, { name: properName(e.name) })).sort(byEnroll), departments: dep.departments || [] };
   resetIdleTimer();
 }
 function loadError(err){
@@ -1035,6 +1035,8 @@ function openReportDialog(o){
   });
 }
 const typeLabel = t => t === 'casual' ? 'Casual' : 'Staff';
+const idCmp = (a, b) => String(a == null ? '' : a).localeCompare(String(b == null ? '' : b), undefined, { numeric:true });   // people are listed by Enroll ID everywhere
+const byEnroll = (a, b) => idCmp(a.enroll_id, b.enroll_id);
 function empTypeMap(){ return new Map(S.employees.map(e => [e.enroll_id, e.employment_type])); }
 
 /* Day type of an overtime entry: weekday / weekend / public holiday. The server decides it; rows from an older
@@ -1050,21 +1052,24 @@ function filteredOvertime(){
   return (s.records || []).filter(r =>
     (s.showVoid || r.status !== 'void') && deptPick(s.department, r.department) && (!s.type || types.get(r.enroll_id) === s.type) &&
     (!s.dayTypes.length || s.dayTypes.includes(otDayType(r))) &&
-    (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q)));
+    (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q)))
+    .sort((a, b) => (String(a.work_date) < String(b.work_date) ? 1 : String(a.work_date) > String(b.work_date) ? -1 : 0) || byEnroll(a, b));   // newest day first, then by ID
 }
 function otPersonTotals(live){
   const by = new Map();
-  live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), days:0, hours:0, byType:{ weekday:0, weekend:0, public_holiday:0 } }); const x = by.get(k); x.depts.add(r.department); x.days++; x.hours += Number(r.hours || 0); x.byType[otDayType(r)] += Number(r.hours || 0); });
-  return [...by.values()].sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+  live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), dates:new Set(), hours:0, byType:{ weekday:0, weekend:0, public_holiday:0 }, dayBy:{ weekday:new Set(), weekend:new Set(), public_holiday:new Set() } }); const x = by.get(k), d = String(r.work_date).slice(0, 10), t = otDayType(r);
+    x.depts.add(r.department); x.dates.add(d); x.dayBy[t].add(d); x.hours += Number(r.hours || 0); x.byType[t] += Number(r.hours || 0); });
+  // days = distinct dates (two entries on one day count once)
+  return [...by.values()].map(x => Object.assign(x, { days:x.dates.size, daysBy:{ weekday:x.dayBy.weekday.size, weekend:x.dayBy.weekend.size, public_holiday:x.dayBy.public_holiday.size } })).sort((a, b) => idCmp(a.id, b.id));
 }
 function otIdLine(id){ const t = empTypeMap().get(id); return esc(id) + (t ? ' - ' + typeLabel(t) : ''); }
 function openOtPerson(id){
   const rows = filteredOvertime().filter(r => r.enroll_id === id).sort((a, b) => String(a.work_date) < String(b.work_date) ? 1 : -1);
   if (!rows.length) return;
-  const live = rows.filter(r => r.status !== 'void'), total = live.reduce((t, r) => t + Number(r.hours || 0), 0), s = otListState;
+  const live = rows.filter(r => r.status !== 'void'), total = live.reduce((t, r) => t + Number(r.hours || 0), 0), s = otListState, nDays = new Set(live.map(r => String(r.work_date).slice(0, 10))).size;
   openModal({
     title: rows[0].name, size:'wide', sub: [...new Set(rows.map(r => r.department).filter(Boolean))].join(', ') + (rows.some(r => r.department) ? ' - ' : '') + s.from + ' to ' + s.to,
-    body: `<div class="grid g3" style="margin-bottom:12px">${[['Days of overtime', live.length], ['Total hours', fmtHours(total)], ['Average per day', fmtHours(live.length ? total / live.length : 0)]].map(([l, v]) => `<div class="stat"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>
+    body: `<div class="grid g3" style="margin-bottom:12px">${[['Days of overtime', nDays], ['Total hours', fmtHours(total)], ['Average per day', fmtHours(nDays ? total / nDays : 0)]].map(([l, v]) => `<div class="stat"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Day type</th><th>Time</th><th>Hours</th><th>Submitted by</th>${rows.length !== live.length ? '<th>Status</th>' : ''}</tr></thead>
       <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}><td data-label="Date" class="strong">${esc(fmtDayShort(String(r.work_date).slice(0, 10)))}</td><td data-label="Day type">${dayBadge(otDayType(r))}</td><td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
         <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>${rows.length !== live.length ? `<td data-label="Status">${r.status === 'void' ? '<span class="badge b-slate">Void</span>' : '<span class="badge b-ok">Recorded</span>'}</td>` : ''}</tr>`).join('')}
@@ -1114,7 +1119,7 @@ function paintOtList(){
     const days = [...new Set(live.map(r => String(r.work_date).slice(0, 10)))].sort().reverse();
     if (!days.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No overtime recorded in this period.</div>`; return; }
     if (!days.includes(s.day)) s.day = days[0];
-    const k = days.indexOf(s.day), recs = live.filter(r => String(r.work_date).slice(0, 10) === s.day).sort((a, b) => a.name.localeCompare(b.name));
+    const k = days.indexOf(s.day), recs = live.filter(r => String(r.work_date).slice(0, 10) === s.day).sort(byEnroll);
     const dayTotal = recs.reduce((t, r) => t + Number(r.hours || 0), 0);
     box.innerHTML = `<div class="card-b row between" style="flex-wrap:wrap;gap:10px">
         <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" id="odPrev" ${k >= days.length - 1 ? 'disabled' : ''} aria-label="Previous day">${I.chevL}</button>
@@ -1171,28 +1176,29 @@ function exportOvertimeCSV(){
     head = ['Date','Day type','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by'];
     data = live.filter(r => String(r.work_date).slice(0, 10) === s.day).map(r => [r.work_date, dayTypeLabel(otDayType(r)), r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by]);
   } else {
-    head = ['Enroll ID','Name','Department','Type','Days','Hours','Weekday hours','Weekend hours','Public holiday hours'];
-    data = otPersonTotals(live).map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), types.get(x.id), x.days, fmtHours(x.hours), fmtHours(x.byType.weekday), fmtHours(x.byType.weekend), fmtHours(x.byType.public_holiday)]);
+    head = ['Enroll ID','Name','Department','Type','Weekdays','Weekday hours','Weekends','Weekend hours','Public holidays','Public holiday hours','Total days','Total hours'];
+    data = otPersonTotals(live).map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), types.get(x.id), x.daysBy.weekday, fmtHours(x.byType.weekday), x.daysBy.weekend, fmtHours(x.byType.weekend), x.daysBy.public_holiday, fmtHours(x.byType.public_holiday), x.days, fmtHours(x.hours)]);
   }
   download('okl_overtime_' + (s.mode === 'entries' ? 'entries' : s.mode === 'daily' ? 'day' : 'by_person') + '_' + s.from + '_to_' + s.to + tag + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
 }
-/* Overtime report: Summary (hours by day type per person) + Daily detail (one line per entry). Void entries are left out. */
+/* Overtime report: Summary (days and hours by day type per person) + Daily detail (one line per entry). Void entries are left out. */
 function otReportSheets(records, from, to, type){
   const types = empTypeMap(), live = (records || []).filter(r => r.status !== 'void' && (!type || types.get(r.enroll_id) === type)).map(r => Object.assign({}, r, { name: properName(r.name) }));
   if (!live.length) return null;
   const typeOf = id => types.has(id) ? typeLabel(types.get(id)) : '';
-  const people = otPersonTotals(live).sort((a, b) => a.name.localeCompare(b.name));
-  const rows = live.slice().sort((a, b) => a.name.localeCompare(b.name) || (String(a.work_date) < String(b.work_date) ? -1 : String(a.work_date) > String(b.work_date) ? 1 : 0) || String(a.start_time || '').localeCompare(String(b.start_time || '')));
+  const people = otPersonTotals(live);
+  const rows = live.slice().sort((a, b) => byEnroll(a, b) || (String(a.work_date) < String(b.work_date) ? -1 : String(a.work_date) > String(b.work_date) ? 1 : 0) || String(a.start_time || '').localeCompare(String(b.start_time || '')));
   return [
-    { name:'Summary', head:['Enroll ID', 'Name', 'Department', 'Type', 'OT weekday h', 'OT weekend h', 'OT holiday h', 'Total OT'], widths:[12, 30, 20, 9, 14, 14, 14, 10],
-      rows: people.map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), typeOf(x.id), hoursNum(x.byType.weekday), hoursNum(x.byType.weekend), hoursNum(x.byType.public_holiday), hoursNum(x.hours)]) },
+    // each day type as a pair (days, hours), then the totals
+    { name:'Summary', head:['Enroll ID', 'Name', 'Department', 'Type', 'Weekdays', 'OT weekday h', 'Weekends', 'OT weekend h', 'Public holidays', 'OT holiday h', 'Total days', 'Total OT'], widths:[12, 30, 20, 9, 10, 14, 10, 14, 15, 14, 11, 10],
+      rows: people.map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), typeOf(x.id), x.daysBy.weekday, hoursNum(x.byType.weekday), x.daysBy.weekend, hoursNum(x.byType.weekend), x.daysBy.public_holiday, hoursNum(x.byType.public_holiday), x.days, hoursNum(x.hours)]) },
     { name:'Daily detail', head:['Enroll ID', 'Name', 'Department', 'Type', 'Date', 'Day', 'Day type', 'Start', 'End', 'Hours', 'Submitted by'], widths:[12, 30, 20, 9, 12, 6, 15, 8, 8, 8, 22],
       rows: rows.map(r => { const d = String(r.work_date).slice(0, 10); return [r.enroll_id, r.name, r.department || '', typeOf(r.enroll_id), d, dayName(d), dayTypeLabel(otDayType(r)), hhmm(r.start_time), hhmm(r.end_time), hoursNum(r.hours), r.submitted_by || r.recorded_by || '']; }) },
   ];
 }
 function openOtReport(){
   const s = otListState;
-  openReportDialog({ title:'Download overtime report', intro:'Overtime hours by day type for every person with overtime, and every entry behind them.',
+  openReportDialog({ title:'Download overtime report', intro:'Overtime days and hours by day type for every person with overtime, and every entry behind them.',
     start:{ preset:s.preset, from:s.from, to:s.to, type:s.type }, empty:'There is no overtime in this period.',
     async build(from, to, type){
       const res = (s.records && s.key === from + '|' + to) ? { records:s.records } : await api('/webhook/employees/api/overtime?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to));
@@ -1291,7 +1297,7 @@ const LATE_CASUAL_DEFAULT = '08:00';
 const lateAfterFor = (e, staff, casual) => attMins(e && e.employment_type === 'casual' ? (casual || LATE_CASUAL_DEFAULT) : (staff || LATE_DEFAULT));
 const lateRuleText = (staff, casual, type) => { staff = staff || LATE_DEFAULT; casual = casual || LATE_CASUAL_DEFAULT; return type === 'casual' ? casual : type === 'staff' || staff === casual ? staff : staff + ' (staff) / ' + casual + ' (casual)'; };
 const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-const att = { preset:'last30', from:'', to:'', dept:[], type:'', q:'', day:'', chip:'all', sort:'name', data:null, key:'', tab:'' };
+const att = { preset:'last30', from:'', to:'', dept:[], type:'', q:'', day:'', chip:'all', sort:'id', data:null, key:'', tab:'' };
 const attMins = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : 0; };
 const attHHMM = n => { n = Math.round(n); return String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0'); };
 const isoWeekday = iso => new Date(iso + 'T12:00:00Z').getUTCDay();          // 0 = Sunday
@@ -1510,7 +1516,7 @@ function paintAttDaily(body, c){
   const recs = c.recs.filter(r => r.day === att.day);
   const cnt = { all:recs.length, present:recs.filter(r => r.present).length, late:recs.filter(r => r.late).length, absent:recs.filter(r => r.absent).length, missing:recs.filter(r => r.missing).length };
   const show = recs.filter(r => att.chip === 'all' || (att.chip === 'present' && r.present) || (att.chip === 'late' && r.late) || (att.chip === 'absent' && r.absent) || (att.chip === 'missing' && r.missing))
-    .sort((a, b) => a.e.name.localeCompare(b.e.name));
+    .sort((a, b) => byEnroll(a.e, b.e));
   const k = days.indexOf(att.day);
   const chip = (key, label) => `<span class="chip ${att.chip === key ? 'on' : ''}" data-chip="${key}" style="cursor:pointer">${label} ${cnt[key]}</span>`;
   body.innerHTML = `
@@ -1533,16 +1539,17 @@ function paintAttDaily(body, c){
 /* ---- By person ---- */
 function attPersonRows(c){
   const rows = c.people.filter(p => p.present || p.absent);
-  const sorters = { name:(a, b) => a.e.name.localeCompare(b.e.name), late:(a, b) => b.late - a.late || a.e.name.localeCompare(b.e.name),
-    absent:(a, b) => b.absent - a.absent || a.e.name.localeCompare(b.e.name), present:(a, b) => b.present - a.present || a.e.name.localeCompare(b.e.name) };
-  return rows.sort(sorters[att.sort] || sorters.name);
+  const id = (a, b) => byEnroll(a.e, b.e);
+  const sorters = { id, name:(a, b) => a.e.name.localeCompare(b.e.name) || id(a, b), late:(a, b) => b.late - a.late || id(a, b),
+    absent:(a, b) => b.absent - a.absent || id(a, b), present:(a, b) => b.present - a.present || id(a, b) };
+  return rows.sort(sorters[att.sort] || sorters.id);
 }
 function paintAttPeople(body, c){
   const rows = attPersonRows(c);
   body.innerHTML = `
     <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:10px">
       <div class="small muted">${rows.length} ${rows.length === 1 ? 'person' : 'people'} over ${c.dayList.length} ${c.dayList.length === 1 ? 'day' : 'days'} of data. Click a name for their day-by-day record.</div>
-      <div class="row" style="gap:8px"><select class="inp" id="apSort" style="width:auto"><option value="name">Sort: name</option><option value="late" ${att.sort === 'late' ? 'selected' : ''}>Sort: most late</option><option value="absent" ${att.sort === 'absent' ? 'selected' : ''}>Sort: most absent</option><option value="present" ${att.sort === 'present' ? 'selected' : ''}>Sort: most present</option></select></div></div>
+      <div class="row" style="gap:8px"><select class="inp" id="apSort" style="width:auto"><option value="id">Sort: ID</option><option value="name" ${att.sort === 'name' ? 'selected' : ''}>Sort: name</option><option value="late" ${att.sort === 'late' ? 'selected' : ''}>Sort: most late</option><option value="absent" ${att.sort === 'absent' ? 'selected' : ''}>Sort: most absent</option><option value="present" ${att.sort === 'present' ? 'selected' : ''}>Sort: most present</option></select></div></div>
     <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days present</th><th>Days late</th><th>Days absent</th><th>Avg arrival</th></tr></thead>
       <tbody>${rows.map(p => `<tr class="clickable" onclick="openAttPerson('${esc(p.e.enroll_id)}')"><td data-label="Name"><div class="strong">${esc(p.e.name)}</div><div class="tiny muted mono">${esc(p.e.enroll_id)} - ${esc(p.e.employment_type === 'casual' ? 'Casual' : 'Staff')}</div></td>
         <td data-label="Department">${esc(p.e.department || '--')}</td><td data-label="Days present" class="tnum">${p.present}</td><td data-label="Days late" class="tnum ${p.late ? 'strong' : ''}">${p.late}</td>
@@ -1559,7 +1566,7 @@ function attExportCsv(c){
   if (att.tab !== 'daily') return attPeopleCsv(c);
   const cell = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
   const statusOf = r => r.absent ? 'Absent' : (r.late ? 'Late ' + r.lateMin + ' min' : 'On time') + (r.missing ? ', no ' + r.missing + ' punch' : '');
-  const recs = c.recs.filter(r => r.day === att.day).sort((a, b) => a.e.name.localeCompare(b.e.name));
+  const recs = c.recs.filter(r => r.day === att.day).sort((a, b) => byEnroll(a.e, b.e));
   const lines = [['Date', 'Enroll ID', 'Name', 'Department', 'Type', 'In', 'Out', 'Status'].join(',')].concat(recs.map(r =>
     [r.day, r.e.enroll_id, r.e.name, r.e.department, r.e.employment_type, r.i || '', r.o || '', statusOf(r)].map(cell).join(',')));
   download('okl_attendance_day_' + att.day + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
@@ -1569,10 +1576,10 @@ function attExportCsv(c){
 function attReportSheets(data, from, to, type){
   const c = attCompute({ data, from, to, dept:[], type: type || '', q:'' });
   if (!c.days.length) return null;
-  const people = c.people.filter(p => p.present || p.absent).sort((a, b) => a.e.name.localeCompare(b.e.name));
+  const people = c.people.filter(p => p.present || p.absent).sort((a, b) => byEnroll(a.e, b.e));
   const keep = new Set(people.map(p => p.e.enroll_id));
   const statusOf = r => r.absent ? 'Absent' : (r.late ? 'Late ' + r.lateMin + ' min' : (r.i ? 'On time' : 'Present')) + (r.missing ? ', no ' + r.missing + ' punch' : '');
-  const recs = c.recs.filter(r => keep.has(r.e.enroll_id)).sort((a, b) => a.e.name.localeCompare(b.e.name) || (a.day < b.day ? -1 : 1));
+  const recs = c.recs.filter(r => keep.has(r.e.enroll_id)).sort((a, b) => byEnroll(a.e, b.e) || (a.day < b.day ? -1 : 1));
   return [
     { name:'Summary', head:['Enroll ID', 'Name', 'Department', 'Type', 'Present', 'Late', 'Absent', 'Avg arrival'], widths:[12, 30, 20, 9, 9, 7, 8, 12],
       rows: people.map(p => [p.e.enroll_id, p.e.name, p.e.department || '', typeLabel(p.e.employment_type), p.present, p.late, p.absent, p.arrN ? attHHMM(p.arrSum / p.arrN) : '']) },
@@ -1592,7 +1599,7 @@ function attRawSheet(data, from, to, c, keep){
     if (p.n <= 1) return attMins(p.i) < 720 ? p.i + ' to --' : '-- to ' + p.i;       // one scan: an in punch in the morning, an out punch after noon
     return p.i + ' to ' + p.o;
   };
-  const people = c.emps.filter(e => keep.has(e.enroll_id) || idx.has(e.enroll_id)).sort((a, b) => a.name.localeCompare(b.name));
+  const people = c.emps.filter(e => keep.has(e.enroll_id) || idx.has(e.enroll_id)).sort(byEnroll);
   return { name:'Daily log', head:['Name', 'Enroll ID'].concat(dates.map(d => d.slice(5, 7) + '/' + d.slice(8, 10) + ' ' + dayName(d))), widths:[30, 12].concat(dates.map(() => 15)),
     rows: people.map(e => { const m = idx.get(e.enroll_id); return [e.name, e.enroll_id].concat(dates.map(d => cell(m && m.get(d)))); }) };
 }
@@ -1955,7 +1962,7 @@ function lvBalFiltered(){
 async function lvLoadBalances(){
   const box = $('#lvBody'); if (box) box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`;
   lv.bal = null; lv.balEdits = {};
-  try { const res = await api('/webhook/employees/api/leave/balances?year=' + lvEnc(lv.balYear)); lv.bal = (res.rows || []).map(b => Object.assign(b, { name: properName(b.name) })); }
+  try { const res = await api('/webhook/employees/api/leave/balances?year=' + lvEnc(lv.balYear)); lv.bal = (res.rows || []).map(b => Object.assign(b, { name: properName(b.name) })).sort(byEnroll); }
   catch (err) { toast('Could not load balances', err.message, 'err'); lv.bal = []; }
   lvPaintBalances();
 }
@@ -2542,7 +2549,7 @@ function openAddEmployee(){
         if (!payload.name) return setErr('aeName', 'Enter a name.', f);
         try {
           await api('/webhook/employees/api/create', { method:'POST', body: payload });
-          S.employees.push(payload);
+          S.employees.push(payload); S.employees.sort(byEnroll);
           close(); render(); toast('Employee added', esc(payload.name) + ' is now on record.', 'ok');
         } catch (err) { setErr('aeName', err.message, f); }
       };
