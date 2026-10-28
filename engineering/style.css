@@ -737,3 +737,16 @@ table.eng-grid{border-collapse:separate;border-spacing:0;font-size:12px;font-var
 .chips-line > *{flex:0 0 auto;white-space:nowrap}
 /* long words (e-mails, codes) wrap inside their cell instead of spilling out */
 .wrap-any{overflow-wrap:anywhere;word-break:break-word}
+
+/* several parts at once (Receive, Issue, parts on a job, Start a job): one line per part */
+.pl-head{display:flex;gap:8px;padding:0 0 4px}
+.pl-row{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line-2)}
+.pl-part{flex:1 1 auto;min-width:0}
+.pl-qty{width:90px;flex:0 0 90px}
+.pl-price{width:130px;flex:0 0 130px}
+@media (max-width: 640px){
+  .pl-head{display:none}
+  .pl-row{flex-wrap:wrap}
+  .pl-part{flex:1 1 100%}
+  .pl-qty,.pl-price{flex:1 1 0;width:auto}
+}

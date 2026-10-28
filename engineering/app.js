@@ -27,6 +27,7 @@ const I = (() => {
     wrench: w('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'),
     layers: w('<path d="M12 2l10 5-10 5L2 7z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>'),
     sliders: w('<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'),
+    download: w('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/>', 'width="15" height="15"'),
   };
 })();
 
@@ -81,11 +82,20 @@ function meFromAuth(auth, scope){
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 const PAGES = [["/spares", "engineering.spares"], ["/jobs", "engineering.jobs"], ["/stops", "engineering.jobs"], ["/floor", "engineering.jobs"],
   ["/actions", "engineering.actions"], ["/pm", "engineering.pm"], ["/overview", "engineering.actions"], ["/outdoor", "engineering.outdoor"],
-  ["/equipment", "engineering.equipment"], ["/settings", "engineering.settings"], ["/", "engineering.ahu"]];   // route prefix -> page, first match wins
+  ["/equipment", "engineering.equipment"], ["/settings", "engineering.settings"], ["/ahu", "engineering.ahu"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
-  const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
-  return hit ? hit[1] : 'engineering';
+  const hit = PAGES.find(([pre]) => p === pre || p.startsWith(pre + '/'));
+  return hit ? hit[1] : 'engineering';                // "/" (home) needs only the console
+}
+// Where the console opens: the manager on the Overview, technicians on Calls and jobs, the storekeeper on Spares,
+// everyone else on the first page they can open (people who only log AHU temperatures land on the log).
+function homePath(){
+  if ((levelOf('engineering.jobs') === 'edit' || levelOf('engineering.actions') === 'edit') && canOpen('/overview')) return '/overview';
+  if (['submit', 'edit'].includes(levelOf('engineering.jobs'))) return '/jobs';
+  if (levelOf('engineering.spares') === 'edit') return '/spares';
+  const first = allowedNav()[0];
+  return first ? first.items[0].path : '/ahu';
 }
 function canOpen(path){ return !!levelOf(pageOf(path)); }
 function canEditHere(){ return levelOf(pageOf()) === 'edit'; }
@@ -214,14 +224,14 @@ function navModel(){
   const mgr = levelOf('engineering.jobs') === 'edit';
   return [
     { title:'Maintenance', items:[
+      { path:'/overview', label:'Overview', icon:'layers' },
       { path:'/jobs', label:'Calls and jobs', icon:'wrench' },
       { path:'/stops', label:'Machine stops', icon:'alert' },
       { path:'/pm', label:'Preventive maintenance', icon:'checkCircle' },
       { path:'/actions', label:'Corrective and preventive actions', icon:'edit' },
-      { path:'/overview', label:'Overview', icon:'layers' },
     ] },
     { title:'Logs', items:[
-      { path:'/', label:'AHU Temperature Log', icon:'thermo' },
+      { path:'/ahu', label:'AHU Temperature Log', icon:'thermo' },
       { path:'/outdoor', label:'Outdoor Units', icon:'thermo' },
     ] },
     { title:'Store', items:[
@@ -301,6 +311,33 @@ function notFound(){
   return `<div class="card"><div class="card-b">${emptyState('alert','Page not found','That link may be out of date.',
     `<button class="btn btn-primary" onclick="go('/')">Back to console home</button>`)}</div></div>`;
 }
+/* ---------------- Excel downloads (SheetJS, loaded on first use, as in the HR console) ---------------- */
+const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+function loadSheetJS(){
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script'); s.src = SHEETJS_URL;
+    s.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error('The spreadsheet maker did not load.'));
+    s.onerror = () => reject(new Error('Could not load the spreadsheet maker. Check your connection and try again.'));
+    document.head.appendChild(s);
+  });
+}
+/* sheets = [{ name, head:[...], rows:[[...]] }] -> one .xlsx file named OKL_<name>_<date>.xlsx */
+async function downloadXlsx(name, sheets){
+  try {
+    const XLSX = await loadSheetJS(), wb = XLSX.utils.book_new();
+    sheets.forEach(sh => {
+      const ws = XLSX.utils.aoa_to_sheet([sh.head].concat(sh.rows.map(r => r.map(v => v == null ? '' : v))));
+      ws['!cols'] = sh.head.map((h, i) => ({ wch: Math.min(60, Math.max(10, String(h).length + 2, ...sh.rows.slice(0, 200).map(r => String(r[i] == null ? '' : r[i]).length + 1))) }));
+      if (sh.rows.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{ r:0, c:0 }, e:{ r:sh.rows.length, c:sh.head.length - 1 } }) };
+      XLSX.utils.book_append_sheet(wb, ws, String(sh.name).slice(0, 31));
+    });
+    XLSX.writeFile(wb, 'OKL_' + name.replace(/[^\w-]+/g, '_') + '_' + todayIso() + '.xlsx');
+  } catch (e) { toast('Could not make the file', e.message, 'err', 7000); }
+}
+const dlButton = onclick => `<button class="btn btn-ghost" onclick="${onclick}">${I.download} Download</button>`;
+const lagosDay = iso => iso ? new Date(new Date(iso).getTime() + 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' ') : '';
+
 function fatalErrorHtml(err){
   return `<div style="max-width:520px;margin:60px auto;padding:0 16px;font-family:system-ui,sans-serif">
     <div style="background:#fff;border:1px solid #F5C6C2;border-radius:12px;padding:24px;text-align:center">
@@ -564,7 +601,8 @@ function viewAhu(){
     },
   };
 }
-route('/', viewAhu);
+route('/ahu', viewAhu);
+route('/', () => { location.replace('#' + homePath()); return { title:'Engineering', crumb:'', html:'' }; });
 
 
 /* ============================================================
@@ -591,8 +629,8 @@ function eqFiltered(){
 function viewEquipment(){
   if (!EQ.list && !EQ.error) eqLoad();
   const canEdit = canEditHere();
-  const head = pageHead('Equipment', 'Everything Engineering looks after: machines, lines, rooms, AHUs and their outdoor units, utilities, instruments and buildings.',
-    canEdit ? `<button class="btn btn-primary" onclick="eqOpen('')">${I.plus} Add equipment</button>` : '');
+  const head = pageHead('Equipment', 'Everything Engineering looks after: machines, lines, rooms, AHUs and their outdoor units, utilities, instruments and buildings. Open one to see its whole history.',
+    dlButton('eqDownload()') + (canEdit ? `<button class="btn btn-primary" onclick="eqOpen('')">${I.plus} Add equipment</button>` : ''));
   if (EQ.error) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the register', esc(EQ.error), `<button class="btn btn-primary" onclick="eqLoad(true)">Try again</button>`)}</div></div>` };
   if (!EQ.list) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   const all = EQ.list, rows = eqFiltered(), shown = rows.slice(0, 400);
@@ -619,7 +657,7 @@ function viewEquipment(){
       </div>
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Area</th><th>Part of</th><th>EQ/PD no</th><th>On the shop floor</th><th></th></tr></thead>
-        <tbody>${shown.length ? shown.map(a => `<tr class="clickable" onclick="eqOpen('${esc(a.code)}')">
+        <tbody>${shown.length ? shown.map(a => `<tr class="clickable" onclick="go('/equipment/${esc(a.code)}')">
           <td class="mono small" data-label="Code">${esc(a.code)}</td>
           <td data-label="Name"><div class="strong">${esc(a.name)}</div>${a.children ? `<div class="tiny muted">${a.children} part${a.children === 1 ? '' : 's'}</div>` : ''}</td>
           <td data-label="Type">${esc(a.type)}</td><td data-label="Area">${esc(a.area || '--')}</td>
@@ -640,6 +678,87 @@ function viewEquipment(){
 }
 route('/equipment', viewEquipment);
 function eqSet(k, v){ EQ[k] = (k === 'type' && EQ.type === v) ? '' : v; render(); }
+function eqDownload(){
+  downloadXlsx('Equipment', [{ name: 'Equipment', head: ['Code', 'Name', 'Type', 'Area', 'Part of', 'EQ/PD no', 'Floor code', 'PM interval (days)', 'Status', 'Notes'],
+    rows: eqFiltered().map(a => [a.code, a.name, a.type, a.area, a.parent_name || a.parent, a.eq_no, a.floor_code, a.pm_interval_days, a.status, a.notes]) }]);
+}
+
+/* ---- one piece of equipment: its PM, KPIs (last 90 days), jobs, failures, floor stops, actions, parts and readings.
+   GET /webhook/engineering/api/equipment/one?code= (migration 023) */
+let AP = {};
+async function apLoad(code){
+  try { AP[code] = await api('/webhook/engineering/api/equipment/one?code=' + encodeURIComponent(code)); }
+  catch (err) { AP[code] = { error: err.message }; }
+  render();
+}
+const PM_STATE = { overdue: '<span class="badge b-danger">Overdue</span>', due: '<span class="badge b-warn">Due this week</span>', ok: '<span class="badge b-ok">OK</span>', no_record: '<span class="badge b-slate">No PM recorded</span>' };
+const PM_STATE_TEXT = { overdue: 'Overdue', due: 'Due this week', ok: 'OK', no_record: 'No PM recorded' };
+function viewAsset(params){
+  const code = String(params.code || '').toUpperCase();
+  if (!EQ.list && !EQ.loading) eqLoad();
+  if (AP[code] === undefined) { AP[code] = null; apLoad(code); }
+  const d = AP[code], a = eqByCode(code);
+  const back = `<a class="btn btn-ghost btn-sm" href="#/equipment">${I.chevL} Equipment</a>`;
+  if (!d || !EQ.list) return { title:'Equipment', crumb:'Setup', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error || d.ok === false || !a) return { title:'Equipment', crumb:'Setup', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Could not open it', esc(d.error || 'No such equipment.'))}</div></div>` };
+  const tab = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || 'jobs';
+  const canJob = ['submit', 'edit'].includes(levelOf('engineering.jobs')), k = d.kpis || {}, pm = d.pm;
+  const tabs = [['jobs', 'Jobs', (d.jobs || []).length], ['failures', 'Failures', (d.failures || []).length]]
+    .concat(a.floor_code ? [['stops', 'Floor stops', (d.stops || []).length]] : [])
+    .concat([['actions', 'Actions', (d.actions || []).length], ['parts', 'Parts used', (d.parts || []).length]])
+    .concat(a.type === 'Outdoor unit' ? [['readings', 'Monthly readings', (d.outdoor || []).length]] : []);
+  const cur = tabs.some(t => t[0] === tab) ? tab : 'jobs';
+  const empty = (n, msg) => `<tr><td colspan="${n}" class="muted" style="padding:16px">${msg}</td></tr>`;
+  const body = {
+    jobs: () => `<thead><tr><th>Job</th><th>Type</th><th>What failed / what was done</th><th>Technicians</th><th>Time</th><th>Status</th></tr></thead><tbody>${(d.jobs || []).map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')">
+        <td class="mono small" data-label="Job">${esc(j.job_id)}<div class="tiny muted">${esc(dayHm(j.finished_at || j.created_at))}</div></td><td data-label="Type">${esc(JOB_TYPE[j.type] || j.type)}</td>
+        <td data-label="Work" class="small">${j.failure_category ? `<b>${esc(j.failure_category)}</b>: ` : ''}${esc(j.work_done || j.cancel_reason || '')}</td>
+        <td data-label="Technicians" class="small">${esc((j.technicians || []).map(t => t.name).join(', '))}</td><td data-label="Time" class="mono small">${j.labour_minutes != null ? dur(j.labour_minutes) : ''}</td><td data-label="Status">${jbBadge(j)}</td></tr>`).join('') || empty(6, 'No jobs in the last year.')}</tbody>`,
+    failures: () => `<thead><tr><th>When</th><th>What</th><th style="text-align:right">Down for</th></tr></thead><tbody>${(d.failures || []).slice().reverse().map(f => `<tr>
+        <td data-label="When" class="small">${esc(dayHm(f.at))}</td><td data-label="What">${f.kind === 'job' ? `<a href="#/jobs/${esc(f.ref)}">${esc(f.ref)}</a> breakdown` : esc(f.ref)}</td>
+        <td data-label="Down for" style="text-align:right" class="mono">${dur(f.minutes)}</td></tr>`).join('') || empty(3, 'No failures in the last year.')}</tbody>`,
+    stops: () => `<thead><tr><th>Stopped</th><th>Reason</th><th style="text-align:right">Length</th></tr></thead><tbody>${(d.stops || []).map(s => `<tr>
+        <td data-label="Stopped" class="small">${esc(dayHm(s.started_at))}</td><td data-label="Reason">${esc(s.reason)}</td><td data-label="Length" style="text-align:right" class="mono">${dur(s.minutes)}</td></tr>`).join('') || empty(3, 'No machine stops on the floor in the last 90 days.')}</tbody>`,
+    actions: () => `<thead><tr><th>Action</th><th>Title</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody>${(d.actions || []).map(x => `<tr class="clickable" onclick="go('/actions/${esc(x.action_no)}')">
+        <td class="mono small" data-label="Action">${esc(x.action_no)}</td><td data-label="Title">${esc(x.title)}</td><td data-label="Owner" class="small">${esc(x.owner_name || '')}</td>
+        <td data-label="Due" class="small">${esc(x.due_date || '')}</td><td data-label="Status">${acBadge(x)}</td></tr>`).join('') || empty(5, 'No corrective or preventive actions.')}</tbody>`,
+    parts: () => `<thead><tr><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th>Job</th><th>Collected by</th></tr></thead><tbody>${(d.parts || []).map(m => `<tr>
+        <td data-label="Date" class="small">${esc(m.date)}</td><td data-label="Part"><span class="mono strong">${esc(m.sku || '')}</span> ${esc(m.description || '')}</td>
+        <td data-label="Qty" style="text-align:right">${num(m.qty)} ${esc(m.unit || '')}</td><td data-label="Job" class="mono small">${esc(m.job || '')}</td><td data-label="Collected by" class="small">${esc(m.collected_by_name || '')}</td></tr>`).join('') || empty(5, 'No parts issued for it.')}</tbody>`,
+    readings: () => `<thead><tr><th>Month</th><th style="text-align:right">Amps</th><th style="text-align:right">Low / high psi</th><th style="text-align:right">Superheat</th><th style="text-align:right">Subcooling</th><th>Status</th></tr></thead><tbody>${(d.outdoor || []).map(r => `<tr>
+        <td data-label="Month">${esc(String(r.month).slice(0, 7))}</td><td data-label="Amps" style="text-align:right">${num(r.amps)}</td><td data-label="psi" style="text-align:right">${num(r.low_psi)} / ${num(r.high_psi)}</td>
+        <td data-label="Superheat" style="text-align:right">${num(r.superheat)}</td><td data-label="Subcooling" style="text-align:right">${num(r.subcooling)}</td><td data-label="Status">${esc(r.status || '')}</td></tr>`).join('') || empty(6, 'No readings yet.')}</tbody>`,
+  }[cur]();
+  const facts = [['Code', a.code], ['Type', a.type], ['Area', a.area], ['Part of', a.parent_name || a.parent], ['EQ/PD no', a.eq_no], ['Shop floor code', a.floor_code], ['Status', a.status]].filter(x => x[1]);
+  return { title: a.name, crumb:'Equipment', keepScroll: true,
+    html: `<div class="row between" style="margin-bottom:12px">${back}<div class="row" style="gap:8px">${dlButton(`apDownload('${esc(code)}')`)}
+        ${canEditHere() ? `<button class="btn btn-ghost" onclick="eqOpen('${esc(code)}')">${I.edit} Edit</button>` : ''}
+        ${canJob ? `<button class="btn btn-ghost" onclick="go('/jobs/new?asset=${encodeURIComponent(code)}')">${I.wrench} Start a job</button><button class="btn btn-primary" onclick="go('/pm/record?asset=${encodeURIComponent(code)}')">${I.plus} Record a PM</button>` : ''}</div></div>
+    <div class="card" style="margin-bottom:14px"><div class="card-b"><h2 style="font-size:20px;margin:0 0 6px">${esc(a.name)}</h2>
+      <div class="row small" style="gap:6px 16px;flex-wrap:wrap">${facts.map(([l, v]) => `<span><span class="muted">${esc(l)}:</span> <b>${esc(v)}</b></span>`).join('')}</div>
+      ${a.notes ? `<div class="small muted" style="margin-top:6px">${esc(a.notes)}</div>` : ''}</div></div>
+    <div class="grid g4" style="margin-bottom:14px">
+      <div class="stat"><div class="lbl">Preventive maintenance</div><div class="val" style="font-size:16px">${pm ? PM_STATE[pm.state] || '' : '<span class="small muted">not tracked</span>'}</div>
+        <div class="meta">${pm ? `every ${pm.interval_days} d · last ${esc(pm.last_pm || 'never')}${pm.due_date ? ' · next ' + esc(pm.due_date) : ''}` : ''}</div></div>
+      <div class="stat"><div class="lbl">Failures (90 days)</div><div class="val">${num(k.failures) || 0}</div><div class="meta">${a.floor_code ? 'downtime ' + dur(k.downtime_min) : 'breakdown jobs'}</div></div>
+      <div class="stat"><div class="lbl">MTTR</div><div class="val">${dur(k.mttr_min)}</div><div class="meta">mean time to repair</div></div>
+      <div class="stat"><div class="lbl">MTBF</div><div class="val">${k.mtbf_days == null ? '--' : num(k.mtbf_days) + ' d'}</div><div class="meta">mean time between failures</div></div></div>
+    <div class="tabs" style="margin-bottom:14px">${tabs.map(([t, l, n]) => `<a class="tab ${t === cur ? 'on' : ''}" href="#/equipment/${esc(code)}?tab=${t}">${esc(l)} <span class="badge" style="padding:1px 7px">${n}</span></a>`).join('')}</div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl">${body}</table></div></div>` };
+}
+route('/equipment/:code', viewAsset);
+function apDownload(code){
+  const d = AP[code] || {}, a = eqByCode(code) || { name: code };
+  downloadXlsx(a.name, [
+    { name: 'Jobs', head: ['Job', 'Type', 'Status', 'Started', 'Finished', 'What failed', 'Cause', 'What was done', 'Technicians', 'Minutes'],
+      rows: (d.jobs || []).map(j => [j.job_id, JOB_TYPE[j.type] || j.type, j.status, lagosDay(j.started_at || j.created_at), lagosDay(j.finished_at), j.failure_category, j.cause, j.work_done, (j.technicians || []).map(t => t.name).join(', '), j.labour_minutes]) },
+    { name: 'Failures', head: ['When', 'What', 'Minutes down'], rows: (d.failures || []).map(f => [lagosDay(f.at), f.kind === 'job' ? f.ref + ' breakdown' : f.ref, f.minutes]) },
+    { name: 'Floor stops', head: ['Stopped', 'Reason', 'Minutes'], rows: (d.stops || []).map(s => [lagosDay(s.started_at), s.reason, s.minutes]) },
+    { name: 'Actions', head: ['Action', 'Type', 'Title', 'Root cause', 'Action to take', 'Owner', 'Due', 'Status'], rows: (d.actions || []).map(x => [x.action_no, x.kind, x.title, x.root_cause, x.action_to_take, x.owner_name, x.due_date, (AC_STATUS[x.status] || [x.status])[0]]) },
+    { name: 'Parts used', head: ['Date', 'Entry', 'SKU', 'Part', 'Qty', 'Unit', 'Job', 'Collected by', 'Status'], rows: (d.parts || []).map(m => [m.date, m.entry, m.sku, m.description, +m.qty, m.unit, m.job, m.collected_by_name, m.status]) },
+  ].concat(a.type === 'Outdoor unit' ? [{ name: 'Readings', head: ['Month', 'Running', 'Amps', 'Low psi', 'High psi', 'Superheat', 'Subcooling', 'Checked on', 'Checked by', 'Status'],
+      rows: (d.outdoor || []).map(r => [String(r.month).slice(0, 7), r.running ? 'yes' : 'no', r.amps, r.low_psi, r.high_psi, r.superheat, r.subcooling, r.checked_on, r.checked_by, r.status]) }] : []));
+}
 
 function eqOpen(code){
   const a = code ? eqByCode(code) : null, isNew = !a, canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
@@ -679,7 +798,7 @@ function eqOpen(code){
         if (isNew && !/^[A-Z0-9][A-Z0-9_.-]{1,39}$/.test(asset.code)) return setErr('eqName', 'The code must be 2 to 40 capital letters, digits, dots, dashes or underscores.', w);
         if (asset.name.length < 2) return setErr('eqName', 'Give it a name.', w);
         sv.disabled = true;
-        try { await api('/webhook/engineering/api/equipment/save', { method:'POST', body:{ asset } }); close(); toast(isNew ? 'Added' : 'Saved', asset.name, 'ok'); await eqLoad(true); }
+        try { await api('/webhook/engineering/api/equipment/save', { method:'POST', body:{ asset } }); close(); toast(isNew ? 'Added' : 'Saved', asset.name, 'ok'); AP = {}; await eqLoad(true); }
         catch (err) { setErr('eqName', err.message, w); sv.disabled = false; }
       };
     },
@@ -823,7 +942,7 @@ function viewSpares(){
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
   return {
     title:'Spares', crumb:'Store', keepScroll: true,
-    html: spHead('Engineering spare parts with live stock. Stock changes only through receipts, issues and counts.', spActions()) + spTabs('/spares') + `
+    html: spHead('Engineering spare parts with live stock. Stock changes only through receipts, issues and counts.', dlButton("spDownload('inventory')") + spActions()) + spTabs('/spares') + `
     <div class="grid g4" style="margin-bottom:14px">
       <div class="stat"><div class="lbl">Parts</div><div class="val">${all.length}</div><div class="meta">in the catalogue</div></div>
       <div class="stat"><div class="lbl">Stock value</div><div class="val">&#8358;${money(Math.round(value))}</div><div class="meta">where a price is known</div></div>
@@ -861,11 +980,85 @@ function viewSpares(){
   };
 }
 route('/spares', viewSpares);
+// the list on screen as an Excel file (inventory as filtered; inbound / outbound for the dates picked)
+function spDownload(what){
+  const mv = m => [m.entry, m.date, m.sku, m.description, (m.reversal ? -1 : 1) * +m.qty, m.unit];
+  const sheets = {
+    inventory: () => [{ name: 'Inventory', head: ['SKU', 'Part', 'Part number', 'Brand', 'Supplier', 'Location', 'Stock', 'Unit', 'Reorder at', 'Status', 'Unit price (NGN)', 'Value (NGN)', 'Used on', 'Last counted', 'Active'],
+      rows: spFiltered().map(x => [x.sku, x.description, x.part_number, x.brand, x.supplier, x.location, +x.stock, x.unit, +x.reorder_level, x.status, x.unit_price == null ? '' : +x.unit_price,
+        x.value == null ? '' : +x.value, x.common_use ? 'Common use' : (x.used_on_names || []).join(', '), x.last_count_at ? x.last_count_at.slice(0, 10) : '', x.active ? 'yes' : 'no']) }],
+    receipt: () => [{ name: 'Inbound', head: ['Entry', 'Date', 'SKU', 'Part', 'Qty', 'Unit', 'Amount (NGN)', 'Invoice', 'Supplier', 'Received by', 'Note'],
+      rows: (SP.moves.receipt || []).map(m => mv(m).concat([m.amount == null ? '' : (m.reversal ? -1 : 1) * +m.amount, m.invoice_no, m.supplier, m.received_by_name, m.reason || m.note])) }],
+    issue: () => [{ name: 'Outbound', head: ['Entry', 'Date', 'SKU', 'Part', 'Qty', 'Unit', 'Equipment', 'Collected by', 'Job', 'Status', 'Note'],
+      rows: (SP.moves.issue || []).map(m => mv(m).concat([m.asset_name || m.purpose_text, m.collected_by_name, m.job, m.status, m.reason || m.decision_reason || m.note])) }],
+    handovers: () => [{ name: 'Hand-overs', head: ['Entry', 'Job', 'SKU', 'Part', 'Qty', 'Unit', 'Taken by', 'Equipment', 'Working days waiting'],
+      rows: (SP.handovers || []).map(m => [m.entry, m.job, m.sku, m.description, +m.qty, m.unit, m.collected_by_name, m.asset_name, m.working_days]) }],
+    counts: () => [{ name: 'Weekly count', head: ['Week', 'SKU', 'Part', 'Location', 'System', 'Counted', 'Difference', 'Reason', 'Status'],
+      rows: ((SP.counts || {}).items || []).map(i => [(SP.counts || {}).week, i.sku, i.description, i.location, i.system_qty == null ? '' : +i.system_qty, i.counted_qty == null ? '' : +i.counted_qty,
+        i.difference == null ? '' : +i.difference, i.reason, i.status]) }],
+  }[what]();
+  downloadXlsx('Spares ' + { inventory: 'inventory', receipt: 'inbound', issue: 'outbound', handovers: 'hand-overs', counts: 'weekly count' }[what], sheets);
+}
 
 function spAssetOptions(){ return (EQ.list || []).filter(a => a.status === 'Active').sort((a, b) => a.name.localeCompare(b.name)).map(a => `<option value="${esc(a.name + ' (' + a.code + ')')}">`).join(''); }
 const spAssetFrom = v => { const m = /\(([A-Z0-9_.-]+)\)\s*$/.exec(String(v || '')); return m ? m[1] : String(v || '').trim().toUpperCase(); };
 const spSkuFrom = v => { const m = /^\s*([A-Z]{2} \d{3,4})/.exec(String(v || '').toUpperCase()); return m ? m[1] : ''; };
 function spSkuOptions(){ return (SP.list || []).filter(x => x.active).map(x => `<option value="${esc(spLabel(x))}">`).join(''); }
+
+/* ---- several parts at once: one line per part (part, quantity, and the unit price on a receipt). Used by Receive,
+   Issue, parts on a job and Start a job. The server saves all the lines or none (migration 023).
+   L = [{ text, sku, qty, price }]; opt = { id, price: bool, stock: bool (stop above the stock) } */
+const plNew = sku => { const it = sku ? spBySku(sku) : null; return { text: it ? spLabel(it) : '', sku: it ? it.sku : '', qty: '', price: it && it.unit_price ? num(it.unit_price) : '' }; };
+const plStock = l => { const it = spBySku(l.sku); return it ? 'In stock: ' + num(it.stock) + ' ' + it.unit + (it.location ? ' - ' + it.location : '') : ''; };
+function plRows(L, opt){
+  return L.map((l, i) => `<div class="pl-row">
+    <div class="pl-part"><input class="inp" data-pl-sku="${i}" list="${opt.id}Skus" value="${esc(l.text)}" placeholder="Type the SKU or the part name" aria-label="Part ${i + 1}">
+      <div class="tiny muted" data-pl-stock="${i}">${esc(plStock(l))}</div></div>
+    <input class="inp pl-qty" type="number" min="0" step="any" data-pl-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
+    ${opt.price ? `<input class="inp pl-price" type="number" min="0" step="any" data-pl-price="${i}" value="${esc(l.price)}" placeholder="Unit price" aria-label="Unit price ${i + 1}">` : ''}
+    <button type="button" class="btn btn-ghost btn-sm" data-pl-rm="${i}" ${L.length === 1 ? 'disabled' : ''} aria-label="Remove line ${i + 1}">${I.x}</button></div>`).join('');
+}
+function plHtml(L, opt){
+  return `<div class="pl" id="${opt.id}"><div class="pl-head tiny muted"><span class="pl-part">Part</span><span class="pl-qty">Quantity</span>${opt.price ? '<span class="pl-price">Unit price (NGN)</span>' : ''}<span style="width:34px"></span></div>
+    <div data-pl-rows>${plRows(L, opt)}</div>
+    <button type="button" class="btn btn-ghost btn-sm" data-pl-add style="margin-top:6px">${I.plus} Add another part</button>
+    <datalist id="${opt.id}Skus">${spSkuOptions()}</datalist></div>`;
+}
+// wires the lines inside root; keeps L in step with what is typed
+function plBind(root, L, opt){
+  const box = $('#' + opt.id, root); if (!box) return;
+  const rows = $('[data-pl-rows]', box);
+  const wire = () => {
+    $$('[data-pl-sku]', box).forEach(el => { el.oninput = el.onchange = () => { const l = L[+el.dataset.plSku]; l.text = el.value; l.sku = spSkuFrom(el.value);
+      const it = spBySku(l.sku), pr = $(`[data-pl-price="${el.dataset.plSku}"]`, box);
+      if (it && pr && !pr.value && it.unit_price) { pr.value = num(it.unit_price); l.price = pr.value; }
+      $(`[data-pl-stock="${el.dataset.plSku}"]`, box).textContent = plStock(l); }; });
+    $$('[data-pl-qty]', box).forEach(el => { el.oninput = () => { L[+el.dataset.plQty].qty = el.value; }; });
+    $$('[data-pl-price]', box).forEach(el => { el.oninput = () => { L[+el.dataset.plPrice].price = el.value; }; });
+    $$('[data-pl-rm]', box).forEach(el => { el.onclick = () => { L.splice(+el.dataset.plRm, 1); rows.innerHTML = plRows(L, opt); wire(); }; });
+  };
+  $('[data-pl-add]', box).onclick = () => { L.push(plNew()); rows.innerHTML = plRows(L, opt); wire(); const ins = $$('[data-pl-sku]', box); ins[ins.length - 1].focus(); };
+  wire();
+}
+// the lines to send, or { error }. Empty lines are skipped; at least one part is needed unless opt.optional.
+function plCheck(L, opt){
+  const out = [], seen = {};
+  for (let i = 0; i < L.length; i++) {
+    const l = L[i], n = L.length > 1 ? 'Line ' + (i + 1) + ': ' : '';
+    if (!String(l.text || '').trim() && !String(l.qty || '').trim()) continue;
+    const it = spBySku(l.sku);
+    if (!it) return { error: n + 'pick the part from the list.' };
+    if (seen[it.sku]) return { error: it.sku + ' is listed twice. Put it on one line with the total quantity.' };
+    seen[it.sku] = 1;
+    const whole = !['m', 'L', 'kg'].includes(it.unit);
+    if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return { error: n + 'enter a quantity above 0' + (whole ? ', in whole ' + it.unit + '.' : '.') };
+    if (opt.stock && +l.qty > +it.stock) return { error: n + 'only ' + num(it.stock) + ' ' + it.unit + ' of ' + it.sku + ' in stock. Count it first if the shelf has more.' };
+    if (opt.price && !(+l.price > 0)) return { error: n + 'enter the unit price from the invoice.' };
+    out.push(Object.assign({ sku: it.sku, qty: String(l.qty).trim(), description: it.description, unit: it.unit }, opt.price ? { unit_price: String(l.price).trim() } : {}));
+  }
+  if (!out.length && !opt.optional) return { error: 'Add at least one part.' };
+  return { lines: out };
+}
 
 function spOpen(sku){
   const x = sku ? spBySku(sku) : null, isNew = !x, canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
@@ -922,71 +1115,69 @@ function spOpen(sku){
 }
 
 /* ---- Receive / issue forms */
+// one delivery: the invoice, supplier and date once, then one line per part
 function spReceive(sku){
-  const x = sku ? spBySku(sku) : null, me = S.me.name;
+  const x = sku ? spBySku(sku) : null, me = S.me.name, L = [plNew(sku)], opt = { id: 'rcLines', price: true };
   openModal({
-    title:'Receive parts', size:'wide', sub:'A delivery into the store. The invoice number and price come from the supplier\'s invoice.',
+    title:'Receive parts', size:'wide', sub:'A delivery into the store: one invoice, one line per part. The invoice number and prices come from the supplier\'s invoice.',
     body: `<form novalidate><div class="grid g2">
-      <div class="field" style="grid-column:1/-1"><label for="rcSku">Part</label><input class="inp" id="rcSku" list="rcSkus" value="${x ? esc(spLabel(x)) : ''}" placeholder="Type the SKU or the part name"><datalist id="rcSkus">${spSkuOptions()}</datalist>
-        <div class="hint">${I.info}<span>A part that is not in the catalogue yet: add it first (Add part).</span></div></div>
-      <div class="field"><label for="rcQty">Quantity</label><input class="inp" id="rcQty" type="number" min="0" step="any"></div>
-      <div class="field"><label for="rcPrice">Unit price (NGN)</label><input class="inp" id="rcPrice" type="number" min="0" step="any" value="${x && x.unit_price ? num(x.unit_price) : ''}"></div>
       <div class="field"><label for="rcInv">Invoice number</label><input class="inp" id="rcInv" maxlength="40"></div>
       <div class="field"><label for="rcSup">Supplier</label><input class="inp" id="rcSup" maxlength="80" value="${x ? esc(x.supplier || '') : ''}"></div>
       <div class="field"><label for="rcDate">Received on</label><input class="inp" id="rcDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
       <div class="field"><label for="rcBy">Received by</label><select class="inp" id="rcBy"><option value="">${esc(me)} (me)</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
-      <div class="field" style="grid-column:1/-1"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
-    </div><div class="err-msg hide" data-err="rcSku"></div></form>`,
+    </div>
+    <div class="field"><span class="lbl">Parts received</span>${plHtml(L, opt)}
+      <div class="hint">${I.info}<span>A part that is not in the catalogue yet: add it first (Add part).</span></div></div>
+    <div class="field"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
+    <div class="err-msg hide" data-err="rcInv"></div></form>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Receive</button>`,
     onMount: (w, close) => {
-      $('#rcSku', w).onchange = () => { const it = spBySku(spSkuFrom($('#rcSku', w).value)); if (it) { if (!$('#rcPrice', w).value && it.unit_price) $('#rcPrice', w).value = num(it.unit_price); if (!$('#rcSup', w).value && it.supplier) $('#rcSup', w).value = it.supplier; } };
+      plBind(w, L, opt);
       const sv = $('[data-save]', w);
       sv.onclick = async () => {
         clearErrors(w);
-        const receipt = { sku: spSkuFrom($('#rcSku', w).value), qty: $('#rcQty', w).value, unit_price: $('#rcPrice', w).value, invoice_no: $('#rcInv', w).value.trim(),
-          supplier: $('#rcSup', w).value.trim(), date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim() };
-        if (!spBySku(receipt.sku)) return setErr('rcSku', 'Pick the part from the list.', w);
-        if (!(+receipt.qty > 0)) return setErr('rcSku', 'Enter the quantity received.', w);
-        if (!(+receipt.unit_price > 0)) return setErr('rcSku', 'Enter the unit price from the invoice.', w);
-        if (!receipt.invoice_no || !receipt.supplier) return setErr('rcSku', 'The invoice number and the supplier are needed.', w);
+        const chk = plCheck(L, opt);
+        if (chk.error) return setErr('rcInv', chk.error, w);
+        const receipt = { invoice_no: $('#rcInv', w).value.trim(), supplier: $('#rcSup', w).value.trim(), date: $('#rcDate', w).value, received_by: $('#rcBy', w).value,
+          note: $('#rcNote', w).value.trim(), lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty, unit_price: l.unit_price })) };
+        if (!receipt.invoice_no || !receipt.supplier) return setErr('rcInv', 'The invoice number and the supplier are needed.', w);
         sv.disabled = true;
-        try { const r = await api('/webhook/engineering/api/spares/receipt', { method:'POST', body:{ receipt } }); close(); toast('Received ' + r.move.entry, receipt.sku + ' x ' + receipt.qty, 'ok'); await spRefresh(); }
-        catch (err) { setErr('rcSku', err.message, w); sv.disabled = false; }
+        try { const r = await api('/webhook/engineering/api/spares/receipt', { method:'POST', body:{ receipt } }); close();
+              toast('Received ' + receipt.lines.length + ' part' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', '), 'ok'); await spRefresh(); }
+        catch (err) { setErr('rcInv', err.message, w); sv.disabled = false; }
       };
     },
   });
 }
+// parts leaving the store: the equipment and who collected them once, then one line per part
 function spIssue(sku){
-  const x = sku ? spBySku(sku) : null;
+  const L = [plNew(sku)], opt = { id: 'isLines', stock: true };
   openModal({
-    title:'Issue parts', size:'wide', sub:'Parts leaving the store. Say which equipment they are for and who collected them.',
+    title:'Issue parts', size:'wide', sub:'Parts leaving the store for one piece of equipment: one line per part.',
     body: `<form novalidate><div class="grid g2">
-      <div class="field" style="grid-column:1/-1"><label for="isSku">Part</label><input class="inp" id="isSku" list="isSkus" value="${x ? esc(spLabel(x)) : ''}" placeholder="Type the SKU or the part name"><datalist id="isSkus">${spSkuOptions()}</datalist>
-        <div class="small muted" id="isStock" style="margin-top:4px"></div></div>
-      <div class="field"><label for="isQty">Quantity</label><input class="inp" id="isQty" type="number" min="0" step="any"></div>
-      <div class="field"><label for="isDate">Date</label><input class="inp" id="isDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
       <div class="field" style="grid-column:1/-1"><label for="isAsset">For which equipment</label><input class="inp" id="isAsset" list="isAssets" placeholder="Type a machine, AHU, utility..."><datalist id="isAssets">${spAssetOptions()}</datalist></div>
       <div class="field"><label for="isWho">Collected by</label><select class="inp" id="isWho"><option value="">Choose...</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
-      <div class="field"><label for="isNote">Note (optional)</label><input class="inp" id="isNote" maxlength="300"></div>
-    </div><div class="err-msg hide" data-err="isSku"></div></form>`,
+      <div class="field"><label for="isDate">Date</label><input class="inp" id="isDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
+    </div>
+    <div class="field"><span class="lbl">Parts issued</span>${plHtml(L, opt)}</div>
+    <div class="field"><label for="isNote">Note (optional)</label><input class="inp" id="isNote" maxlength="300"></div>
+    <div class="err-msg hide" data-err="isAsset"></div></form>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Issue</button>`,
     onMount: (w, close) => {
-      const show = () => { const it = spBySku(spSkuFrom($('#isSku', w).value)); $('#isStock', w).textContent = it ? 'In stock: ' + num(it.stock) + ' ' + it.unit + (it.location ? ' - ' + it.location : '') : ''; };
-      $('#isSku', w).onchange = show; show();
+      plBind(w, L, opt);
       const sv = $('[data-save]', w);
       sv.onclick = async () => {
         clearErrors(w);
-        const issue = { sku: spSkuFrom($('#isSku', w).value), qty: $('#isQty', w).value, date: $('#isDate', w).value, asset: spAssetFrom($('#isAsset', w).value),
-          collected_by: $('#isWho', w).value, note: $('#isNote', w).value.trim() };
-        const it = spBySku(issue.sku);
-        if (!it) return setErr('isSku', 'Pick the part from the list.', w);
-        if (!(+issue.qty > 0)) return setErr('isSku', 'Enter the quantity.', w);
-        if (+issue.qty > +it.stock) return setErr('isSku', 'Only ' + num(it.stock) + ' ' + it.unit + ' in stock. Count it first if the shelf has more.', w);
-        if (!(EQ.list || []).some(a => a.code === issue.asset)) return setErr('isSku', 'Pick the equipment from the list.', w);
-        if (!issue.collected_by) return setErr('isSku', 'Choose who collected it.', w);
+        const chk = plCheck(L, opt);
+        if (chk.error) return setErr('isAsset', chk.error, w);
+        const issue = { asset: spAssetFrom($('#isAsset', w).value), collected_by: $('#isWho', w).value, date: $('#isDate', w).value, note: $('#isNote', w).value.trim(),
+          lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty })) };
+        if (!(EQ.list || []).some(a => a.code === issue.asset)) return setErr('isAsset', 'Pick the equipment from the list.', w);
+        if (!issue.collected_by) return setErr('isAsset', 'Choose who collected the parts.', w);
         sv.disabled = true;
-        try { const r = await api('/webhook/engineering/api/spares/issue', { method:'POST', body:{ issue } }); close(); toast('Issued ' + r.move.entry, issue.sku + ' x ' + issue.qty, 'ok'); await spRefresh(); }
-        catch (err) { setErr('isSku', err.message, w); sv.disabled = false; }
+        try { const r = await api('/webhook/engineering/api/spares/issue', { method:'POST', body:{ issue } }); close();
+              toast('Issued ' + issue.lines.length + ' part' + (issue.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', '), 'ok'); await spRefresh(); }
+        catch (err) { setErr('isAsset', err.message, w); sv.disabled = false; }
       };
     },
   });
@@ -1012,7 +1203,7 @@ function spMovesView(kind){
   if (!SP.list) { spLoad(); return spWait(cur); }
   if (!SP.moves[kind]) { spLoadMoves(kind); }
   const rows = SP.moves[kind], canEdit = canEditHere();
-  const head = spHead(kind === 'receipt' ? 'Deliveries into the store. Each needs the invoice number and the supplier.' : 'Parts leaving the store, with the equipment and who collected them.', spActions()) + spTabs(cur)
+  const head = spHead(kind === 'receipt' ? 'Deliveries into the store. Each needs the invoice number and the supplier.' : 'Parts leaving the store, with the equipment and who collected them.', dlButton(`spDownload('${kind}')`) + spActions()) + spTabs(cur)
     + `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="mvFrom" value="${esc(SP.from)}" style="width:auto"></label>
        <label class="small">to <input class="inp" type="date" id="mvTo" value="${esc(SP.to)}" style="width:auto"></label><span class="small muted">Default: the last 90 days.</span></div>`;
   const bind = () => { ['#mvFrom', '#mvTo'].forEach((id, i) => { const el = $(id); if (el) el.onchange = e => { SP[i ? 'to' : 'from'] = e.target.value; SP.moves = { receipt: null, issue: null }; render(); }; }); };
@@ -1052,7 +1243,7 @@ function viewHandovers(){
   if (!SP.handovers) { spLoadHandovers(); return spWait('/spares/handovers'); }
   const rows = SP.handovers, canEdit = canEditHere();
   return { title:'Spares', crumb:'Store', keepScroll: true,
-    html: spHead('Parts technicians recorded on their jobs. Stock moves only when the hand-over is confirmed.', spActions()) + spTabs('/spares/handovers') + `
+    html: spHead('Parts technicians recorded on their jobs. Stock moves only when the hand-over is confirmed.', dlButton("spDownload('handovers')") + spActions()) + spTabs('/spares/handovers') + `
     <div class="card"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Entry</th><th>Job</th><th>Part</th><th style="text-align:right">Qty</th><th>Taken by</th><th>Equipment</th><th>Waiting</th><th></th></tr></thead>
       <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="mono small">${esc(m.job || '')}</td>
@@ -1096,7 +1287,7 @@ function viewCounts(){
   const label = { planned:'<span class="badge b-warn">Not counted yet</span>', matches:'<span class="badge b-ok">Matches</span>', adjusted:'<span class="badge b-ok">Adjusted</span>',
     waiting_approval:'<span class="badge b-warn">Waiting approval</span>', approved:'<span class="badge b-ok">Approved</span>', rejected:'<span class="badge b-danger">Rejected</span>' };
   return { title:'Spares', crumb:'Store', keepScroll: true,
-    html: spHead('A few parts each week, picked by the system (never-counted first). What you count becomes the stock.', spActions()) + spTabs('/spares/counts') + `
+    html: spHead('A few parts each week, picked by the system (never-counted first). What you count becomes the stock.', dlButton("spDownload('counts')") + spActions()) + spTabs('/spares/counts') + `
     <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" onclick="spWeek('${shift(-7)}')">${I.chevL} Previous week</button>
         <span class="strong">Week ${esc(c.week)} (from ${esc(c.week_start)})</span>
@@ -1268,14 +1459,14 @@ async function jbLoadOne(id){
   catch (err) { JB.one[id] = { error: err.message }; }
   render();
 }
-function viewJob(params){
-  const id = params.id;
+function viewJob(params, ctx){
+  const id = params.id, from = ctx || { back: '/jobs', label: 'Calls and jobs' };
   if (!SP.list && !SP.loading) spLoad();
   if (!EQ.list && !EQ.loading) eqLoad();
   if (!JB.board && !JB.loading) jbLoad();
   if (JB.one[id] === undefined) { JB.one[id] = null; jbLoadOne(id); }
   const j = JB.one[id];
-  const back = `<a class="btn btn-ghost btn-sm" href="#/jobs">${I.chevL} Calls and jobs</a>`;
+  const back = `<a class="btn btn-ghost btn-sm" href="#${from.back}">${I.chevL} ${esc(from.label)}</a>`;
   if (j === false) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'No such job', 'It may have been typed wrong.')}</div></div>` };
   if (!j) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
   if (j.error) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Could not load the job', esc(j.error), `<button class="btn btn-primary" onclick="jbLoadOne('${esc(id)}')">Try again</button>`)}</div></div>` };
@@ -1313,7 +1504,7 @@ function viewJob(params){
     title: j.machine_name || 'Job', crumb:'Maintenance', keepScroll: true,
     html: `<div class="row between" style="margin-bottom:12px">${back}<span class="mono small muted">${esc(j.job_id)} · ${esc(JOB_TYPE[j.type] || j.type)}</span></div>
     <div class="card" style="margin-bottom:14px"><div class="card-b">
-      <div class="row between" style="align-items:flex-start;flex-wrap:nowrap"><div><h2 style="font-size:20px;margin:0">${esc(j.machine_name || j.machine_code)}</h2>
+      <div class="row between" style="align-items:flex-start;flex-wrap:nowrap"><div><h2 style="font-size:20px;margin:0">${j.asset ? `<a href="#/equipment/${esc(j.asset)}" style="color:inherit">${esc(j.machine_name || j.asset_name || j.asset)}</a>` : esc(j.machine_name || j.machine_code)}</h2>
         <div class="small muted" style="margin-top:4px">${[j.area || j.stage, j.stop_reason, j.called_by_name ? 'called by ' + j.called_by_name : ''].filter(Boolean).map(esc).join(' · ')}</div></div>${jbBadge(j)}</div>
       ${!j.asset ? `<div class="notice warn" style="margin-top:12px">${I.alert}<div>The floor machine <b>${esc(j.machine_code)}</b> is not in the equipment register. Choose the equipment below before closing the job.</div></div>` : ''}
       ${j.call_note ? `<div class="small" style="margin-top:8px"><b>Operator's note:</b> ${esc(j.call_note)}</div>` : ''}
@@ -1334,7 +1525,7 @@ function viewJob(params){
     </form>
     <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>Parts used <span class="muted" style="font-weight:500">(optional)</span></h3>
         <div class="sub">The storekeeper confirms the hand-over; stock moves then.${j.status === 'done' && partsUntil ? ' Parts can be added until ' + esc(dayHm(j.parts_until)) + (mgr ? ' (you can add later too).' : '.') : ''}</div></div>
-        ${canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbAddPart('${esc(id)}')">${I.plus} Add part</button>` : ''}</div>
+        ${canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbAddPart('${esc(id)}')">${I.plus} Add parts</button>` : ''}</div>
       <div class="card-b">${parts.length ? parts.map(p => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line-2)">
           <div><span class="mono strong">${esc(p.sku)}</span> · ${esc(p.description || '')}<div class="tiny muted">${esc(p.collected_by_name || '')} · ${esc(p.entry)}</div></div>
           <div class="row" style="gap:8px"><span class="mono strong">× ${num(p.qty)}</span>${partStatus(p)}${p.status === 'waiting' && canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbRemovePart('${esc(id)}', ${p.id})">Remove</button>` : ''}</div></div>`).join('')
@@ -1350,6 +1541,7 @@ function viewJob(params){
   };
 }
 route('/jobs/:id', params => params.id === 'new' ? viewJobNew() : viewJob(params));
+route('/pm/jobs/:id', params => viewJob(params, { back: '/pm/effectiveness', label: 'PM effectiveness' }));
 
 function jbFormValues(){
   const cat = $('[data-cat].on'), a = $('#jbAsset');
@@ -1384,30 +1576,24 @@ function jbCancel(id){
       clearErrors(w); const reason = $('#jcWhy', w).value.trim(); if (reason.length < 5) return setErr('jcWhy', 'Say why.', w);
       try { await jbDo(id, 'cancel', { reason }); close(); } catch (e) { setErr('jcWhy', e.message, w); } }; } });
 }
-// a part: picked from the catalogue (search by SKU or name), whole numbers unless the unit is m, L or kg
-function jbPartModal(title, onPick){
-  openModal({ title, size:'narrow', sub:'The storekeeper confirms the hand-over before the stock changes.',
-    body:`<div class="field"><label for="jpSku">Part</label><input class="inp" id="jpSku" list="jpSkus" placeholder="Type the SKU or the name"><datalist id="jpSkus">${spSkuOptions()}</datalist><div class="hint" id="jpStock"></div></div>
-      <div class="field"><label for="jpQty">How many?</label><input class="inp" id="jpQty" type="number" min="0" step="any" value="1"></div>
-      <div class="field"><label for="jpNote">Note (optional)</label><input class="inp" id="jpNote" maxlength="300"></div><div class="err-msg hide" data-err="jpSku"></div>`,
-    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.plus} Add</button>`,
+function jbAddPart(id){
+  const L = [plNew()], opt = { id: 'jpLines' };
+  openModal({ title:'Parts used on ' + id, size:'wide', sub:'One line per part. The storekeeper confirms the hand-over before the stock changes.',
+    body:`${plHtml(L, opt)}<div class="err-msg hide" data-err="jpLines"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.plus} Add the parts</button>`,
     onMount: (w, close) => {
-      const show = () => { const it = spBySku(spSkuFrom($('#jpSku', w).value)); $('#jpStock', w).textContent = it ? 'In stock: ' + num(it.stock) + ' ' + it.unit + (it.location ? ' · ' + it.location : '') : ''; };
-      $('#jpSku', w).onchange = show;
-      $('[data-save]', w).onclick = async () => {
+      plBind(w, L, opt);
+      const sv = $('[data-save]', w);
+      sv.onclick = async () => {
         clearErrors(w);
-        const sku = spSkuFrom($('#jpSku', w).value), qty = $('#jpQty', w).value, it = spBySku(sku);
-        if (!it) return setErr('jpSku', 'Pick the part from the list.', w);
-        if (!(+qty > 0) || (!['m', 'L', 'kg'].includes(it.unit) && +qty !== Math.floor(+qty))) return setErr('jpSku', 'Enter a quantity above 0' + (['m', 'L', 'kg'].includes(it.unit) ? '.' : ', in whole ' + it.unit + '.'), w);
-        try { await onPick({ sku, qty, note: $('#jpNote', w).value.trim(), description: it.description, unit: it.unit }); close(); } catch (e) { setErr('jpSku', e.message, w); }
+        const chk = plCheck(L, opt);
+        if (chk.error) return setErr('jpLines', chk.error, w);
+        sv.disabled = true;
+        try { const r = await api('/webhook/engineering/api/jobs/parts', { method:'POST', body:{ id, lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty })) } });
+              JB.one[id] = r.job; close(); toast(chk.lines.length === 1 ? 'Part added' : chk.lines.length + ' parts added', chk.lines.map(l => l.sku + ' × ' + l.qty).join(', '), 'ok'); render(); }
+        catch (e) { setErr('jpLines', e.message, w); sv.disabled = false; }
       };
     } });
-}
-function jbAddPart(id){
-  jbPartModal('Add a part to ' + id, async part => {
-    const r = await api('/webhook/engineering/api/jobs/parts', { method:'POST', body:{ id, sku: part.sku, qty: part.qty, note: part.note } });
-    JB.one[id] = r.job; toast('Part added', part.sku + ' × ' + part.qty, 'ok'); render();
-  });
 }
 async function jbRemovePart(id, moveId){
   if (!await confirmDialog('Remove the part', 'Take this part off the job? It has not been handed over yet.', 'Remove')) return;
@@ -1415,36 +1601,49 @@ async function jbRemovePart(id, moveId){
   catch (e) { toast('Could not remove it', e.message, 'err', 7000); }
 }
 
-/* ---- start a job without a call (or on a machine stop: /jobs/new?stop=<id>) */
-function viewJobNew(){
+/* ---- start a job without a call. Each kind has its own address and goes back where it came from:
+   /jobs/new (breakdown found on a round, corrective, inspection, improvement), /pm/record (a PM, from Preventive
+   maintenance), /stops/<id>/job (a breakdown on a machine stop). ?asset= preselects the equipment. */
+function viewJobNew(ctx){
+  ctx = ctx || {};
+  const qs = new URLSearchParams(currentPath().split('?')[1] || ''), stopId = ctx.stop || qs.get('stop');
+  if (!ctx.pm && qs.get('type') === 'preventive') { location.replace('#/pm/record' + (qs.get('asset') ? '?asset=' + encodeURIComponent(qs.get('asset')) : '')); return { title:'Record a PM', crumb:'Maintenance', html:'' }; }
   if (!EQ.list && !EQ.loading) eqLoad();
   if (!SP.list && !SP.loading) spLoad();
   if (!JB.board && !JB.loading) jbLoad();
-  const qs = new URLSearchParams(currentPath().split('?')[1] || ''), stopId = qs.get('stop');
   if (stopId && !JB.stops && !JB.stopsLoading) jbLoadStops();
-  const stop = stopId ? (JB.stops || []).find(s => String(s.id) === stopId) : null;
+  const stop = stopId ? (Array.isArray(JB.stops) ? JB.stops : []).find(s => String(s.id) === String(stopId)) : null;
+  const where = ctx.pm ? { back: '/pm', label: 'Preventive maintenance', crumb: 'Preventive maintenance' }
+    : stopId ? { back: '/stops', label: 'Machine stops', crumb: 'Machine stops' } : { back: '/jobs', label: 'Calls and jobs', crumb: 'Maintenance' };
+  const types = ctx.pm ? [] : JOB_TYPES.filter(([k]) => k !== 'preventive');
   const draftKey = currentPath();
-  if (!JB.draft || JB.draft.key !== draftKey) JB.draft = { key: draftKey, stop: stopId || '', type: stop ? 'breakdown' : (JOB_TYPE[qs.get('type')] ? qs.get('type') : ''), cat: '', parts: [], techs: [], when: stop ? 'set' : 'now', asset: qs.get('asset') || '' };
+  if (!JB.draft || JB.draft.key !== draftKey) JB.draft = { key: draftKey, stop: stopId || '',
+    type: ctx.pm ? 'preventive' : stopId ? 'breakdown' : (JOB_TYPE[qs.get('type')] && qs.get('type') !== 'preventive' ? qs.get('type') : ''),
+    cat: '', parts: [plNew()], techs: [], when: stopId ? 'set' : 'now', asset: qs.get('asset') || '' };
   const d = JB.draft, cats = (JB.board && JB.board.failure_categories) || [], me = jbMe();
-  const back = `<a class="btn btn-ghost btn-sm" href="#/${stopId ? 'stops' : 'jobs'}">${I.chevL} ${stopId ? 'Machine stops' : 'Calls and jobs'}</a>`;
-  if (stopId && !JB.stops) return { title:'Start a job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
-  if (stopId && !stop) return { title:'Start a job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('info', 'That stop is not on the list any more', 'A job may already cover it.')}</div></div>` };
+  const back = `<a class="btn btn-ghost btn-sm" href="#${where.back}">${I.chevL} ${esc(where.label)}</a>`;
+  const title = ctx.pm ? 'Record a PM' : stopId ? 'Job on a machine stop' : 'Start a job';
+  if (stopId && !JB.stops) return { title, crumb: where.crumb, html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
+  if (stopId && !stop) return { title, crumb: where.crumb, html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('info', 'That stop is not on the list any more', 'A job may already cover it.')}</div></div>` };
   const localIso = iso => { const t = new Date(new Date(iso).getTime() + 60 * 60 * 1000); return t.toISOString().slice(0, 16); };   // Lagos time for the input
   const people = (SP.people || []).filter(p => p.enroll_id !== me.enroll_id);
+  const sub = ctx.pm ? 'Preventive maintenance on one piece of equipment. Its next PM date is worked out from this.'
+    : stopId ? 'A breakdown on a stop nobody called in. It is linked to the stop and leaves the Machine stops list.'
+    : 'A job without a call: a breakdown found on a round, corrective work, an inspection or an improvement. A PM is recorded under Preventive maintenance.';
+  const popt = { id: 'jnLines', optional: true };
   return {
-    title:'Start a job', crumb:'Maintenance', keepScroll: true,
-    html: back + pageHead(stopId ? 'Job on a machine stop' : 'Start a job', stopId ? 'A breakdown on a stop nobody called in. It is linked to the stop and leaves the Machine stops list.' : 'A job without a call: preventive, corrective, inspection, improvement, or a breakdown found on a round.') + `
+    title, crumb: where.crumb, keepScroll: true,
+    html: back + pageHead(title, sub) + `
     ${stop ? `<div class="card" style="margin-bottom:14px"><div class="card-b"><div class="strong">${esc(stop.machine_name)}</div><div class="small muted">${esc(stop.reason)} · stopped ${esc(dayHm(stop.started_at))} · ${stop.still_down ? 'still down' : dur(stop.minutes)}</div></div></div>` : ''}
     <form id="jnForm" novalidate>
       ${stop && stop.asset ? '' : `<div class="field"><label for="jnAsset">Which machine or equipment?</label><input class="inp" id="jnAsset" list="jnAssets" value="${esc(d.assetText != null ? d.assetText : (d.asset && eqByCode(d.asset) ? eqByCode(d.asset).name + ' (' + d.asset + ')' : ''))}" placeholder="Type to search: compressor, Kunlong, AHU 1.4..."><datalist id="jnAssets">${spAssetOptions()}</datalist>
         <div class="hint">${I.info}<span>Production machines and other equipment are in one list.</span></div></div>`}
-      ${stop ? '' : `<div class="field"><span class="lbl">Type of job</span><div class="row" style="gap:8px">${JOB_TYPES.map(([k, l]) => `<button type="button" class="chip big-chip ${d.type === k ? 'on' : ''}" data-type="${k}">${l}</button>`).join('')}</div></div>`}
+      ${types.length && !stopId ? `<div class="field"><span class="lbl">Type of job</span><div class="row" style="gap:8px">${types.map(([k, l]) => `<button type="button" class="chip big-chip ${d.type === k ? 'on' : ''}" data-type="${k}">${l}</button>`).join('')}</div></div>` : ''}
       <div class="field" id="jnCatWrap" style="${d.type === 'breakdown' ? '' : 'display:none'}"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${d.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>
-      <div class="field"><label for="jnDone">What did you find, and what was done?</label><textarea class="inp" id="jnDone" rows="3" maxlength="2000" placeholder="e.g. Oil level low and a loose belt. Topped up and re-tensioned.">${esc(d.work || '')}</textarea></div>
-      <div class="field"><label for="jnCause">Cause (optional)</label><input class="inp" id="jnCause" maxlength="1000" value="${esc(d.cause || '')}"></div>
+      <div class="field"><label for="jnDone">What did you find, and what was done?</label><textarea class="inp" id="jnDone" rows="3" maxlength="2000" placeholder="${ctx.pm ? 'e.g. Greased the bearings, changed the belts, checked the sensors' : 'e.g. Oil level low and a loose belt. Topped up and re-tensioned.'}">${esc(d.work || '')}</textarea></div>
+      <div class="field"><label for="jnCause">${ctx.pm ? 'Findings to follow up (optional)' : 'Cause (optional)'}</label><input class="inp" id="jnCause" maxlength="1000" value="${esc(d.cause || '')}"></div>
       ${people.length ? `<div class="field"><span class="lbl">Who else worked on it? (optional)</span><div class="row" style="gap:6px">${people.map(p => `<button type="button" class="chip ${d.techs.includes(p.enroll_id) ? 'on' : ''}" data-tech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
-      <div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Parts used <span class="muted" style="font-weight:500">(optional)</span></h3><button type="button" class="btn btn-ghost btn-sm" id="jnAddPart">${I.plus} Add part</button></div>
-        <div class="card-b" id="jnParts">${d.parts.length ? d.parts.map((p, i) => `<div class="row between" style="padding:4px 0"><span><span class="mono strong">${esc(p.sku)}</span> · ${esc(p.description)}</span><span class="row" style="gap:8px"><span class="mono strong">× ${esc(p.qty)}</span><button type="button" class="btn btn-ghost btn-sm" data-unpart="${i}">Remove</button></span></div>`).join('') : '<span class="small muted">None added.</span>'}</div></div>
+      <div class="field"><span class="lbl">Parts used <span class="muted" style="font-weight:500">(optional; the storekeeper confirms the hand-over)</span></span>${plHtml(d.parts, popt)}</div>
       <div class="field"><span class="lbl">Start time</span><div class="row" style="gap:8px"><div class="seg"><button type="button" class="${d.when === 'now' ? 'on' : ''}" data-when="now">Now · ${hm(new Date().toISOString())}</button><button type="button" class="${d.when === 'set' ? 'on' : ''}" data-when="set">Earlier</button></div>
         <input class="inp" type="datetime-local" id="jnStart" style="width:auto;${d.when === 'set' ? '' : 'display:none'}" value="${d.start || (stop ? localIso(stop.started_at) : '')}" max="${localIso(new Date().toISOString())}"></div></div>
       <div class="err-msg hide" data-err="jnDone"></div>
@@ -1456,8 +1655,8 @@ function viewJobNew(){
       $$('[data-tech]').forEach(b => b.onclick = () => { const k = b.dataset.tech; d.techs = d.techs.includes(k) ? d.techs.filter(x => x !== k) : d.techs.concat(k); b.classList.toggle('on'); });
       $$('[data-when]').forEach(b => b.onclick = () => { d.when = b.dataset.when; $$('[data-when]').forEach(x => x.classList.toggle('on', x === b)); $('#jnStart').style.display = d.when === 'set' ? '' : 'none'; });
       const keep = () => { const a = $('#jnAsset'); if (a) d.assetText = a.value; d.work = $('#jnDone').value; d.cause = $('#jnCause').value; d.start = $('#jnStart').value; };
-      $$('[data-unpart]').forEach(b => b.onclick = () => { keep(); d.parts.splice(+b.dataset.unpart, 1); render(); });
-      $('#jnAddPart').onclick = () => jbPartModal('Add a part', async p => { keep(); d.parts.push(p); render(); });
+      ['#jnAsset', '#jnDone', '#jnCause', '#jnStart'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', keep); });
+      plBind(document, d.parts, popt);
       const send = async done => {
         clearErrors(document);
         const a = $('#jnAsset'), asset = stop && stop.asset ? stop.asset : spAssetFrom(a ? a.value : '');
@@ -1467,12 +1666,15 @@ function viewJobNew(){
         if (d.when === 'set' && !start) return setErr('jnDone', 'Enter the start time, or choose Now.');
         if (done && work.length < 5) return setErr('jnDone', 'Say what was found and done.');
         if (done && d.type === 'breakdown' && !d.cat) return setErr('jnDone', 'Pick what failed.');
+        const chk = plCheck(d.parts, popt);
+        if (chk.error) return setErr('jnDone', 'Parts: ' + chk.error);
         const job = { asset, type: d.type, failure_category: d.type === 'breakdown' ? d.cat : '', work_done: work, cause: $('#jnCause').value.trim(), done,
                       started_at: d.when === 'set' ? start + ':00+01:00' : '', technicians: d.techs, stop_id: stop ? stop.id : '',
-                      parts: d.parts.map(p => ({ sku: p.sku, qty: p.qty, note: p.note })) };
+                      parts: chk.lines.map(p => ({ sku: p.sku, qty: p.qty })) };
         $$('.job-actions .btn').forEach(b => b.disabled = true);
-        try { const r = await api('/webhook/engineering/api/jobs/start', { method:'POST', body:{ job } }); JB.draft = null; JB.stops = null; JB.one[r.job.job_id] = r.job;
-              toast(done ? 'Job logged' : 'Job started', r.job.job_id, 'ok'); jbLoad(true); go('/jobs/' + r.job.job_id); }
+        try { const r = await api('/webhook/engineering/api/jobs/start', { method:'POST', body:{ job } }); JB.draft = null; JB.stops = null; JB.one[r.job.job_id] = r.job; AP = {};
+              if (ctx.pm) PM.data = null;
+              toast(done ? (ctx.pm ? 'PM recorded' : 'Job logged') : 'Job started', r.job.job_id, 'ok'); jbLoad(true); go((ctx.pm ? '/pm/jobs/' : '/jobs/') + r.job.job_id); }
         catch (e) { setErr('jnDone', e.message); $$('.job-actions .btn').forEach(b => b.disabled = false); }
       };
       $('#jnLog').onclick = () => send(true);
@@ -1480,6 +1682,8 @@ function viewJobNew(){
     },
   };
 }
+route('/pm/record', () => viewJobNew({ pm: true }));
+route('/stops/:id/job', params => viewJobNew({ stop: params.id }));
 
 /* ---- history */
 async function jbLoadHistory(){
@@ -1491,7 +1695,7 @@ async function jbLoadHistory(){
 function viewJobsHistory(){
   if (!JB.board && !JB.loading) jbLoad();
   if (!JB.history) { JB.history = 'loading'; jbLoadHistory(); }
-  const h = JB.history, head = pageHead('Calls and jobs', 'Every job, newest first (the last 30 days unless you pick dates).') + jbTabs('history')
+  const h = JB.history, head = pageHead('Calls and jobs', 'Every job, newest first (the last 30 days unless you pick dates).', Array.isArray(h) ? dlButton('jbHistoryDownload()') : '') + jbTabs('history')
     + `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="jhFrom" value="${esc(JB.histFrom)}" style="width:auto"></label>
        <label class="small">to <input class="inp" type="date" id="jhTo" value="${esc(JB.histTo)}" style="width:auto"></label>
        <select class="inp" id="jhType" style="width:auto"><option value="">All types</option>${JOB_TYPES.map(([k, l]) => `<option value="${k}" ${JB.histType === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
@@ -1509,6 +1713,14 @@ function viewJobsHistory(){
       <div class="small muted" style="padding:12px 18px">${h.length} jobs. Mirrored to the Maintenance Google Sheet (Breakdowns tab).</div></div>` };
 }
 
+function jbHistoryDownload(){
+  downloadXlsx('Jobs' + (JB.histFrom ? ' from ' + JB.histFrom : '') + (JB.histTo ? ' to ' + JB.histTo : ''), [{ name: 'Jobs',
+    head: ['Job', 'Type', 'Status', 'Equipment', 'Stop reason', 'Called', 'Accepted', 'Arrived', 'Started', 'Finished', 'What failed', 'Cause', 'What was done', 'Technicians', 'Labour (min)', 'Parts'],
+    rows: (Array.isArray(JB.history) ? JB.history : []).map(j => [j.job_id, JOB_TYPE[j.type] || j.type, j.status, j.machine_name || j.asset_name || j.asset, j.stop_reason,
+      lagosDay(j.called_at), lagosDay(j.accepted_at), lagosDay(j.arrived_at), lagosDay(j.started_at), lagosDay(j.finished_at), j.failure_category, j.cause, j.work_done || j.cancel_reason,
+      (j.technicians || []).map(t => t.name).join(', '), j.labour_minutes, (j.parts || []).filter(p => p.status !== 'cancelled').map(p => p.sku + ' x ' + num(p.qty)).join(', ')]) }]);
+}
+
 /* ---- Recent machine stops: floor stops with a machine reason that nobody called in (read from the floor system) */
 async function jbLoadStops(){
   JB.stopsLoading = true;
@@ -1520,7 +1732,7 @@ function viewStops(){
   if (!JB.stops && !JB.stopsLoading) jbLoadStops();
   const info = JB.stopsInfo || {}, canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
   const head = pageHead('Machine stops', `Stops on the floor with a machine reason, ${num(info.min_minutes) || 15} minutes or longer, in the last ${num(info.days) || 7} days, that no call or job covers yet. Short stops and operational reasons (breaks, changeovers, material) are left out. The limits are in Settings.`,
-    `<button class="btn btn-ghost" onclick="JB.stops = null; render()">Refresh</button>`);
+    `<button class="btn btn-ghost" onclick="JB.stops = null; render()">Refresh</button>` + (Array.isArray(JB.stops) ? dlButton('jbStopsDownload()') : ''));
   const s = JB.stops;
   if (!s) return { title:'Machine stops', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (s.error) return { title:'Machine stops', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the stops', esc(s.error))}</div></div>` };
@@ -1531,11 +1743,15 @@ function viewStops(){
         <td data-label="Reason">${esc(x.reason)}</td><td data-label="Stopped" class="small">${esc(dayHm(x.started_at))}</td>
         <td data-label="Length">${x.still_down ? `<span class="badge b-danger">still down · ${dur(x.minutes)}</span>` : `<span class="mono">${dur(x.minutes)}</span>`}</td>
         <td data-label="Note" class="small">${esc(x.note || '')}</td>
-        <td style="text-align:right">${canStart && x.asset ? `<button class="btn btn-primary btn-sm" onclick="go('/jobs/new?stop=${x.id}')">Open a job</button>` : ''}</td></tr>`).join('')
+        <td style="text-align:right">${canStart && x.asset ? `<button class="btn btn-primary btn-sm" onclick="go('/stops/${x.id}/job')">Open a job</button>` : ''}</td></tr>`).join('')
         || `<tr><td colspan="6" class="muted" style="padding:16px">No machine stops to look at. Calls from the floor are on Calls and jobs.</td></tr>`}</tbody></table></div>
       <div class="small muted" style="padding:12px 18px">${s.length} stop${s.length === 1 ? '' : 's'}.</div></div>` };
 }
 route('/stops', viewStops);
+function jbStopsDownload(){
+  downloadXlsx('Machine stops', [{ name: 'Machine stops', head: ['Machine', 'Stage', 'Reason', 'Stopped', 'Ended', 'Minutes', 'Still down', "Operator's note", 'In the register'],
+    rows: (Array.isArray(JB.stops) ? JB.stops : []).map(x => [x.machine_name, x.stage, x.reason, lagosDay(x.started_at), lagosDay(x.ended_at), x.minutes, x.still_down ? 'yes' : '', x.note, x.asset ? 'yes' : 'no']) }]);
+}
 
 /* ---- messages with the floor system (Engineering Manager): delivery problems show here */
 let FM = null;
@@ -1603,72 +1819,112 @@ async function pushTurnOn(){
 
 
 /* ============================================================
-   Preventive maintenance (migration 020): what is due, and how well each PM held (worked out, never typed).
-   A PM = a preventive job, or any other job (not a breakdown) done on a Saturday or Sunday. The run ends at the first
+   Preventive maintenance (migrations 020, 023): two tabs. PM due = every maintained item (not rooms, buildings, lines
+   or vehicles) on its own interval or the default one. PM effectiveness = how long each PM held (worked out, never typed):
+   a PM is a preventive job, or any other job (not a breakdown) done on a Saturday or Sunday; the run ends at the first
    breakdown, or the first floor machine stop of pm_failure_minutes or more. GET /webhook/engineering/api/pm.
+   A PM is recorded here (/pm/record) and opens here (/pm/jobs/<id>).
    ============================================================ */
-let PM = { data: null, from: '', to: '' };
+let PM = { data: null, from: '', to: '', q: '', type: '', state: '' };
 async function pmLoad(){
   try { const q = new URLSearchParams(); if (PM.from) q.set('from', PM.from); if (PM.to) q.set('to', PM.to); PM.data = await api('/webhook/engineering/api/pm?' + q.toString()); }
   catch (err) { PM.data = { error: err.message }; }
   render();
 }
-function viewPm(){
+function pmDueFiltered(){
+  const q = PM.q.trim().toLowerCase();
+  return ((PM.data || {}).due || []).filter(x => (!PM.type || x.type === PM.type) && (!PM.state || x.state === PM.state)
+    && (!q || [x.asset, x.name, x.area, x.type].join(' ').toLowerCase().includes(q)));
+}
+function viewPm(tab){
   if (!PM.data) { PM.data = 'loading'; pmLoad(); }
   const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
-  const head = pageHead('Preventive maintenance', 'What is due, and how long each PM held before the machine broke down again. Record a PM as a preventive job (Start a job).',
-    canStart ? `<button class="btn btn-primary" onclick="go('/jobs/new?type=preventive')">${I.plus} Record a PM</button>` : '');
-  const d = PM.data;
+  const d = PM.data, ready = d && d !== 'loading' && !d.error;
+  const head = pageHead('Preventive maintenance', tab === 'due' ? 'What is due on every piece of equipment that is maintained. Set an interval per item in Equipment; the rest use the default.'
+      : 'How long each PM held before the equipment broke down again.',
+    (ready ? dlButton(`pmDownload('${tab}')`) : '') + (canStart ? `<button class="btn btn-primary" onclick="go('/pm/record')">${I.plus} Record a PM</button>` : ''))
+    + `<div class="tabs" style="margin-bottom:14px"><a class="tab ${tab === 'due' ? 'on' : ''}" href="#/pm">PM due</a><a class="tab ${tab === 'eff' ? 'on' : ''}" href="#/pm/effectiveness">PM effectiveness</a></div>`;
   if (d === 'loading') return { title:'Preventive maintenance', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (d.error) return { title:'Preventive maintenance', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
   const due = d.due || [], eff = d.effectiveness || [];
-  const stLabel = { overdue: '<span class="badge b-danger">Overdue</span>', due: '<span class="badge b-warn">Due this week</span>', ok: '<span class="badge b-ok">OK</span>', no_record: '<span class="badge b-slate">No PM recorded</span>' };
-  const effBadge = s => s === 'Failed early' ? '<span class="badge b-danger">Failed early</span>' : s === 'Running' ? '<span class="badge b-info">Running</span>' : '<span class="badge b-ok">Held to the next PM</span>';
-  const scored = eff.filter(x => x.effectiveness != null), avg = scored.length ? Math.round(scored.reduce((s, x) => s + +x.effectiveness, 0) / scored.length) : null;
-  const n = k => due.filter(x => x.state === k).length;
+  if (tab === 'eff') {
+    const scored = eff.filter(x => x.effectiveness != null), avg = scored.length ? Math.round(scored.reduce((s, x) => s + +x.effectiveness, 0) / scored.length) : null;
+    const effBadge = s => s === 'Failed early' ? '<span class="badge b-danger">Failed early</span>' : s === 'Running' ? '<span class="badge b-info">Running</span>' : '<span class="badge b-ok">Held to the next PM</span>';
+    return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
+      html: head + `<div class="grid g4" style="margin-bottom:14px">
+        <div class="stat"><div class="lbl">PM effectiveness</div><div class="val">${avg == null ? '--' : avg + '%'}</div><div class="meta">${scored.length} finished PM runs</div></div>
+        <div class="stat"><div class="lbl">PMs in the period</div><div class="val">${eff.length}</div></div>
+        <div class="stat"><div class="lbl">Failed early</div><div class="val">${eff.filter(x => x.status === 'Failed early').length}</div></div>
+        <div class="stat"><div class="lbl">Still running</div><div class="val">${eff.filter(x => x.status === 'Running').length}</div></div></div>
+      <div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="pmFrom" value="${esc(PM.from)}" style="width:auto"></label>
+        <label class="small">to <input class="inp" type="date" id="pmTo" value="${esc(PM.to)}" style="width:auto"></label><span class="small muted">Default: the last 6 months.</span></div>
+      <div class="card"><div class="card-h"><div><div class="sub">Target = days to the next PM date. Achieved = days until the first breakdown or a machine stop of ${num(d.failure_minutes)} min or more.</div></div></div>
+        <div class="tbl-wrap"><table class="tbl"><thead><tr><th>PM</th><th>Equipment</th><th>PM date</th><th>Next PM</th><th style="text-align:right">Target</th><th>First failure</th><th style="text-align:right">Achieved</th><th style="text-align:right">%</th><th>Status</th></tr></thead>
+        <tbody>${eff.map(x => `<tr class="clickable" onclick="go('/pm/jobs/${esc(x.job_id)}')"><td class="mono small" data-label="PM">${esc(x.job_id)}${x.weekend && x.type !== 'preventive' ? `<div class="tiny muted">weekend ${esc(x.type)}</div>` : ''}</td>
+          <td data-label="Equipment">${esc(x.asset_name)}</td><td data-label="PM date" class="small">${esc(x.pm_date)}</td><td data-label="Next PM" class="small">${esc(x.next_pm_date)}</td>
+          <td data-label="Target" style="text-align:right">${x.target_days} d</td><td data-label="First failure" class="small">${x.failure_date ? esc(x.failure_date) + `<div class="tiny muted">${esc(x.failure_ref || '')}${x.failure_minutes != null ? ', ' + x.failure_minutes + ' min' : ''}</div>` : '--'}</td>
+          <td data-label="Achieved" style="text-align:right">${x.achieved_days} d</td><td data-label="%" style="text-align:right" class="strong">${x.effectiveness == null ? '--' : x.effectiveness + '%'}</td><td data-label="Status">${effBadge(x.status)}</td></tr>`).join('')
+          || `<tr><td colspan="9" class="muted" style="padding:16px">No PM recorded in this period.</td></tr>`}</tbody></table></div></div>`,
+      bind(){ [['#pmFrom', 'from'], ['#pmTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { PM[k] = e.target.value; PM.data = null; render(); }; }); } };
+  }
+  const n = k => due.filter(x => x.state === k).length, rows = pmDueFiltered();
+  const types = Array.from(new Set(due.map(x => x.type))).sort();
+  const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
   return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
     html: head + `<div class="grid g4" style="margin-bottom:14px">
-      <div class="stat"><div class="lbl">Overdue</div><div class="val">${n('overdue')}</div></div>
-      <div class="stat"><div class="lbl">Due this week</div><div class="val">${n('due')}</div></div>
-      <div class="stat"><div class="lbl">No PM recorded yet</div><div class="val">${n('no_record')}</div></div>
-      <div class="stat"><div class="lbl">PM effectiveness</div><div class="val">${avg == null ? '--' : avg + '%'}</div><div class="meta">${scored.length} finished PM runs</div></div></div>
-    <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>PM effectiveness</h3><div class="sub">Target = days to the next PM date. Achieved = days until the first breakdown or a machine stop of ${num(d.failure_minutes)} min or more. The last 6 months unless you pick dates.</div></div>
-      <div class="row" style="gap:6px"><input class="inp" type="date" id="pmFrom" value="${esc(PM.from)}" style="width:auto"><input class="inp" type="date" id="pmTo" value="${esc(PM.to)}" style="width:auto"></div></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>PM</th><th>Equipment</th><th>PM date</th><th>Next PM</th><th style="text-align:right">Target</th><th>First failure</th><th style="text-align:right">Achieved</th><th style="text-align:right">%</th><th>Status</th></tr></thead>
-      <tbody>${eff.map(x => `<tr class="clickable" onclick="go('/jobs/${esc(x.job_id)}')"><td class="mono small" data-label="PM">${esc(x.job_id)}${x.weekend && x.type !== 'preventive' ? `<div class="tiny muted">weekend ${esc(x.type)}</div>` : ''}</td>
-        <td data-label="Equipment">${esc(x.asset_name)}</td><td data-label="PM date" class="small">${esc(x.pm_date)}</td><td data-label="Next PM" class="small">${esc(x.next_pm_date)}</td>
-        <td data-label="Target" style="text-align:right">${x.target_days} d</td><td data-label="First failure" class="small">${x.failure_date ? esc(x.failure_date) + `<div class="tiny muted">${esc(x.failure_ref || '')}${x.failure_minutes != null ? ', ' + x.failure_minutes + ' min' : ''}</div>` : '--'}</td>
-        <td data-label="Achieved" style="text-align:right">${x.achieved_days} d</td><td data-label="%" style="text-align:right" class="strong">${x.effectiveness == null ? '--' : x.effectiveness + '%'}</td><td data-label="Status">${effBadge(x.status)}</td></tr>`).join('')
-        || `<tr><td colspan="9" class="muted" style="padding:16px">No PM recorded in this period. A PM is recorded as a preventive job.</td></tr>`}</tbody></table></div></div>
-    <div class="card"><div class="card-h"><div><h3>PM due</h3><div class="sub">Equipment with a PM interval, and every floor machine (default ${num(d.default_interval)} days; set an interval per machine in Equipment).</div></div></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Area</th><th style="text-align:right">Every</th><th>Last PM</th><th>Next due</th><th>Status</th><th></th></tr></thead>
-      <tbody>${due.map(x => `<tr><td data-label="Equipment"><div class="strong">${esc(x.name)}</div><div class="tiny muted mono">${esc(x.asset)}</div></td><td data-label="Area" class="small">${esc(x.area || '')}</td>
-        <td data-label="Every" style="text-align:right">${x.interval_days} d</td><td data-label="Last PM" class="small">${esc(x.last_pm || '--')}</td><td data-label="Next due" class="small">${esc(x.due_date || '--')}</td>
-        <td data-label="Status">${stLabel[x.state] || ''}</td><td style="text-align:right">${canStart ? `<button class="btn btn-ghost btn-sm" onclick="go('/jobs/new?type=preventive&asset=${encodeURIComponent(x.asset)}')">Record PM</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`,
-    bind(){ [['#pmFrom', 'from'], ['#pmTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { PM[k] = e.target.value; PM.data = null; render(); }; }); },
+      <div class="stat link ${n('overdue') ? 'acc-danger' : ''}" onclick="pmSet('state', 'overdue')"><div class="lbl">Overdue</div><div class="val">${n('overdue')}</div></div>
+      <div class="stat link" onclick="pmSet('state', 'due')"><div class="lbl">Due this week</div><div class="val">${n('due')}</div></div>
+      <div class="stat link" onclick="pmSet('state', 'ok')"><div class="lbl">On schedule</div><div class="val">${n('ok')}</div></div>
+      <div class="stat link" onclick="pmSet('state', 'no_record')"><div class="lbl">No PM recorded yet</div><div class="val">${n('no_record')}</div><div class="meta">of ${due.length} items</div></div></div>
+    <div class="card">
+      <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
+        <div class="search filter-search"><span class="ic">${I.search}</span><input class="inp" id="pmQ" style="padding-left:34px;border-radius:20px" placeholder="Search equipment or area" value="${esc(PM.q)}"></div>
+        <select class="inp" id="pmType" style="width:auto">${opt('', PM.type, 'All types')}${types.map(t => opt(t, PM.type, t)).join('')}</select>
+        <select class="inp" id="pmState" style="width:auto">${opt('', PM.state, 'Any status')}${Object.entries(PM_STATE_TEXT).map(([k, l]) => opt(k, PM.state, l)).join('')}</select>
+      </div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Type</th><th>Area</th><th style="text-align:right">Every</th><th>Last PM</th><th>Next due</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows.map(x => `<tr><td data-label="Equipment"><a class="strong" href="#/equipment/${esc(x.asset)}">${esc(x.name)}</a><div class="tiny muted mono">${esc(x.asset)}</div></td><td data-label="Type" class="small">${esc(x.type || '')}</td>
+        <td data-label="Area" class="small">${esc(x.area || '')}</td><td data-label="Every" style="text-align:right">${x.interval_days} d</td><td data-label="Last PM" class="small">${esc(x.last_pm || '--')}</td><td data-label="Next due" class="small">${esc(x.due_date || '--')}</td>
+        <td data-label="Status">${PM_STATE[x.state] || ''}</td><td style="text-align:right">${canStart ? `<button class="btn btn-ghost btn-sm" onclick="go('/pm/record?asset=${encodeURIComponent(x.asset)}')">Record PM</button>` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="8" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody></table></div>
+      <div class="small muted" style="padding:12px 18px">${rows.length} of ${due.length} shown. Default interval ${num(d.default_interval)} days (Settings).</div></div>`,
+    bind(){
+      const q = $('#pmQ'); if (q) q.addEventListener('input', debounce(e => { PM.q = e.target.value; render(); const el = $('#pmQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 200));
+      [['#pmType', 'type'], ['#pmState', 'state']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => pmSet(k, e.target.value); });
+    },
   };
 }
-route('/pm', viewPm);
+route('/pm', () => viewPm('due'));
+route('/pm/effectiveness', () => viewPm('eff'));
+function pmSet(k, v){ PM[k] = (k === 'state' && PM.state === v) ? '' : v; render(); }
+function pmDownload(tab){
+  const d = PM.data || {};
+  if (tab === 'eff') return downloadXlsx('PM effectiveness', [{ name: 'PM effectiveness', head: ['PM', 'Equipment code', 'Equipment', 'PM date', 'Next PM date', 'Target days', 'First failure', 'Failure', 'Failure minutes', 'Achieved days', 'Effectiveness %', 'Status'],
+    rows: (d.effectiveness || []).map(x => [x.job_id, x.asset, x.asset_name, x.pm_date, x.next_pm_date, x.target_days, x.failure_date, x.failure_ref, x.failure_minutes, x.achieved_days, x.effectiveness, x.status]) }]);
+  downloadXlsx('PM due', [{ name: 'PM due', head: ['Code', 'Equipment', 'Type', 'Area', 'Every (days)', 'Last PM', 'Next due', 'Status'],
+    rows: pmDueFiltered().map(x => [x.asset, x.name, x.type, x.area, x.interval_days, x.last_pm, x.due_date, PM_STATE_TEXT[x.state] || x.state]) }]);
+}
 
 /* ============================================================
    Corrective and preventive actions (migration 020): the register, and what the data suggests.
-   GET /webhook/engineering/api/actions; POST /actions/save, /actions/dismiss.
+   /actions (the list and the suggestions), /actions/new, /actions/<CA-0001> (one action on its own page, so it can be
+   linked from a message). GET /webhook/engineering/api/actions; POST /actions/save, /actions/dismiss.
    ============================================================ */
-let AC = { data: null, filter: 'open' };
+let AC = { data: null, filter: 'open', preset: null };
 const AC_STATUS = { open: ['Open', 'b-warn'], in_progress: ['In progress', 'b-info'], done: ['Done, to check', 'b-brand'], verified: ['Effective', 'b-ok'],
                     not_effective: ['Not effective', 'b-danger'], cancelled: ['Cancelled', 'b-slate'] };
 async function acLoad(){ try { AC.data = await api('/webhook/engineering/api/actions'); } catch (err) { AC.data = { error: err.message }; } render(); if (!EQ.list && !EQ.loading) eqLoad(); }
 function acBadge(a){ const s = AC_STATUS[a.status] || [a.status, '']; return `<span class="badge ${s[1]}">${esc(s[0])}</span>${a.overdue ? ' <span class="badge b-danger">Overdue</span>' : ''}`; }
+const acOpenNow = a => ['open', 'in_progress', 'done'].includes(a.status);
+function acList(){ return ((AC.data || {}).actions || []).filter(a => AC.filter === 'all' || (AC.filter === 'open' ? acOpenNow(a) : !acOpenNow(a))); }
 function viewActions(){
   if (!AC.data) { AC.data = 'loading'; acLoad(); }
-  const can = ['submit', 'edit'].includes(levelOf('engineering.actions'));
+  const can = ['submit', 'edit'].includes(levelOf('engineering.actions')), d = AC.data, ready = d && d !== 'loading' && !d.error;
   const head = pageHead('Corrective and preventive actions', 'Root causes and the actions that stop a problem coming back. The system suggests one for a long stop or a repeated one; raise it or say why not.',
-    can ? `<button class="btn btn-primary" onclick="acOpen(null)">${I.plus} New action</button>` : '');
-  const d = AC.data;
+    (ready ? dlButton('acDownload()') : '') + (can ? `<button class="btn btn-primary" onclick="AC.preset = null; go('/actions/new')">${I.plus} New action</button>` : ''));
   if (d === 'loading') return { title:'Actions', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (d.error) return { title:'Actions', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
-  const s = d.settings || {}, sug = d.suggestions || [];
-  const list = (d.actions || []).filter(a => AC.filter === 'all' || (AC.filter === 'open' ? ['open', 'in_progress', 'done'].includes(a.status) : !['open', 'in_progress', 'done'].includes(a.status)));
+  const s = d.settings || {}, sug = d.suggestions || [], list = acList();
   return { title:'Actions', crumb:'Maintenance', keepScroll: true,
     html: head + `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>Suggested (${sug.length})</h3>
         <div class="sub">A machine stop or breakdown of ${num(s.long)} min or more, or the same machine stopping for the same reason ${num(s.repeat)} times within ${num(s.days)} days (last 30 days; limits in Settings).</div></div></div>
@@ -1679,15 +1935,21 @@ function viewActions(){
         || `<tr><td colspan="3" class="muted" style="padding:16px">Nothing suggested.</td></tr>`}</tbody></table></div></div>
     <div class="row" style="gap:8px;margin-bottom:10px">${[['open', 'Open'], ['closed', 'Closed'], ['all', 'All']].map(([k, l]) => `<button class="chip ${AC.filter === k ? 'on' : ''}" onclick="AC.filter='${k}'; render()">${l}</button>`).join('')}</div>
     <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Action</th><th>Equipment</th><th>Title</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead>
-      <tbody>${list.map(a => `<tr class="clickable" onclick="acOpen(${a.id})"><td class="mono small" data-label="Action">${esc(a.action_no)}<div class="tiny muted">${a.kind === 'corrective' ? 'Corrective' : 'Preventive'}</div></td>
+      <tbody>${list.map(a => `<tr class="clickable" onclick="go('/actions/${esc(a.action_no)}')"><td class="mono small" data-label="Action">${esc(a.action_no)}<div class="tiny muted">${a.kind === 'corrective' ? 'Corrective' : 'Preventive'}</div></td>
         <td data-label="Equipment">${esc(a.asset_name || a.asset)}</td><td data-label="Title"><div class="strong">${esc(a.title)}</div>${a.trigger ? `<div class="tiny muted">${esc(a.trigger)}</div>` : ''}</td>
         <td data-label="Owner" class="small">${esc(a.owner_name || '')}</td><td data-label="Due" class="small">${esc(a.due_date)}</td><td data-label="Status">${acBadge(a)}</td></tr>`).join('')
         || `<tr><td colspan="6" class="muted" style="padding:16px">No actions here.</td></tr>`}</tbody></table></div>
       <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Actions tab).</div></div>` };
 }
 route('/actions', viewActions);
-function acRaise(i){ const x = AC.data.suggestions[i]; acOpen(null, { kind: 'corrective', asset: x.asset, title: (x.machine_name + ': ' + x.reason).slice(0, 160), problem: x.why,
-  suggestion_key: x.key, trigger: x.why, job_ids: x.job_ids, stop_ids: x.stop_ids }); }
+function acDownload(){
+  downloadXlsx('Actions', [{ name: 'Actions', head: ['Action', 'Type', 'Status', 'Equipment code', 'Equipment', 'Title', 'What happened', 'Root cause', 'Action to take', 'Owner', 'Due', 'Overdue', 'Raised by', 'Raised', 'Done', 'What was done', 'Checked by', 'Check note', 'Linked jobs', 'Trigger'],
+    rows: acList().map(a => [a.action_no, a.kind === 'corrective' ? 'Corrective' : 'Preventive', (AC_STATUS[a.status] || [a.status])[0], a.asset, a.asset_name, a.title, a.problem, a.root_cause, a.action_to_take,
+      a.owner_name, a.due_date, a.overdue ? 'yes' : '', a.created_by, lagosDay(a.created_at), lagosDay(a.done_at), a.done_note, a.checked_by, a.check_note, (a.job_ids || []).join(', '), a.trigger]) }]);
+}
+// a suggestion opens a new action, filled in
+function acRaise(i){ const x = AC.data.suggestions[i]; AC.preset = { kind: 'corrective', asset: x.asset, title: (x.machine_name + ': ' + x.reason).slice(0, 160), problem: x.why,
+  suggestion_key: x.key, trigger: x.why, job_ids: x.job_ids, stop_ids: x.stop_ids }; go('/actions/new'); }
 function acDismiss(i){
   const x = AC.data.suggestions[i];
   openModal({ title:'No action needed', size:'narrow', sub: x.why,
@@ -1698,15 +1960,33 @@ function acDismiss(i){
       try { await api('/webhook/engineering/api/actions/dismiss', { method:'POST', body:{ key: x.key, reason } }); close(); toast('Dismissed', '', 'ok'); AC.data = null; render(); }
       catch (e) { setErr('adWhy', e.message, w); } }; } });
 }
+// kept for older links and buttons: an action by id, or a new one (with an optional preset)
 function acOpen(id, preset){
-  const a = id ? (AC.data.actions || []).find(x => x.id === id) : Object.assign({ kind: 'corrective', status: 'open', job_ids: [], stop_ids: [] }, preset || {});
+  const a = id ? ((AC.data || {}).actions || []).find(x => x.id === id) : null;
+  if (a) return go('/actions/' + a.action_no);
+  AC.preset = preset || null; go('/actions/new');
+}
+function viewAction(no){
+  if (!AC.data) { AC.data = 'loading'; acLoad(); }
+  const back = `<a class="btn btn-ghost btn-sm" href="#/actions">${I.chevL} Corrective and preventive actions</a>`;
+  const d = AC.data;
+  if (d === 'loading') return { title:'Action', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title:'Action', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const found = no ? (d.actions || []).find(x => x.action_no === String(no).toUpperCase()) : null;
+  if (no && !found) return { title:'Action', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'No such action', 'It may have been typed wrong.')}</div></div>` };
+  const id = found ? found.id : null;
+  const a = found || Object.assign({ kind: 'corrective', status: 'open', job_ids: [], stop_ids: [] }, AC.preset || {});
   const lvl = levelOf('engineering.actions'), can = ['submit', 'edit'].includes(lvl), mgr = lvl === 'edit';
   const closed = ['verified', 'not_effective', 'cancelled'].includes(a.status), dis = can && (!closed || mgr) ? '' : 'disabled';
-  const people = (AC.data.people || []);
+  const people = d.people || [];
   const assetVal = a.asset ? ((eqByCode(a.asset) || {}).name || a.asset_name || a.asset) + ' (' + a.asset + ')' : '';
   const nextStatus = !id ? [] : a.status === 'open' ? [['in_progress', 'Started']] : [];
-  openModal({ title: id ? a.action_no + ': ' + a.title : 'New action', size:'wide', sub: id ? 'Raised by ' + (a.created_by || '') + (a.trigger ? ' · ' + a.trigger : '') : (a.trigger || 'Corrective: removes the cause of a problem that happened. Preventive: stops one that could happen.'),
-    body:`<form novalidate><div class="grid g2">
+  const sub = id ? 'Raised by ' + (a.created_by || '') + (a.created_at ? ', ' + dayHm(a.created_at) : '') + (a.trigger ? ' · ' + a.trigger : '')
+    : (a.trigger || 'Corrective: removes the cause of a problem that happened. Preventive: stops one that could happen.');
+  return { title: id ? a.action_no : 'New action', crumb:'Maintenance', keepScroll: true,
+    html: `<div class="row between" style="margin-bottom:12px">${back}${id ? acBadge(a) : ''}</div>`
+    + pageHead(id ? a.action_no + ': ' + a.title : 'New action', esc(sub)) + `
+    <form novalidate id="acForm"><div class="card" style="margin-bottom:14px"><div class="card-b"><div class="grid g2">
       <div class="field"><label for="acKind">Type</label><select class="inp" id="acKind" ${dis || (id ? 'disabled' : '')}><option value="corrective" ${a.kind === 'corrective' ? 'selected' : ''}>Corrective</option><option value="preventive" ${a.kind === 'preventive' ? 'selected' : ''}>Preventive</option></select></div>
       <div class="field"><label for="acAsset">Machine or equipment</label><input class="inp" id="acAsset" list="acAssets" value="${esc(assetVal)}" ${dis}><datalist id="acAssets">${spAssetOptions()}</datalist></div>
       <div class="field" style="grid-column:1/-1"><label for="acTitle">Title</label><input class="inp" id="acTitle" maxlength="160" value="${esc(a.title || '')}" ${dis}></div>
@@ -1716,74 +1996,166 @@ function acOpen(id, preset){
       <div class="field"><label for="acOwner">Owner</label><select class="inp" id="acOwner" ${dis}><option value="">Choose...</option>${people.map(p => `<option value="${esc(p.enroll_id)}" ${p.enroll_id === a.owner ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
       <div class="field"><label for="acDue">Due date</label><input class="inp" type="date" id="acDue" value="${esc(a.due_date || '')}" ${dis}></div>
     </div>
-    ${(a.job_ids || []).length ? `<div class="small" style="margin-bottom:10px"><b>Linked jobs:</b> ${a.job_ids.map(j => `<a href="#/jobs/${esc(j)}" onclick="$$('#layers .overlay').forEach(o => o.remove())">${esc(j)}</a>`).join(', ')}</div>` : ''}
+    ${a.asset ? `<div class="small" style="margin-bottom:6px"><a href="#/equipment/${esc(a.asset)}">See everything about ${esc((eqByCode(a.asset) || {}).name || a.asset_name || a.asset)}</a></div>` : ''}
+    ${(a.job_ids || []).length ? `<div class="small" style="margin-bottom:10px"><b>Linked jobs:</b> ${a.job_ids.map(j => `<a href="#/jobs/${esc(j)}">${esc(j)}</a>`).join(', ')}</div>` : ''}
     ${a.done_note ? `<div class="small" style="margin-bottom:6px"><b>Done:</b> ${esc(a.done_note)}</div>` : ''}${a.check_note ? `<div class="small" style="margin-bottom:6px"><b>Checked by ${esc(a.checked_by || '')}:</b> ${esc(a.check_note)}</div>` : ''}
     ${id && can && ['open', 'in_progress'].includes(a.status) ? `<div class="field"><label for="acDoneNote">When done: what was done?</label><input class="inp" id="acDoneNote" maxlength="1000"></div>` : ''}
     ${id && mgr && !closed ? `<div class="field"><label for="acCheck">${a.status === 'done' ? 'Did it work? How did you check?' : 'Why cancel it? (only to cancel)'}</label><input class="inp" id="acCheck" maxlength="1000" placeholder="${a.status === 'done' ? 'e.g. no stop for this reason in 4 weeks' : ''}"></div>` : ''}
-    <div class="err-msg hide" data-err="acTitle"></div></form>`,
-    footer:`<button class="btn btn-ghost" data-close>Close</button>
+    <div class="err-msg hide" data-err="acTitle"></div></div></div></form>
+    <div class="row job-actions" style="gap:10px;flex-wrap:wrap">
       ${can && !id ? `<button class="btn btn-primary" data-act="open">${I.check} Raise</button>` : ''}
       ${can && id && !closed ? `<button class="btn btn-ghost" data-act="">Save</button>` : ''}
       ${can && id ? nextStatus.map(([k, l]) => `<button class="btn btn-ghost" data-act="${k}">${l}</button>`).join('') : ''}
       ${can && id && ['open', 'in_progress'].includes(a.status) ? `<button class="btn btn-primary" data-act="done">Mark done</button>` : ''}
       ${mgr && id && a.status === 'done' ? `<button class="btn btn-danger" data-act="not_effective">Not effective</button><button class="btn btn-primary" data-act="verified">Effective</button>` : ''}
-      ${mgr && id && !closed ? `<button class="btn btn-ghost" data-act="cancelled">Cancel action</button>` : ''}`,
-    onMount: (w, close) => { $$('[data-act]', w).forEach(b => b.onclick = async () => {
-      clearErrors(w);
+      ${mgr && id && !closed ? `<button class="btn btn-ghost" style="margin-left:auto" data-act="cancelled">Cancel action</button>` : ''}</div>`,
+    bind(){ $$('[data-act]').forEach(b => b.onclick = async () => {
+      clearErrors(document);
       const act = b.dataset.act;
-      const body = { id: id || '', kind: $('#acKind', w).value, asset: spAssetFrom($('#acAsset', w).value), title: $('#acTitle', w).value.trim(), problem: $('#acProblem', w).value.trim(),
-        root_cause: $('#acCause', w).value.trim(), action_to_take: $('#acTodo', w).value.trim(), owner: $('#acOwner', w).value, due_date: $('#acDue', w).value,
+      const body = { id: id || '', kind: $('#acKind').value, asset: spAssetFrom($('#acAsset').value), title: $('#acTitle').value.trim(), problem: $('#acProblem').value.trim(),
+        root_cause: $('#acCause').value.trim(), action_to_take: $('#acTodo').value.trim(), owner: $('#acOwner').value, due_date: $('#acDue').value,
         suggestion_key: a.suggestion_key || '', trigger: a.trigger || '', job_ids: a.job_ids || [], stop_ids: a.stop_ids || [] };
       if (act) body.status = act;
-      if (act === 'done') body.done_note = ($('#acDoneNote', w) || {}).value || '';
-      if (['verified', 'not_effective', 'cancelled'].includes(act)) body.check_note = ($('#acCheck', w) || {}).value || '';
-      if (body.title.length < 3) return setErr('acTitle', 'Give the action a short title.', w);
+      if (act === 'done') body.done_note = ($('#acDoneNote') || {}).value || '';
+      if (['verified', 'not_effective', 'cancelled'].includes(act)) body.check_note = ($('#acCheck') || {}).value || '';
+      if (body.title.length < 3) return setErr('acTitle', 'Give the action a short title.');
       b.disabled = true;
-      try { await api('/webhook/engineering/api/actions/save', { method:'POST', body:{ action: body } }); close(); toast('Saved', body.title, 'ok'); AC.data = null; render(); }
-      catch (e) { setErr('acTitle', e.message, w); b.disabled = false; }
-    }); } });
+      try { const r = await api('/webhook/engineering/api/actions/save', { method:'POST', body:{ action: body } });
+            toast('Saved', body.title, 'ok'); AC.data = null; AC.preset = null; AP = {};
+            go(r.action && r.action.action_no ? '/actions/' + r.action.action_no : '/actions'); }
+      catch (e) { setErr('acTitle', e.message); b.disabled = false; }
+    }); },
+  };
 }
+route('/actions/new', () => viewAction(null));
+route('/actions/:no', params => viewAction(params.no));
 
 /* ============================================================
-   Overview (migration 020): the manager's figures for a period. GET /webhook/engineering/api/overview?days=
+   Overview (migration 023): the manager's KPIs for a date range, on four tabs. GET /webhook/engineering/api/overview?from&to
+     Reliability  failures, MTTR, MTBF, machine downtime, equipment ranked by downtime
+     Response     calls, response and wait times, open jobs
+     Preventive   PM on schedule, PMs done, PM effectiveness, planned work share
+     Follow-up    corrective and preventive actions, the store
+   A failure = a breakdown job, or a floor stop with a machine reason of pm_failure_minutes or more that no job covers.
    ============================================================ */
-let OV = { data: null, days: 30 };
-async function ovLoad(){ try { OV.data = await api('/webhook/engineering/api/overview?days=' + OV.days); } catch (err) { OV.data = { error: err.message }; } render(); }
-function viewOverview(){
-  if (!OV.data) { OV.data = 'loading'; ovLoad(); }
-  const head = pageHead('Overview', 'Maintenance at a glance.', `<div class="seg">${[7, 30, 90].map(n => `<button class="${OV.days === n ? 'on' : ''}" onclick="OV.days=${n}; OV.data=null; render()">${n} days</button>`).join('')}</div>`);
-  const d = OV.data;
-  if (d === 'loading') return { title:'Overview', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
-  if (d.error) return { title:'Overview', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
-  const c = d.calls || {}, j = d.jobs || {}, a = d.actions || {}, p = d.pm || {}, s = d.spares || {}, cw = s.count_week || {};
-  const stat = (lbl, val, meta, link, kind) => `<div class="stat ${link ? 'link' : ''} ${kind ? 'acc-' + kind : ''}" ${link ? `onclick="go('${link}')"` : ''}><div class="lbl">${esc(lbl)}</div><div class="val">${val == null ? '--' : val}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>`;
-  const hrs = m => m == null ? '--' : dur(m);
-  return { title:'Overview', crumb:'Maintenance', keepScroll: true,
-    html: head + `<h3 style="margin:4px 0 10px">Calls from the floor</h3><div class="grid g4" style="margin-bottom:16px">
-      ${stat('Calls', c.count, `${c.not_accepted_now || 0} not accepted right now`, '/jobs', c.not_accepted_now ? 'warn' : '')}
-      ${stat('Response (called to accepted)', hrs(c.response_min), 'average')}
-      ${stat('Wait for maintenance', hrs(c.wait_min), 'called to arrived, average')}
-      ${stat('Repair time', hrs(c.repair_min), 'arrived to running, average')}</div>
-    <h3 style="margin:4px 0 10px">Work</h3><div class="grid g4" style="margin-bottom:16px">
-      ${stat('Open jobs', j.open, `${j.waiting_part || 0} waiting for a part`, '/jobs')}
-      ${stat('Machine downtime (floor)', hrs(d.floor_downtime_min), 'machine reasons only', '/stops')}
-      ${stat('Parts cost', d.parts_cost_total == null ? '--' : 'NGN ' + money(d.parts_cost_total), 'handed over on jobs and issues')}
-      ${stat('PM effectiveness', d.pm_effectiveness == null ? '--' : d.pm_effectiveness + '%', `${p.overdue || 0} PM overdue, ${p.due || 0} due this week`, '/pm', p.overdue ? 'danger' : '')}</div>
-    <h3 style="margin:4px 0 10px">Follow-up</h3><div class="grid g4" style="margin-bottom:16px">
-      ${stat('Actions open', a.open, `${a.overdue || 0} overdue, ${a.to_check || 0} to check`, '/actions', a.overdue ? 'danger' : '')}
-      ${stat('Suggested actions', a.suggestions, 'long or repeated stops to look at', '/actions', a.suggestions ? 'warn' : '')}
-      ${stat('Spares hand-overs waiting', s.handovers_waiting, `${s.out_of_stock || 0} out of stock, ${s.reorder || 0} to reorder`, '/spares/handovers')}
-      ${stat('Weekly count', (cw.done || 0) + ' of ' + (cw.items || 0), 'this week', '/spares/counts')}</div>
-    ${d.floor_messages_failed ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>${d.floor_messages_failed} message(s) to the floor system could not be delivered. <a href="#/floor">See the floor messages</a>.</div></div>` : ''}
-    <div class="card" style="margin-bottom:14px"><div class="card-h"><h3>By job type</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Type</th><th style="text-align:right">Jobs</th><th style="text-align:right">Hours</th></tr></thead>
-      <tbody>${(j.by_type || []).map(t => `<tr><td>${esc(JOB_TYPE[t.type] || t.type)}</td><td style="text-align:right">${t.jobs}</td><td style="text-align:right">${num(t.hours)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted" style="padding:16px">No jobs in this period.</td></tr>'}</tbody></table></div></div>
-    <div class="card"><div class="card-h"><div><h3>Machines</h3><div class="sub">Most floor downtime first (machine reasons), with breakdown jobs, labour and parts.</div></div></div><div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Equipment</th><th style="text-align:right">Floor stops</th><th style="text-align:right">Downtime</th><th style="text-align:right">Breakdown jobs</th><th style="text-align:right">Labour (h)</th><th style="text-align:right">Parts (NGN)</th></tr></thead>
-      <tbody>${(d.machines || []).map(m => `<tr><td data-label="Equipment" class="strong">${esc(m.name)}</td><td data-label="Floor stops" style="text-align:right">${m.floor_stops}</td><td data-label="Downtime" style="text-align:right">${hrs(m.downtime_min)}</td>
-        <td data-label="Breakdown jobs" style="text-align:right">${m.breakdowns}</td><td data-label="Labour" style="text-align:right">${m.labour_h == null ? '' : num(m.labour_h)}</td><td data-label="Parts" style="text-align:right">${m.parts_cost == null ? '' : money(m.parts_cost)}</td></tr>`).join('')
-        || '<tr><td colspan="6" class="muted" style="padding:16px">Nothing in this period.</td></tr>'}</tbody></table></div></div>` };
+let OV = { data: null, preset: '30', from: '', to: '' };
+const OV_PRESETS = [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Pick dates']];
+const OV_TABS = [['reliability', 'Reliability', '/overview'], ['response', 'Response', '/overview/response'], ['preventive', 'Preventive', '/overview/preventive'], ['followup', 'Follow-up', '/overview/followup']];
+function ovRange(){
+  const t = todayIso(), back = n => { const d = new Date(t + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
+  if (OV.preset === 'custom') return { from: OV.from || back(29), to: OV.to || t };
+  if (OV.preset === 'month') return { from: t.slice(0, 8) + '01', to: t };
+  if (OV.preset === 'lastmonth') { const d = new Date(t.slice(0, 8) + '01T12:00:00Z'); d.setUTCDate(0); const end = d.toISOString().slice(0, 10); return { from: end.slice(0, 8) + '01', to: end }; }
+  return { from: back((+OV.preset || 30) - 1), to: t };
 }
-route('/overview', viewOverview);
+async function ovLoad(){
+  const r = ovRange();
+  try { OV.data = await api('/webhook/engineering/api/overview?from=' + r.from + '&to=' + r.to); } catch (err) { OV.data = { error: err.message }; }
+  render();
+}
+function ovSet(k, v){ OV[k] = v; if (k === 'preset' && v === 'custom') { const r = ovRange(); OV.from = r.from; OV.to = r.to; } OV.data = null; render(); }
+const ovPct = (a, b) => b ? Math.round(100 * a / b) + '%' : '--';
+const ovStat = (lbl, val, meta, link, kind) => `<div class="stat ${link ? 'link' : ''} ${kind ? 'acc-' + kind : ''}" ${link ? `onclick="go('${link}')"` : ''}><div class="lbl">${esc(lbl)}</div><div class="val">${val == null ? '--' : val}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>`;
+function viewOverview(tab){
+  if (!OV.data) { OV.data = 'loading'; ovLoad(); }
+  const d = OV.data, r = ovRange();
+  const filters = `<div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:flex-end">
+      <div class="field" style="margin:0"><label for="ovPreset">Period</label><select class="inp" id="ovPreset" style="width:auto">${OV_PRESETS.map(([k, l]) => `<option value="${k}" ${OV.preset === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field" style="margin:0"><label for="ovFrom">From</label><input class="inp" type="date" id="ovFrom" value="${esc(r.from)}" max="${todayIso()}" style="width:auto" ${OV.preset === 'custom' ? '' : 'disabled'}></div>
+      <div class="field" style="margin:0"><label for="ovTo">To</label><input class="inp" type="date" id="ovTo" value="${esc(r.to)}" max="${todayIso()}" style="width:auto" ${OV.preset === 'custom' ? '' : 'disabled'}></div></div>`;
+  const head = pageHead('Overview', 'Maintenance at a glance for the period you pick.', d && d !== 'loading' && !d.error ? dlButton('ovDownload()') : '') + filters
+    + `<div class="tabs" style="margin-bottom:14px">${OV_TABS.map(([k, l, h]) => `<a class="tab ${k === tab ? 'on' : ''}" href="#${h}">${l}</a>`).join('')}</div>`;
+  const bind = () => {
+    const p = $('#ovPreset'); if (p) p.onchange = e => ovSet('preset', e.target.value);
+    [['#ovFrom', 'from'], ['#ovTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { if (e.target.value) ovSet(k, e.target.value); }; });
+  };
+  if (d === 'loading') return { title:'Overview', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>`, bind };
+  if (d.error) return { title:'Overview', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>`, bind };
+  const warn = d.floor_messages_failed ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>${d.floor_messages_failed} message(s) to the floor system could not be delivered. <a href="#/floor">See the floor messages</a>.</div></div>` : '';
+  const html = { reliability: ovReliability, response: ovResponse, preventive: ovPreventive, followup: ovFollowup }[tab](d);
+  return { title:'Overview', crumb:'Maintenance', keepScroll: true, html: head + warn + html, bind };
+}
+function ovReliability(d){
+  const x = d.reliability || {};
+  return `<div class="grid g4" style="margin-bottom:14px">
+      ${ovStat('Failures', num(x.failures) || 0, 'breakdowns, and machine stops of ' + num(d.failure_minutes) + ' min or more')}
+      ${ovStat('MTTR', dur(x.mttr_min), 'mean time to repair: failure to running again')}
+      ${ovStat('MTBF', x.mtbf_days == null ? '--' : num(x.mtbf_days) + ' days', 'mean time between failures on the same equipment')}
+      ${ovStat('Machine downtime (floor)', dur(x.downtime_min), num(x.stops) + ' stops with a machine reason', '/stops')}</div>
+    <div class="card"><div class="card-h"><div><h3>Equipment</h3><div class="sub">Most downtime first. Open one to see its history.</div></div></div><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Equipment</th><th style="text-align:right">Failures</th><th style="text-align:right">Downtime</th><th style="text-align:right">Floor stops</th><th style="text-align:right">MTTR</th><th style="text-align:right">MTBF</th><th>Last failure</th></tr></thead>
+      <tbody>${(x.equipment || []).map(m => `<tr class="clickable" onclick="go('/equipment/${esc(m.asset)}')"><td data-label="Equipment"><div class="strong">${esc(m.name)}</div><div class="tiny muted">${esc(m.type || '')}</div></td>
+        <td data-label="Failures" style="text-align:right">${m.failures}</td><td data-label="Downtime" style="text-align:right">${dur(m.downtime_min)}</td><td data-label="Floor stops" style="text-align:right">${m.stops}</td>
+        <td data-label="MTTR" style="text-align:right">${dur(m.mttr_min)}</td><td data-label="MTBF" style="text-align:right">${m.mtbf_days == null ? '--' : num(m.mtbf_days) + ' d'}</td>
+        <td data-label="Last failure" class="small">${esc(dayHm(m.last_failure))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted" style="padding:16px">No failures or machine stops in this period.</td></tr>'}</tbody></table></div></div>`;
+}
+function ovResponse(d){
+  const x = d.response || {};
+  return `<div class="grid g4" style="margin-bottom:14px">
+      ${ovStat('Calls from the floor', num(x.calls) || 0, (x.not_accepted_now || 0) + ' not accepted right now', '/jobs', x.not_accepted_now ? 'warn' : '')}
+      ${ovStat('Response time', dur(x.response_min), 'called to accepted, average')}
+      ${ovStat('Wait for maintenance', dur(x.wait_min), 'called to technician at the machine, average')}
+      ${ovStat('Open jobs', num(x.open_now) || 0, (x.open_over_day || 0) + ' open over 24 h, ' + (x.waiting_part || 0) + ' waiting for a part', '/jobs?tab=open', x.open_over_day ? 'warn' : '')}</div>
+    <div class="card"><div class="card-h"><div><h3>Open jobs</h3><div class="sub">Oldest first.</div></div></div><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Job</th><th>Equipment</th><th>Type</th><th>Since</th><th>Status</th></tr></thead>
+      <tbody>${(x.open_jobs || []).map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}</td>
+        <td data-label="Equipment" class="strong">${esc(j.machine_name || j.asset_name || j.asset || '')}</td><td data-label="Type">${esc(JOB_TYPE[j.type] || j.type)}</td>
+        <td data-label="Since" class="small">${esc(dayHm(j.called_at || j.started_at || j.created_at))}</td><td data-label="Status">${jbBadge(j)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted" style="padding:16px">No open jobs.</td></tr>'}</tbody></table></div></div>`;
+}
+function ovPreventive(d){
+  const x = d.preventive || {};
+  return `<div class="grid g4" style="margin-bottom:14px">
+      ${ovStat('PM on schedule', ovPct(x.on_schedule, x.tracked), (x.on_schedule || 0) + ' of ' + (x.tracked || 0) + ' items; ' + (x.no_record || 0) + ' with no PM yet', '/pm')}
+      ${ovStat('PM overdue', num(x.overdue) || 0, (x.due_week || 0) + ' due this week', '/pm', x.overdue ? 'danger' : '')}
+      ${ovStat('PM effectiveness', x.effectiveness == null ? '--' : x.effectiveness + '%', (x.done || 0) + ' PMs in the period', '/pm/effectiveness')}
+      ${ovStat('Planned work', x.planned_pct == null ? '--' : x.planned_pct + '%', 'of labour hours: everything but breakdowns')}</div>
+    <div class="grid g2">
+      <div class="card"><div class="card-h"><h3>Labour by type of job</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Type</th><th style="text-align:right">Jobs</th><th style="text-align:right">Hours</th></tr></thead>
+        <tbody>${(x.hours || []).map(t => `<tr><td>${esc(JOB_TYPE[t.type] || t.type)}</td><td style="text-align:right">${t.jobs}</td><td style="text-align:right">${num(t.hours)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted" style="padding:16px">No jobs in this period.</td></tr>'}</tbody></table></div></div>
+      <div class="card"><div class="card-h"><h3>PM to do</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Next due</th><th>Status</th></tr></thead>
+        <tbody>${(x.attention || []).map(p => `<tr class="clickable" onclick="go('/equipment/${esc(p.asset)}')"><td data-label="Equipment" class="strong">${esc(p.name)}</td><td data-label="Next due" class="small">${esc(p.due_date || '')}</td><td data-label="Status">${PM_STATE[p.state] || ''}</td></tr>`).join('')
+          || '<tr><td colspan="3" class="muted" style="padding:16px">Nothing overdue or due this week.</td></tr>'}</tbody></table></div></div></div>`;
+}
+function ovFollowup(d){
+  const x = d.followup || {}, cw = x.count_week || {};
+  return `<h3 style="margin:4px 0 10px">Corrective and preventive actions</h3><div class="grid g4" style="margin-bottom:16px">
+      ${ovStat('Actions open', num(x.actions_open) || 0, (x.actions_to_check || 0) + ' done, waiting to be checked', '/actions')}
+      ${ovStat('Actions overdue', num(x.actions_overdue) || 0, 'past their due date', '/actions', x.actions_overdue ? 'danger' : '')}
+      ${ovStat('Proved effective', ovPct(x.effective, (x.effective || 0) + (x.not_effective || 0)), (x.effective || 0) + ' effective, ' + (x.not_effective || 0) + ' not, checked in the period')}
+      ${ovStat('Suggested actions', num(x.suggestions) || 0, 'long or repeated stops to look at', '/actions', x.suggestions ? 'warn' : '')}</div>
+    <h3 style="margin:4px 0 10px">Store</h3><div class="grid g4" style="margin-bottom:16px">
+      ${ovStat('Out of stock', num(x.out_of_stock) || 0, (x.reorder || 0) + ' more at or below the reorder level', '/spares')}
+      ${ovStat('Hand-overs waiting', num(x.handovers_waiting) || 0, 'parts recorded on jobs, not confirmed', '/spares/handovers', x.handovers_waiting ? 'warn' : '')}
+      ${ovStat('Weekly count', (cw.done || 0) + ' of ' + (cw.items || 0), 'this week', '/spares/counts')}
+      ${ovStat('Actions raised', num(x.actions_raised) || 0, 'in the period')}</div>
+    <div class="card"><div class="card-h"><h3>Overdue actions</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Action</th><th>Equipment</th><th>Title</th><th>Owner</th><th>Due</th></tr></thead>
+      <tbody>${(x.overdue_actions || []).map(a => `<tr class="clickable" onclick="go('/actions/${esc(a.action_no)}')"><td class="mono small" data-label="Action">${esc(a.action_no)}</td><td data-label="Equipment">${esc(a.asset_name || a.asset || '')}</td>
+        <td data-label="Title" class="strong">${esc(a.title)}</td><td data-label="Owner" class="small">${esc(a.owner_name || '')}</td><td data-label="Due" class="small">${esc(a.due_date)}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted" style="padding:16px">No overdue actions.</td></tr>'}</tbody></table></div></div>`;
+}
+route('/overview', () => viewOverview('reliability'));
+route('/overview/response', () => viewOverview('response'));
+route('/overview/preventive', () => viewOverview('preventive'));
+route('/overview/followup', () => viewOverview('followup'));
+function ovDownload(){
+  const d = OV.data || {}, rl = d.reliability || {}, rs = d.response || {}, pv = d.preventive || {}, fu = d.followup || {}, cw = fu.count_week || {};
+  const summary = [['Period', d.from + ' to ' + d.to],
+    ['Failures', rl.failures], ['MTTR (min)', rl.mttr_min], ['MTBF (days)', rl.mtbf_days], ['Machine downtime on the floor (min)', rl.downtime_min], ['Machine stops on the floor', rl.stops],
+    ['Calls from the floor', rs.calls], ['Response time (min)', rs.response_min], ['Wait for maintenance (min)', rs.wait_min], ['Open jobs now', rs.open_now], ['Open over 24 h', rs.open_over_day], ['Waiting for a part', rs.waiting_part],
+    ['PM items tracked', pv.tracked], ['PM on schedule', pv.on_schedule], ['PM overdue', pv.overdue], ['PM due this week', pv.due_week], ['No PM recorded', pv.no_record], ['PMs in the period', pv.done],
+    ['PM effectiveness %', pv.effectiveness], ['Planned work % of hours', pv.planned_pct],
+    ['Actions open', fu.actions_open], ['Actions overdue', fu.actions_overdue], ['Actions to check', fu.actions_to_check], ['Actions effective', fu.effective], ['Actions not effective', fu.not_effective],
+    ['Suggested actions', fu.suggestions], ['Out of stock', fu.out_of_stock], ['At or below reorder', fu.reorder], ['Hand-overs waiting', fu.handovers_waiting], ['Weekly count done', (cw.done || 0) + ' of ' + (cw.items || 0)]];
+  downloadXlsx('Engineering overview ' + d.from + ' to ' + d.to, [
+    { name: 'Summary', head: ['KPI', 'Value'], rows: summary },
+    { name: 'Equipment', head: ['Code', 'Equipment', 'Type', 'Failures', 'Downtime (min)', 'Floor stops', 'MTTR (min)', 'MTBF (days)', 'Last failure'],
+      rows: (rl.equipment || []).map(m => [m.asset, m.name, m.type, m.failures, m.downtime_min, m.stops, m.mttr_min, m.mtbf_days, lagosDay(m.last_failure)]) },
+    { name: 'Failures', head: ['When', 'Code', 'Equipment', 'What', 'Minutes down'], rows: (rl.failure_list || []).map(f => [lagosDay(f.at), f.asset, f.name, f.kind === 'job' ? f.ref + ' breakdown' : f.ref, f.minutes]) },
+    { name: 'Open jobs', head: ['Job', 'Equipment', 'Type', 'Status', 'Since'], rows: (rs.open_jobs || []).map(j => [j.job_id, j.machine_name || j.asset_name || j.asset, JOB_TYPE[j.type] || j.type, j.status, lagosDay(j.called_at || j.started_at || j.created_at)]) },
+    { name: 'Labour by type', head: ['Type', 'Jobs', 'Hours'], rows: (pv.hours || []).map(t => [JOB_TYPE[t.type] || t.type, t.jobs, +t.hours]) },
+    { name: 'Overdue actions', head: ['Action', 'Equipment', 'Title', 'Owner', 'Due'], rows: (fu.overdue_actions || []).map(a => [a.action_no, a.asset_name || a.asset, a.title, a.owner_name, a.due_date]) },
+  ]);
+}
 
 /* ============================================================
    Outdoor units (migration 021): the monthly check, one month at a time. Filled in through the form link (WhatsApp
@@ -1800,7 +2172,7 @@ function viewOutdoor(){
   if (!OD.data) { OD.data = 'loading'; odLoad(); }
   const canFill = ['submit', 'edit'].includes(levelOf('engineering.outdoor'));
   const head = pageHead('Outdoor units', 'The monthly check of every outdoor unit, due from the 25th to the end of the month. Superheat (T1 - Evap) should be 8-12 °C, subcooling (Cond - T2) 5-10 °C.',
-    canFill ? `<button class="btn btn-primary" onclick="odForm()">${I.externalLink} Open this month's form</button>` : '');
+    (OD.data && OD.data !== 'loading' && !OD.data.error ? dlButton('odDownload()') : '') + (canFill ? `<button class="btn btn-primary" onclick="odForm()">${I.externalLink} Open this month's form</button>` : ''));
   const d = OD.data;
   if (d === 'loading') return { title:'Outdoor units', crumb:'Logs', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (d.error) return { title:'Outdoor units', crumb:'Logs', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
@@ -1820,3 +2192,8 @@ function viewOutdoor(){
       <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Outdoor Units tab).</div></div>` };
 }
 route('/outdoor', viewOutdoor);
+function odDownload(){
+  const d = OD.data || {};
+  downloadXlsx('Outdoor units ' + String(d.month || '').slice(0, 7), [{ name: 'Outdoor units', head: ['Unit', 'Code', 'Running', 'Amps', 'Low psi', 'High psi', 'T1', 'Evap', 'Superheat', 'T2', 'Cond', 'Subcooling', 'Checked on', 'Checked by', 'Timing', 'Status', 'Note'],
+    rows: (d.units || []).map(u => [u.name, u.code, u.logged ? (u.running ? 'yes' : 'no') : '', u.amps, u.low_psi, u.high_psi, u.t1, u.evap, u.superheat, u.t2, u.cond, u.subcooling, u.checked_on, u.checked_by, u.timing, u.status || 'Not checked', u.note]) }]);
+}
