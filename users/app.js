@@ -307,6 +307,7 @@ function loadError(err){
     <button class="btn btn-primary" onclick="location.reload()">Retry</button>
   </div>`;
 }
+document.addEventListener('tablesort', e => { if (e.detail && e.detail.key === 'users-people') render(); });   // the whole list sorts, not only the first 300 (../tablesort.js)
 function render(){
   const app = document.getElementById('app');
   try {
@@ -427,7 +428,8 @@ function viewPeople(){
   const onFirst = S.accounts.filter(a => a.must_change && a.active).length;
   const tab = peopleState.tab;
   const rows = filteredAccounts();
-  const shown = rows.slice(0, 300);
+  const plain = h => String(h || '').replace(/<[^>]*>/g, ' ');
+  const shown = (window.oklTableSort ? window.oklTableSort.rows(rows, 'users-people', [a => a.name, a => plain(accessChips(a)), a => plain(statusBadges(a)), a => a.last_login_at || '']) : rows).slice(0, 300);
   const accountsTable = `
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
@@ -440,7 +442,7 @@ function viewPeople(){
           </select>
         </div>
       </div>
-      <div class="tbl-wrap"><table class="tbl">
+      <div class="tbl-wrap"><table class="tbl" data-sort-key="users-people">
         <thead><tr><th>Person</th><th>Access</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
         <tbody>${shown.length ? shown.map(a => `<tr>
           <td data-label="Person" class="cell-person"><div class="person">${avatarEl(a.name)}

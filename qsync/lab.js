@@ -518,7 +518,7 @@ function wsApiPanel(t){
         <div class="card-b">
           <div class="field" style="max-width:260px"><label>Average weight (mg${ws.ctx.analysis.stage === 'Granulation' ? ', granules: theoretical' : ', measured'})</label>${inpNum(`values.${s.key}.avg_weight`, 'placeholder="mg"')}
             <div class="hint">${I.info}<span>Shared by the three APIs of this sample.</span></div></div>
-          <div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Prep</th><th>Sample weight (mg)</th><th>Sample peak areas</th><th style="text-align:right">% of label claim</th></tr></thead><tbody>
+          <div class="tbl-wrap"><table class="tbl" style="min-width:0" data-nosort><thead><tr><th>Prep</th><th>Sample weight (mg)</th><th>Sample peak areas</th><th style="text-align:right">% of label claim</th></tr></thead><tbody>
           ${preps.map((p, pi) => `<tr><td class="strong">${String.fromCharCode(97 + pi)}</td>
             <td style="width:150px">${inpNum(`values.${s.key}.preps.${tid}.${pi}.weight`)}</td>
             <td><div class="row" style="gap:6px;flex-wrap:wrap"><div class="lab-areas" data-group="values.${s.key}.preps.${tid}.${pi}.areas">${p.areas.map((x, ii) => inpNum(`values.${s.key}.preps.${tid}.${pi}.areas.${ii}`, `placeholder="${ii + 1}"`)).join('')}</div>
@@ -768,7 +768,7 @@ function wsPaint(){
   const errs = (c.errors || []).map(e => `<li>${e.api ? `<b>${esc(e.api)}:</b> ` : ''}${esc(e.message)}</li>`).join('');
   const blocked = (c.blocked || []).length ? `<div class="notice" style="color:var(--danger);margin-bottom:10px">${I.alert} System suitability failed for ${esc(c.blocked.join(', '))}: results are blocked until the run is repeated or a justification is entered.</div>` : '';
   box.innerHTML = `${blocked}${errs ? `<div class="small" style="margin-bottom:10px"><b>To complete:</b><ul style="margin:6px 0 0 18px">${errs}</ul></div>` : ''}
-    ${(c.results || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>API</th><th>Sample</th><th style="text-align:right">Reported</th><th>Limit</th><th></th></tr></thead><tbody>
+    ${(c.results || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0" data-nosort><thead><tr><th>API</th><th>Sample</th><th style="text-align:right">Reported</th><th>Limit</th><th></th></tr></thead><tbody>
       ${c.results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="tnum strong" style="text-align:right">${num1(x.value_reported)}%</td>
         <td class="small muted">${esc(x.limit_text)}</td><td>${verdictBadge(x.pass)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
 }

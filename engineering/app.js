@@ -642,7 +642,7 @@ function viewEquipment(){
     dlButton('eqDownload()') + (canEdit ? `<button class="btn btn-primary" onclick="eqOpen('')">${I.plus} Add equipment</button>` : '')) + eqTabs('list');
   if (EQ.error) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the register', esc(EQ.error), `<button class="btn btn-primary" onclick="eqLoad(true)">Try again</button>`)}</div></div>` };
   if (!EQ.list) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
-  const all = EQ.list, rows = eqFiltered(), shown = rows.slice(0, 400);
+  const all = EQ.list, rows = sortedList(eqFiltered(), 'eng-equipment', [a => a.code, a => a.name, a => a.type, a => a.area, a => a.parent ? a.parent_name || a.parent : '', a => a.eq_no, a => a.floor_code || 'no']), shown = rows.slice(0, 400);
   const areas = Array.from(new Set(all.map(a => a.area).filter(Boolean))).sort();
   const byType = ASSET_TYPES.map(t => [t, all.filter(a => a.type === t && a.status === 'Active').length]).filter(x => x[1]);
   const toCheck = all.filter(a => a.review).length;
@@ -664,7 +664,7 @@ function viewEquipment(){
           <select class="inp" id="eqStatus" style="width:auto">${opt('Active', EQ.status)}${opt('Inactive', EQ.status)}${opt('', EQ.status, 'Active and inactive')}</select>
         </div>
       </div>
-      <div class="tbl-wrap"><table class="tbl">
+      <div class="tbl-wrap"><table class="tbl" data-sort-key="eng-equipment">
         <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Area</th><th>Part of</th><th>EQ/PD no</th><th>On the shop floor</th><th></th></tr></thead>
         <tbody>${shown.length ? shown.map(a => `<tr class="clickable" onclick="go('/equipment/${esc(a.code)}')">
           <td class="mono small" data-label="Code">${esc(a.code)}</td>
@@ -739,7 +739,7 @@ function viewAsset(params){
     readings: () => `<thead><tr><th>Month</th><th style="text-align:right">Amps</th><th style="text-align:right">Low / high psi</th><th style="text-align:right">Superheat</th><th style="text-align:right">Subcooling</th><th>Status</th></tr></thead><tbody>${(d.outdoor || []).map(r => `<tr>
         <td data-label="Month">${esc(String(r.month).slice(0, 7))}</td><td data-label="Amps" style="text-align:right">${num(r.amps)}</td><td data-label="psi" style="text-align:right">${num(r.low_psi)} / ${num(r.high_psi)}</td>
         <td data-label="Superheat" style="text-align:right">${num(r.superheat)}</td><td data-label="Subcooling" style="text-align:right">${num(r.subcooling)}</td><td data-label="Status">${esc(r.status || '')}</td></tr>`).join('') || empty(6, 'No readings yet.')}</tbody>`,
-    checklist: () => `<thead><tr><th>Section</th><th>Item</th><th>Standard</th></tr></thead><tbody>${(d.checklist || []).map(c => `<tr>
+    checklist: () => `<thead data-nosort><tr><th>Section</th><th>Item</th><th>Standard</th></tr></thead><tbody>${(d.checklist || []).map(c => `<tr>
         <td data-label="Section" class="small">${esc(c.section)}</td><td data-label="Item" class="strong">${esc(c.item)}</td><td data-label="Standard" class="small">${esc(c.standard || '')}</td></tr>`).join('')
         || empty(3, 'No PM checklist yet.' + (planEdit ? ` <a href="#/equipment/checklists?asset=${esc(code)}">Make one</a>.` : ''))}</tbody>
         ${(d.checklist || []).length && planEdit ? `<tfoot><tr><td colspan="3" style="padding:12px 18px"><a href="#/equipment/checklists?asset=${esc(code)}">Change the checklist</a></td></tr></tfoot>` : ''}`,
@@ -969,7 +969,7 @@ function viewChecklists(){
   if (!a) return { title:'PM checklists', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'No such equipment', '')}</div></div>` };
   if (!PP.ck || PP.ck.asset !== code) PP.ck = { asset: code, items: ((list && list.items) || []).map(x => Object.assign({}, x)) };
   const back = `<a class="btn btn-ghost btn-sm" href="#/equipment/checklists">${I.chevL} All checklists</a>`;
-  if (!edit) return { title: a.name, crumb:'Setup', html: back + pageHead('PM checklist: ' + a.name, '') + `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Section</th><th>Item</th><th>Standard</th></tr></thead>
+  if (!edit) return { title: a.name, crumb:'Setup', html: back + pageHead('PM checklist: ' + a.name, '') + `<div class="card"><div class="tbl-wrap"><table class="tbl" data-nosort><thead><tr><th>Section</th><th>Item</th><th>Standard</th></tr></thead>
     <tbody>${PP.ck.items.map(c => `<tr><td class="small">${esc(c.section)}</td><td class="strong">${esc(c.item)}</td><td class="small">${esc(c.standard || '')}</td></tr>`).join('') || '<tr><td colspan="3" class="muted" style="padding:16px">No checklist yet.</td></tr>'}</tbody></table></div></div>` };
   const others = lists.filter(c => c.asset !== code);
   return { title: a.name, crumb:'Setup', keepScroll: true,
@@ -1196,10 +1196,14 @@ function spFiltered(){
   return (SP.list || []).filter(x => (!SP.type || x.sku.slice(0, 2) === SP.type) && (!SP.status || x.status === SP.status) && (!SP.noLoc || !x.location)
     && (!q || [x.sku, x.description, x.part_number, x.brand, x.supplier, x.location, (x.used_on_names || []).join(' '), x.used_for_old].join(' ').toLowerCase().includes(q)));
 }
+// lists cut to their first few hundred rows: sort the whole list by the column chosen on the table (../tablesort.js)
+const sortedList = (list, key, getters) => window.oklTableSort ? window.oklTableSort.rows(list, key, getters) : list;
+document.addEventListener('tablesort', e => { if (e.detail && /^eng-/.test(e.detail.key || '')) render(); });
 function viewSpares(){
   if (!SP.list) { spLoad(); return spWait('/spares'); }
   if (!SP.handovers) spLoadHandovers();
-  const all = SP.list.filter(x => x.active), rows = spFiltered(), shown = rows.slice(0, 300);
+  const all = SP.list.filter(x => x.active), rows = sortedList(spFiltered(), 'eng-spares', [x => x.sku, x => x.description, x => x.location, x => +x.stock, x => +x.reorder_level, x => x.status,
+    x => x.common_use ? 'Common use' : (x.used_on_names || []).join(', ') || x.used_for_old || '', x => x.last_count_at ? x.last_count_at.slice(0, 10) : '']), shown = rows.slice(0, 300);
   const out = all.filter(x => x.status === 'Out of stock').length, reo = all.filter(x => x.status === 'Reorder').length;
   const value = all.reduce((t, x) => t + (+x.value || 0), 0), noLoc = all.filter(x => !x.location).length, never = all.filter(x => !x.last_count_at).length;
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
@@ -1219,7 +1223,7 @@ function viewSpares(){
         <select class="inp" id="spStatus" style="width:auto">${opt('', SP.status, 'Any stock')}${opt('Out of stock', SP.status, 'Out of stock')}${opt('Reorder', SP.status, 'Reorder')}${opt('OK', SP.status, 'OK')}</select>
         <label class="row small" style="gap:6px"><input type="checkbox" id="spNoLoc" ${SP.noLoc ? 'checked' : ''}> No location</label>
       </div></div>
-      <div class="tbl-wrap"><table class="tbl">
+      <div class="tbl-wrap"><table class="tbl" data-sort-key="eng-spares">
         <thead><tr><th>SKU</th><th>Part</th><th>Location</th><th style="text-align:right">Stock</th><th style="text-align:right">Reorder at</th><th>Status</th><th>Used on</th><th>Last counted</th></tr></thead>
         <tbody>${shown.length ? shown.map(x => `<tr class="clickable" onclick="spOpen('${esc(x.sku)}')">
           <td class="mono small" data-label="SKU">${esc(x.sku)}</td>
