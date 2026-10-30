@@ -169,6 +169,8 @@ function viewLabInbox(){
   };
 }
 
+// stages QC receives but does not test (QC, 29 Oct 2026)
+const NO_TEST_STAGES = ['Compression'];
 function labReceive(id){
   // the analyst list comes with the inbox: load it first when the dialog is opened from the batch page
   if (!labCache['/inbox'] || labCache['/inbox'].error){
@@ -179,21 +181,23 @@ function labReceive(id){
   const r = (d.requests || []).find(x => x.id === id) || (labCache['/request?id=' + id] || {}).request;
   const analysts = d.analysts || [];
   if (!r) return;
+  const noTest = NO_TEST_STAGES.includes(r.stage);   // QC receives it, does not test it
   signDialog({
-    title: 'Receive sample and assign tests', sub: `${r.request_no} - ${r.product_name} batch ${r.batch_no} (${r.stage})`, size: 'wide',
-    ok: 'Sign as received and assigned', meaning: 'You sign as "Received by" and "Assigned by" (QC Supervisor).',
+    title: noTest ? 'Receive sample' : 'Receive sample and assign tests', sub: `${r.request_no} - ${r.product_name} batch ${r.batch_no} (${r.stage})`, size: 'wide',
+    ok: noTest ? 'Sign as received' : 'Sign as received and assigned', meaning: noTest ? 'You sign as "Received by" (QC Supervisor). QC does not test this stage.' : 'You sign as "Received by" and "Assigned by" (QC Supervisor).',
     body: `<div class="grid g2"><div class="field"><label for="rcQty">Quantity received</label><input class="inp" id="rcQty" inputmode="decimal"></div>
         <div class="field"><label for="rcUnit">Unit</label><select class="inp" id="rcUnit"><option>g</option><option>tablets</option><option>caplets</option><option>mL</option><option>sachets</option></select></div></div>
-      <div class="field"><label>Tests to assign</label><div id="rcTests">${testTypesFromRequest(r).map(t => testRowHtml(analysts, t, '')).join('')}</div>
+      ${noTest ? `<div class="notice">${I.info} QC does not test ${esc(r.stage)}. Sign to confirm the sample is received; the QC Manager then releases it.</div>`
+      : `<div class="field"><label>Tests to assign</label><div id="rcTests">${testTypesFromRequest(r).map(t => testRowHtml(analysts, t, '')).join('')}</div>
         <button class="btn btn-ghost btn-sm" type="button" id="rcAdd">${I.plus} Add a test</button>
-        ${analysts.length ? '' : `<div class="hint">${I.alert}<span>No one has the analyst sign-off yet: give it in the Users console.</span></div>`}</div>`,
-    onMount: w => bindTestRows(w, analysts),
+        ${analysts.length ? '' : `<div class="hint">${I.alert}<span>No one has the analyst sign-off yet: give it in the Users console.</span></div>`}</div>`}`,
+    onMount: w => { if (!noTest) bindTestRows(w, analysts); },
     submit: async ({ password, wrap }) => {
-      const tests = readTestRows(wrap);
-      if (!tests.length) throw new Error('Assign at least one test.');
+      const tests = noTest ? [] : readTestRows(wrap);
+      if (!noTest && !tests.length) throw new Error('Assign at least one test.');
       if (tests.some(t => !t.analyst_id)) throw new Error('Choose an analyst for every test.');
       await labPost('/receive', { request_id: id, password, qty: $('#rcQty', wrap).value.replace(/,/g, ''), unit: $('#rcUnit', wrap).value, assignments: tests });
-      toast('Received', `${r.request_no}: ${tests.length} test(s) assigned.`, 'ok');
+      toast('Received', noTest ? `${r.request_no}: received, no tests.` : `${r.request_no}: ${tests.length} test(s) assigned.`, 'ok');
       labRefresh();
     }
   });
@@ -241,12 +245,12 @@ function viewLabRequest(id){
   const acts = [];
   if (hasLabRole('qc_supervisor') && ['pending_qc_notify', 'sent_to_qc'].includes(st)){
     if (!labCache['/inbox']) labGet('/inbox');
-    acts.push(`<button class="btn btn-primary" onclick="labReceive(${r.id})">Receive and assign</button>`);
+    acts.push(`<button class="btn btn-primary" onclick="labReceive(${r.id})">${NO_TEST_STAGES.includes(r.stage) ? 'Receive' : 'Receive and assign'}</button>`);
   }
   if (hasLabRole('qc_supervisor') && st === 'qc_received'){
     [...new Set(r.assignments.filter(a => !a.cancelled && a.analysis_status === 'submitted' && String(a.analyst_id) !== String(S.me && S.me.id)).map(a => a.analysis_id))]
       .forEach(w => acts.push(`<a class="btn btn-primary" href="#/lab/worksheet/${w}">Check worksheet #${w}</a>`));
-    acts.push(`<button class="btn btn-ghost" onclick="labChangeTests(${r.id})">${I.edit} Change tests</button>`);
+    if (!NO_TEST_STAGES.includes(r.stage)) acts.push(`<button class="btn btn-ghost" onclick="labChangeTests(${r.id})">${I.edit} Change tests</button>`);
   }
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
@@ -924,41 +928,64 @@ function labOosClose(id){
 
 /* ============================================================ Lab master data ============================================================ */
 let mdTab = 'standards';
+const TPL_STAGE = { draft: 'Draft', returned: 'Returned', in_review: 'With QC Manager', reviewed: 'With QA Manager', approved: 'Approved', retired: 'Retired' };
+const CHG_STATUS = { submitted: [c => (c.kind === 'standard' ? 'With QC Manager' : 'With QC Manager (review)'), 'b-warn'], reviewed: [() => 'With QA Manager', 'b-warn'],
+                     approved: [() => 'Approved', 'b-ok'], returned: [() => 'Returned', 'b-danger'] };
 function viewLabMaster(){
   const d = labGet('/masterdata');
   if (!d) return labWait('Lab master data', 'QC Laboratory');
   if (d.error) return labFail('Lab master data', 'QC Laboratory', d.error);
-  const ed = canEdit(), qa = hasLabRole('qa_manager') || hasLabRole('qa_supervisor');
-  const tabs = [['standards', 'Working standards'], ['equipment', 'Equipment'], ['templates', 'Method templates']];
+  const ed = canEdit(), qcs = hasLabRole('qc_supervisor'), qcm = hasLabRole('qc_manager'), qam = hasLabRole('qa_manager');
+  const waiting = (d.changes || []).filter(c => ['submitted', 'reviewed', 'returned'].includes(c.status)).length
+    + (d.templates || []).filter(t => ['in_review', 'reviewed', 'returned'].includes(t.stage_of_change)).length;
+  const tabs = [['standards', 'Working standards'], ['equipment', 'Equipment'], ['templates', 'Method templates'], ['changes', `Changes${waiting ? ` (${waiting})` : ''}`]];
   let body = '';
   if (mdTab === 'standards'){
-    body = `<div class="card"><div class="card-h"><div><h3>Working-standard register</h3><div class="sub">A standard without an expiry date, or past it, cannot be picked on a worksheet</div></div>
-        ${ed ? `<button class="btn btn-primary btn-sm" onclick="mdStandard()">${I.plus} Add standard</button>` : ''}</div>
+    body = `<div class="card"><div class="card-h"><div><h3>Working-standard register</h3><div class="sub">A standard without an expiry date, or past it, cannot be picked on a worksheet. A new standard or a change is started by the QC Supervisor and approved by the QC Manager.</div></div>
+        ${qcs ? `<button class="btn btn-primary btn-sm" onclick="mdStandard()">${I.plus} Add standard</button>` : ''}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Number</th><th>Substance</th><th>Potency</th><th>Expiry</th><th>Usable today</th><th></th></tr></thead><tbody>
       ${d.standards.map(w => `<tr><td class="mono strong">${esc(w.ws_no)}</td><td>${esc(w.substance)}${w.notes ? `<div class="tiny muted">${esc(w.notes)}</div>` : ''}</td><td class="tnum">${esc(w.potency_pct)}%</td>
         <td>${fmtDate(w.expiry_date)}</td><td>${w.usable_today ? '<span class="badge b-ok">Yes</span>' : `<span class="badge b-danger">${!w.active ? 'Inactive' : w.expiry_date ? 'Expired' : 'No expiry date'}</span>`}</td>
-        <td style="text-align:right">${ed ? `<button class="btn btn-ghost btn-sm" onclick="mdStandard(${w.id})">${I.edit} Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
+        <td style="text-align:right">${qcs ? `<button class="btn btn-ghost btn-sm" onclick="mdStandard(${w.id})">${I.edit} Request change</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
   } else if (mdTab === 'equipment'){
     body = `<div class="card"><div class="card-h"><h3>Equipment</h3>${ed ? `<button class="btn btn-primary btn-sm" onclick="mdEquipment()">${I.plus} Add equipment</button>` : ''}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Number</th><th>Type</th><th>Description</th><th>Calibration due</th><th>Active</th><th></th></tr></thead><tbody>
       ${d.equipment.map(q => `<tr><td class="mono strong">${esc(q.eq_no)}</td><td>${esc(q.eq_type || '')}</td><td class="small">${esc(q.description || '')}</td><td>${fmtDate(q.calibration_due)}</td>
         <td>${q.active ? 'Yes' : 'No'}</td><td style="text-align:right">${ed ? `<button class="btn btn-ghost btn-sm" onclick="mdEquipment(${q.id})">${I.edit} Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
-  } else {
-    body = `<div class="card"><div class="card-h"><div><h3>Method templates</h3><div class="sub">QC drafts, QA approves; an approved version is locked and every worksheet records the version it used</div></div>
-        ${ed ? `<button class="btn btn-primary btn-sm" onclick="mdTemplate()">${I.plus} New template</button>` : ''}</div>
+  } else if (mdTab === 'templates'){
+    body = `<div class="card"><div class="card-h"><div><h3>Method templates</h3><div class="sub">The QC Supervisor drafts, the QC Manager reviews, the QA Manager approves; an approved version is locked and every worksheet records the version it used</div></div>
+        ${qcs ? `<button class="btn btn-primary btn-sm" onclick="mdTemplate()">${I.plus} New template</button>` : ''}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product / Stage</th><th>Test / API</th><th>Version</th><th>Status</th><th>Drafted</th><th>Approved</th><th></th></tr></thead><tbody>
       ${d.templates.map(t => `<tr><td>${esc(t.product_name)}<div class="tiny muted">${esc(t.stage)}</div></td><td>${esc(TEST_TYPES[t.test_type] || t.test_type)}<div class="tiny muted">${esc(t.api)}</div></td>
-        <td class="tnum">v${esc(t.version)}</td><td><span class="badge ${t.status === 'approved' ? 'b-ok' : t.status === 'draft' ? 'b-warn' : 'b-slate'}">${esc(t.status)}</span></td>
+        <td class="tnum">v${esc(t.version)}</td><td><span class="badge ${t.status === 'approved' ? 'b-ok' : t.status === 'draft' ? 'b-warn' : 'b-slate'}">${esc(TPL_STAGE[t.stage_of_change] || t.status)}</span>${t.returned_note && t.stage_of_change === 'returned' ? `<div class="tiny muted">${esc(t.returned_by || '')}: ${esc(t.returned_note)}</div>` : ''}</td>
         <td class="small">${esc(t.drafted_by || 'setup')}<div class="tiny muted">${fmtDate(t.drafted_at)}</div></td><td class="small">${esc(t.approved_by || '--')}<div class="tiny muted">${t.approved_at ? fmtDate(t.approved_at) : ''}</div></td>
         <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="mdTemplateView(${t.id})">View</button>
-          ${t.status === 'draft' && ed ? `<button class="btn btn-ghost btn-sm" onclick="mdTemplate(${t.id},'edit')">${I.edit} Edit</button>` : ''}
-          ${t.status !== 'draft' && ed ? `<button class="btn btn-ghost btn-sm" onclick="mdTemplate(${t.id},'copy')">New version</button>` : ''}
-          ${t.status === 'draft' && qa ? `<button class="btn btn-primary btn-sm" onclick="mdApprove(${t.id})">Approve</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
+          ${['draft', 'returned'].includes(t.stage_of_change) && qcs ? `<button class="btn btn-ghost btn-sm" onclick="mdTemplate(${t.id},'edit')">${I.edit} Edit</button>
+            <button class="btn btn-primary btn-sm" onclick="mdTplSubmit(${t.id})">Send for review</button>` : ''}
+          ${t.status !== 'draft' && qcs ? `<button class="btn btn-ghost btn-sm" onclick="mdTemplate(${t.id},'copy')">New version</button>` : ''}
+          ${t.stage_of_change === 'in_review' && qcm && t.drafted_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="mdTplReview(${t.id})">Review</button>` : ''}
+          ${t.stage_of_change === 'reviewed' && qam && t.drafted_by_id !== d.me && t.reviewed_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="mdApprove(${t.id})">Approve</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
+  } else {
+    const rows = d.changes || [];
+    body = `<div class="card"><div class="card-h"><div><h3>Changes</h3><div class="sub">Working standards and products: the QC Supervisor starts, the QC Manager approves (products: reviews, then the QA Manager approves). Method templates are on their own tab.</div></div>
+        ${qcs ? `<button class="btn btn-primary btn-sm" onclick="productDialog()">${I.plus} New product</button>` : ''}</div>
+      ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Change</th><th>Why</th><th>Started</th><th>Status</th><th></th></tr></thead><tbody>
+      ${rows.map(c => `<tr><td><b>${esc(c.title)}</b></td><td class="small">${esc(c.reason || '')}</td>
+        <td class="small">${esc(c.initiated_by)}<div class="tiny muted">${fmtDate(c.initiated_at)}</div></td>
+        <td><span class="badge ${CHG_STATUS[c.status][1]}">${esc(CHG_STATUS[c.status][0](c))}</span>
+          ${c.review_comment && c.status === 'reviewed' ? `<div class="tiny muted">${esc(c.reviewed_by)}: ${esc(c.review_comment)}</div>` : ''}
+          ${c.returned_note && c.status === 'returned' ? `<div class="tiny muted">${esc(c.returned_by)}: ${esc(c.returned_note)}</div>` : ''}
+          ${c.status === 'approved' ? `<div class="tiny muted">${esc(c.decided_by)} - ${fmtDate(c.decided_at)}</div>` : ''}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="chgView(${c.id})">View</button>
+          ${c.status === 'submitted' && qcm && c.initiated_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="chgDecide(${c.id})">${c.kind === 'standard' ? 'Approve' : 'Review'}</button>` : ''}
+          ${c.status === 'reviewed' && qam && c.initiated_by_id !== d.me && c.reviewed_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="chgDecide(${c.id})">Approve</button>` : ''}
+          ${c.status === 'returned' && c.initiated_by_id === d.me && qcs ? `<button class="btn btn-primary btn-sm" onclick="chgResend(${c.id})">${I.edit} Correct and send again</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="card-b">${emptyState('checkCircle', 'No changes waiting', 'Nothing has been started in the last 90 days.')}</div>`}</div>`;
   }
   return {
     title:'Lab master data', crumb:'QC Laboratory',
     html: `${pageHead('Lab master data', 'Working standards, equipment and the locked method templates that replace the Excel sheets.')}
-      ${!ed ? `<div class="notice" style="margin-bottom:16px">${I.info} Editing needs "edit" access to Products and master data; template approval needs the QA Manager or QA Supervisor sign-off.</div>` : ''}
+      ${!qcs && !qcm && !qam ? `<div class="notice" style="margin-bottom:16px">${I.info} Changes are started by the QC Supervisor, reviewed by the QC Manager and approved by the QA Manager (working standards: the QC Manager approves). You can read everything here.</div>` : ''}
       <div class="tabs">${tabs.map(([k, l]) => `<div class="tab ${k === mdTab ? 'active' : ''}" onclick="mdTab='${k}';render()">${esc(l)}</div>`).join('')}</div>${body}`
   };
 }
@@ -978,10 +1005,22 @@ function mdSaveDialog(title, fields, kind, row){
       catch (e) { const er = $('#mdErr', w); er.textContent = e.message; er.classList.remove('hide'); }
     }; } });
 }
-function mdStandard(id){
-  const row = id ? (labCache['/masterdata'].standards || []).find(w => w.id === id) : null;
-  mdSaveDialog(row ? 'Edit working standard' : 'Add working standard', [['ws_no', 'Standard number (e.g. WS/026/01)'], ['substance', 'Substance'],
-    ['potency_pct', 'Potency (%)', 'number'], ['expiry_date', 'Expiry / re-test date', 'date'], ['notes', 'Notes'], ['active', 'Active', 'check', 'Can be used']], 'standard', row);
+function mdStandard(id, again){
+  const row = again || (id ? (labCache['/masterdata'].standards || []).find(w => w.id === id) : null);
+  const f = [['ws_no', 'Standard number (e.g. WS/026/01)'], ['substance', 'Substance'], ['potency_pct', 'Potency (%)', 'number'],
+             ['expiry_date', 'Expiry / re-test date', 'date'], ['notes', 'Notes']];
+  signDialog({ title: again ? 'Correct the change' : row ? 'Change a working standard' : 'Add a working standard',
+    sub: 'The QC Manager approves it before it takes effect.', ok: 'Sign and send', size: 'narrow',
+    meaning: 'You start this change as QC Supervisor. Nothing changes until the QC Manager approves it.',
+    body: f.map(x => `<div class="field"><label for="cs_${x[0]}">${esc(x[1])}</label><input class="inp" id="cs_${x[0]}" type="${x[2] || 'text'}" value="${esc(row && row[x[0]] != null ? row[x[0]] : '')}"></div>`).join('')
+      + `<div class="field"><label class="small" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cs_active" ${!row || row.active !== false ? 'checked' : ''}> Can be used</label></div>`,
+    reason: 'Why is this needed?', reasonRequired: true,
+    submit: async ({ password, reason, wrap }) => {
+      const payload = {}; f.forEach(x => { payload[x[0]] = $('#cs_' + x[0], wrap).value.trim(); }); payload.active = $('#cs_active', wrap).checked;
+      const body = { payload, reason, password };
+      if (again) body.id = again.id_change; else { body.kind = 'standard'; body.action = row ? 'edit' : 'create'; body.target_id = row ? row.id : ''; }
+      await labPost('/change/submit', body); toast('Sent to the QC Manager', payload.ws_no, 'ok'); mdTab = 'changes'; labRefresh();
+    } });
 }
 function mdEquipment(id){
   const row = id ? (labCache['/masterdata'].equipment || []).find(q => q.id === id) : null;
@@ -991,9 +1030,128 @@ function mdEquipment(id){
 function mdApprove(id){
   const t = (labCache['/masterdata'].templates || []).find(x => x.id === id); if (!t) return;
   signDialog({ title: 'Approve method template', sub: `${t.product_name} ${t.stage} - ${TEST_TYPES[t.test_type] || t.test_type} - ${t.api} v${t.version}`,
-    ok: 'Sign approval', meaning: 'You approve this version for use (QA). It is then locked; the previous approved version is retired.',
+    ok: 'Sign approval', meaning: 'You approve this version for use (QA Manager). It is then locked; the previous approved version is retired.',
+    body: mdParamsHtml(t.parameters, t.test_type)
+      + `<div class="tiny muted" style="margin:8px 0">Started by ${esc(t.drafted_by || '')}, reviewed by ${esc(t.reviewed_by || '')}${t.review_comment ? ' - ' + esc(t.review_comment) : ''}</div>`
+      + `<button class="btn btn-ghost btn-sm" id="tpReturn" type="button">Return to the QC Supervisor instead</button>`,
+    onMount: w => { $('#tpReturn', w).onclick = () => { closeModalOf(w); decisionDialog({ title: 'Return method template', sub: `${t.api} v${t.version}`, role: 'QA Manager',
+      submit: async ({ password, reason }) => { await labPost('/template/approve', { id, password, decision: 'returned', comments: reason }); toast('Returned', `${t.api} v${t.version}`, 'ok'); labRefresh(); } }); }; },
+    reason: 'Comment (optional)',
+    submit: async ({ password, reason }) => { await labPost('/template/approve', { id, password, comments: reason }); toast('Template approved', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
+}
+function closeModalOf(w){ const b = w && w.querySelector ? w.querySelector('[data-close]') : null; if (b) b.click(); }
+// a signed "return it" box: the reason is required
+function decisionDialog(o){
+  signDialog({ title: o.title, sub: o.sub, ok: 'Sign and return', danger: true, meaning: `You return this to the person who started it, as ${o.role}.`,
+    reason: 'Why is it returned?', reasonRequired: true, submit: o.submit });
+}
+function mdTplSubmit(id){
+  const t = (labCache['/masterdata'].templates || []).find(x => x.id === id); if (!t) return;
+  signDialog({ title: 'Send for review', sub: `${t.product_name} - ${TEST_TYPES[t.test_type] || t.test_type} - ${t.api} v${t.version}`, ok: 'Sign and send',
+    meaning: 'You start this method as QC Supervisor. The QC Manager reviews it, then the QA Manager approves it. You cannot edit it while it is in review.',
     body: mdParamsHtml(t.parameters, t.test_type),
-    submit: async ({ password }) => { await labPost('/template/approve', { id, password }); toast('Template approved', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
+    submit: async ({ password }) => { await labPost('/template/submit', { id, password }); toast('Sent to the QC Manager', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
+}
+function mdTplReview(id){
+  const t = (labCache['/masterdata'].templates || []).find(x => x.id === id); if (!t) return;
+  signDialog({ title: 'Review method template', sub: `${t.product_name} - ${TEST_TYPES[t.test_type] || t.test_type} - ${t.api} v${t.version}`, ok: 'Sign review',
+    meaning: 'You review this method as QC Manager. The QA Manager then approves it.',
+    body: mdParamsHtml(t.parameters, t.test_type) + `<div class="tiny muted" style="margin:8px 0">Started by ${esc(t.drafted_by || '')}${t.change_note ? ' - ' + esc(t.change_note) : ''}</div>`
+      + `<button class="btn btn-ghost btn-sm" id="tpReturn" type="button">Return to the QC Supervisor instead</button>`,
+    onMount: w => { $('#tpReturn', w).onclick = () => { closeModalOf(w); decisionDialog({ title: 'Return method template', sub: `${t.api} v${t.version}`, role: 'QC Manager',
+      submit: async ({ password, reason }) => { await labPost('/template/review', { id, password, decision: 'returned', comments: reason }); toast('Returned', `${t.api} v${t.version}`, 'ok'); labRefresh(); } }); }; },
+    reason: 'Comment (optional)',
+    submit: async ({ password, reason }) => { await labPost('/template/review', { id, password, decision: 'reviewed', comments: reason }); toast('Sent to the QA Manager', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
+}
+// ---- changes to standards and products
+const limitText = x => esc(x.spec_text || [x.spec_min, x.spec_max].map(v => (v === '' || v == null ? '--' : v)).join(' to '));
+function chgText(c){
+  const P = c.payload || {};
+  if (c.kind === 'standard') return `<table class="tbl"><tbody>${[['Number', P.ws_no], ['Substance', P.substance], ['Potency', P.potency_pct + ' %'], ['Expiry', P.expiry_date ? fmtDate(P.expiry_date) : 'not entered'],
+    ['Notes', P.notes || ''], ['Can be used', P.active === false ? 'No' : 'Yes']].map(r => `<tr><th>${r[0]}</th><td>${esc(r[1] || '')}</td></tr>`).join('')}</tbody></table>`;
+  const specs = (P.specs || []).map(x => `<tr><td>${esc(x.stage)}</td><td>${esc(x.parameter_name)}</td><td>${limitText(x)} ${esc(x.unit || '')}</td></tr>`).join('');
+  const chg = (P.spec_changes || []).map(x => `<tr><td colspan="2">Specification #${esc(x.id)} (changed)</td><td>${limitText(x)}</td></tr>`).join('');
+  return `<table class="tbl"><tbody>${c.action === 'create' ? [['Name', P.name], ['Prefix', P.prefix], ['Type', P.type], ['Shelf life', P.shelf_life_months + ' months']].map(r => `<tr><th>${r[0]}</th><td colspan="2">${esc(r[1] || '')}</td></tr>`).join('')
+    : P.shelf_life_months != null ? `<tr><th>Shelf life</th><td colspan="2">${esc(P.shelf_life_months)} months</td></tr>` : ''}</tbody></table>
+    ${specs || chg ? `<table class="tbl" style="margin-top:8px"><thead><tr><th>Stage</th><th>Parameter</th><th>Limit</th></tr></thead><tbody>${specs}${chg}</tbody></table>` : ''}`;
+}
+function chgView(id){
+  const c = (labCache['/masterdata'].changes || []).find(x => x.id === id); if (!c) return;
+  openModal({ title: c.title, sub: `Started by ${c.initiated_by} - ${fmtDate(c.initiated_at)}`, size: 'wide',
+    body: `<div class="small" style="margin-bottom:10px"><b>Why:</b> ${esc(c.reason || '')}</div>${chgText(c)}`, footer: `<button class="btn btn-ghost" data-close>Close</button>` });
+}
+function chgDecide(id){
+  const c = (labCache['/masterdata'].changes || []).find(x => x.id === id); if (!c) return;
+  const last = c.kind === 'standard' || c.status === 'reviewed', role = c.status === 'submitted' ? 'QC Manager' : 'QA Manager';
+  signDialog({ title: last ? 'Approve change' : 'Review change', sub: c.title, ok: last ? 'Sign approval' : 'Sign review',
+    meaning: last ? `You approve this as ${role}. It takes effect now.` : `You review this as ${role}. The QA Manager then approves it.`,
+    body: `<div class="small" style="margin-bottom:10px"><b>Why:</b> ${esc(c.reason || '')}</div>${chgText(c)}<button class="btn btn-ghost btn-sm" id="chReturn" type="button" style="margin-top:10px">Return to ${esc(c.initiated_by)} instead</button>`,
+    onMount: w => { $('#chReturn', w).onclick = () => { closeModalOf(w); decisionDialog({ title: 'Return change', sub: c.title, role,
+      submit: async ({ password, reason }) => { await labPost('/change/decide', { id, password, decision: 'return', comments: reason }); toast('Returned', c.title, 'ok'); labRefresh(); } }); }; },
+    reason: 'Comment (optional)',
+    submit: async ({ password, reason }) => { await labPost('/change/decide', { id, password, decision: 'approve', comments: reason });
+      toast(last ? 'Change approved' : 'Sent to the QA Manager', c.title, 'ok'); labRefresh(); } });
+}
+function chgResend(id){
+  const c = (labCache['/masterdata'].changes || []).find(x => x.id === id); if (!c) return;
+  if (c.kind === 'standard') return mdStandard(null, Object.assign({}, c.payload, { id_change: c.id }));
+  productDialog(c);
+}
+// a new product (all its details and specifications), or a returned one corrected
+function productDialog(again){
+  const P = again ? again.payload : { specs: [] };
+  // the stages of a solid (granulation ... primary packaging) or a liquid (mixing ... filling)
+  const typeStages = (labCache['/masterdata'] || {}).type_stages || { OSD: ['Granulation', 'Compression', 'Sacheting/Blistering/Stripping', 'Finished Product'], OLD: ['Mixing', 'Filling/Sacheting', 'Finished Product'] };
+  let stages = typeStages[P.type || 'OSD'];
+  const stageOpts = sel => stages.map(st => `<option ${sel === st ? 'selected' : ''}>${esc(st)}</option>`).join('');
+  const params = ((labCache['/masterdata'] || {}).parameters || []).length ? labCache['/masterdata'].parameters
+    : Array.from(new Map((S.products || []).flatMap(x => (x.specs || []).map(y => [y.parameterName, { name: y.parameterName, unit: y.unit, text: !!y.specText }]))).values());
+  const taken = ((labCache['/masterdata'] || {}).prefixes || (S.products || []).map(x => x.prefix)).map(x => String(x).toUpperCase());
+  const specRow = x => `<tr class="pd-spec"><td><select class="inp" data-k="stage">${stageOpts(x.stage)}</select></td>
+    <td><select class="inp" data-k="parameter_name"><option value="">Choose...</option>${params.map(q => `<option ${x.parameter_name === q.name ? 'selected' : ''}>${esc(q.name)}</option>`).join('')}</select></td>
+    <td><input class="inp" data-k="spec_min" type="number" step="any" value="${esc(x.spec_min ?? '')}" style="width:90px"></td>
+    <td><input class="inp" data-k="spec_max" type="number" step="any" value="${esc(x.spec_max ?? '')}" style="width:90px"></td><td><input class="inp" data-k="spec_text" value="${esc(x.spec_text || '')}" placeholder="or words, e.g. Complies"></td>
+    <td><input class="inp" data-k="unit" value="${esc(x.unit || '')}" style="width:70px"></td><td><button class="btn btn-ghost btn-sm" type="button" data-rm>${I.x}</button></td></tr>`;
+  signDialog({ title: again ? 'Correct the new product' : 'New product', sub: 'Everything the product needs is entered here: the QC Manager reviews it, then the QA Manager approves it.', size: 'wide', ok: 'Sign and send',
+    meaning: 'You start this as QC Supervisor. Nothing changes until the QC Manager has reviewed it and the QA Manager has approved it.',
+    body: `<div class="grid g4"><div class="field"><label for="np_name">Product name</label><input class="inp" id="np_name" value="${esc(P.name || '')}"></div>
+      <div class="field"><label for="np_prefix">Batch prefix (one letter)</label><input class="inp" id="np_prefix" maxlength="1" style="text-transform:uppercase" value="${esc(P.prefix || '')}">
+        <div class="hint" id="np_prefixHint"><span>In use: ${esc(taken.sort().join(', '))}</span></div></div>
+      <div class="field"><label for="np_type">Type</label><select class="inp" id="np_type"><option ${P.type === 'OSD' ? 'selected' : ''}>OSD</option><option ${P.type === 'OLD' ? 'selected' : ''}>OLD</option></select></div>
+      <div class="field"><label for="np_shelf">Shelf life (months)</label><input class="inp" id="np_shelf" type="number" value="${esc(P.shelf_life_months ?? 60)}"></div></div>
+      <div class="sec-title">Specifications (what IPQA and QC check, per stage)</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Stage</th><th>Parameter</th><th>Lower</th><th>Upper</th><th>Description</th><th>Unit</th><th></th></tr></thead><tbody id="npSpecs">${(P.specs || []).map(specRow).join('')}</tbody></table></div>
+      <button class="btn btn-ghost btn-sm" type="button" id="npAdd" style="margin-top:6px">${I.plus} Add specification</button>`,
+    onMount: w => {
+      const tb = $('#npSpecs', w);
+      const add = () => tb.insertAdjacentHTML('beforeend', specRow({}));
+      if (!(P.specs || []).length) add();
+      $('#npAdd', w).onclick = add;
+      tb.addEventListener('click', e => { const b = e.target.closest ? e.target.closest('[data-rm]') : null; if (b) b.closest('tr').remove(); });
+      tb.addEventListener('change', e => {
+        if (!e.target.matches || !e.target.matches('[data-k=parameter_name]')) return;
+        const q = params.find(z => z.name === e.target.value), tr = e.target.closest('tr');
+        if (q && !tr.querySelector('[data-k=unit]').value) tr.querySelector('[data-k=unit]').value = q.unit || '';
+      });
+      $('#np_type', w).onchange = e => { stages = typeStages[e.target.value];
+        tb.querySelectorAll('[data-k=stage]').forEach(el => { const v = el.value; el.innerHTML = stageOpts(v); }); };
+      const pf = $('#np_prefix', w), hint = $('#np_prefixHint', w);
+      pf.addEventListener('input', () => {
+        pf.value = pf.value.replace(/[^A-Za-z]/g, '').toUpperCase();
+        const used = taken.includes(pf.value);
+        hint.style.color = used ? 'var(--danger)' : '';
+        hint.firstElementChild.textContent = used ? `${pf.value} is already used by another product` : `In use: ${taken.slice().sort().join(', ')}`;
+      });
+    },
+    reason: 'Why is this needed?', reasonRequired: true,
+    submit: async ({ password, reason, wrap }) => {
+      const specs = Array.from(wrap.querySelectorAll('.pd-spec')).map(tr => { const o = {}; tr.querySelectorAll('[data-k]').forEach(el => { o[el.dataset.k] = el.value.trim(); }); return o; })
+        .filter(o => o.parameter_name || o.spec_min || o.spec_max || o.spec_text);
+      const payload = { name: $('#np_name', wrap).value.trim(), prefix: $('#np_prefix', wrap).value.trim(), type: $('#np_type', wrap).value, shelf_life_months: $('#np_shelf', wrap).value, specs };
+      const body = { payload, reason, password };
+      if (again) body.id = again.id; else { body.kind = 'product'; body.action = 'create'; }
+      await labPost('/change/submit', body); toast('Sent to the QC Manager', payload.name, 'ok'); mdTab = 'changes'; labRefresh();
+    } });
 }
 // what a template holds, per test type (the view QA signs and the read-only view)
 function mdParamsHtml(P, test){
@@ -1139,7 +1297,7 @@ function mdTemplate(id, mode){
         const body = { parameters: P, method_ref: v('mref'), spec_ref: v('sref'), form_ref: v('fref'), change_note: v('note') };
         if (isNew) Object.assign(body, { product_name: v('product'), test_type: test, api: v('api') });
         else if (mode === 'edit') body.id = src.id; else body.from_id = src.id;
-        try { await labPost('/template/draft', body); close(); toast('Draft saved', 'QA approves it before it can be used.', 'ok'); labRefresh(); }
+        try { await labPost('/template/draft', body); close(); toast('Draft saved', 'Send it for review when it is ready.', 'ok'); labRefresh(); }
         catch (e) { const er = $('#tpErr', w); er.textContent = e.message; er.classList.remove('hide'); }
       };
     } });

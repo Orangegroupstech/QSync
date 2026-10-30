@@ -750,3 +750,26 @@ table.eng-grid{border-collapse:separate;border-spacing:0;font-size:12px;font-var
   .pl-part{flex:1 1 100%}
   .pl-qty,.pl-price{flex:1 1 0;width:auto}
 }
+
+/* round 3 (29 Oct 2026): the PM checklist on a job, the checklist editor, equipment filters, date + time boxes */
+.chk-sec{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#667);margin:14px 0 4px}
+.chk-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:8px 0;border-top:1px solid var(--line-2)}
+.chk-row.chk-done .chk-what .strong{color:var(--ok)}
+.chk-row.chk-not_done .chk-what .strong{color:var(--danger,#B3261E)}
+.chk-btns{display:flex;gap:6px;flex-wrap:nowrap}
+.chk-why{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,240px) minmax(0,1fr);gap:8px}
+.ck-head,.ck-row{display:grid;grid-template-columns:150px minmax(0,1fr) minmax(0,1.4fr) auto;gap:8px;align-items:center}
+.ck-head{padding:0 0 4px}
+.ck-row{padding:6px 0;border-top:1px solid var(--line-2)}
+.flt-asset{width:220px}
+@media (max-width: 640px){
+  .chk-row{grid-template-columns:minmax(0,1fr)}
+  .chk-btns > .btn{flex:1 1 0}
+  .chk-why{grid-template-columns:minmax(0,1fr)}
+  .ck-head{display:none}
+  .ck-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .ck-row > input{grid-column:1/-1}
+  .flt-asset{width:100%}
+  .jn-when{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .jn-when > .field:first-child{grid-column:1/-1}
+}

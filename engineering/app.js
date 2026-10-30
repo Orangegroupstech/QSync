@@ -238,7 +238,7 @@ function navModel(){
       { path:'/spares', label:'Spares', icon:'box' },
     ] },
     { title:'Setup', items:[
-      { path:'/equipment', label:'Equipment', icon:'layers' },
+      { path:'/equipment', label:'Equipment and parts', icon:'layers' },
       { path:'/settings', label:'Settings', icon:'sliders' },
     ].concat(mgr ? [{ path:'/floor', label:'Floor messages', icon:'externalLink' }] : []) },
   ];
@@ -629,8 +629,8 @@ function eqFiltered(){
 function viewEquipment(){
   if (!EQ.list && !EQ.error) eqLoad();
   const canEdit = canEditHere();
-  const head = pageHead('Equipment', 'Everything Engineering looks after: machines, lines, rooms, AHUs and their outdoor units, utilities, instruments and buildings. Open one to see its whole history.',
-    dlButton('eqDownload()') + (canEdit ? `<button class="btn btn-primary" onclick="eqOpen('')">${I.plus} Add equipment</button>` : ''));
+  const head = pageHead('Equipment and parts', 'Everything Engineering looks after: machines, lines, rooms, AHUs and their outdoor units, utilities, instruments and buildings. Open one to see its whole history.',
+    dlButton('eqDownload()') + (canEdit ? `<button class="btn btn-primary" onclick="eqOpen('')">${I.plus} Add equipment</button>` : '')) + eqTabs('list');
   if (EQ.error) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the register', esc(EQ.error), `<button class="btn btn-primary" onclick="eqLoad(true)">Try again</button>`)}</div></div>` };
   if (!EQ.list) return { title:'Equipment', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   const all = EQ.list, rows = eqFiltered(), shown = rows.slice(0, 400);
@@ -706,8 +706,10 @@ function viewAsset(params){
   const tabs = [['jobs', 'Jobs', (d.jobs || []).length], ['failures', 'Failures', (d.failures || []).length]]
     .concat(a.floor_code ? [['stops', 'Floor stops', (d.stops || []).length]] : [])
     .concat([['actions', 'Actions', (d.actions || []).length], ['parts', 'Parts used', (d.parts || []).length]])
-    .concat(a.type === 'Outdoor unit' ? [['readings', 'Monthly readings', (d.outdoor || []).length]] : []);
+    .concat(a.type === 'Outdoor unit' ? [['readings', 'Monthly readings', (d.outdoor || []).length]] : [])
+    .concat([['checklist', 'PM checklist', (d.checklist || []).length], ['pmparts', 'PM parts', (d.pm_parts || []).length]]);
   const cur = tabs.some(t => t[0] === tab) ? tab : 'jobs';
+  const planEdit = levelOf('engineering.pm') === 'edit';
   const empty = (n, msg) => `<tr><td colspan="${n}" class="muted" style="padding:16px">${msg}</td></tr>`;
   const body = {
     jobs: () => `<thead><tr><th>Job</th><th>Type</th><th>What failed / what was done</th><th>Technicians</th><th>Time</th><th>Status</th></tr></thead><tbody>${(d.jobs || []).map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')">
@@ -728,6 +730,16 @@ function viewAsset(params){
     readings: () => `<thead><tr><th>Month</th><th style="text-align:right">Amps</th><th style="text-align:right">Low / high psi</th><th style="text-align:right">Superheat</th><th style="text-align:right">Subcooling</th><th>Status</th></tr></thead><tbody>${(d.outdoor || []).map(r => `<tr>
         <td data-label="Month">${esc(String(r.month).slice(0, 7))}</td><td data-label="Amps" style="text-align:right">${num(r.amps)}</td><td data-label="psi" style="text-align:right">${num(r.low_psi)} / ${num(r.high_psi)}</td>
         <td data-label="Superheat" style="text-align:right">${num(r.superheat)}</td><td data-label="Subcooling" style="text-align:right">${num(r.subcooling)}</td><td data-label="Status">${esc(r.status || '')}</td></tr>`).join('') || empty(6, 'No readings yet.')}</tbody>`,
+    checklist: () => `<thead><tr><th>Section</th><th>Item</th><th>Standard</th></tr></thead><tbody>${(d.checklist || []).map(c => `<tr>
+        <td data-label="Section" class="small">${esc(c.section)}</td><td data-label="Item" class="strong">${esc(c.item)}</td><td data-label="Standard" class="small">${esc(c.standard || '')}</td></tr>`).join('')
+        || empty(3, 'No PM checklist yet.' + (planEdit ? ` <a href="#/equipment/checklists?asset=${esc(code)}">Make one</a>.` : ''))}</tbody>
+        ${(d.checklist || []).length && planEdit ? `<tfoot><tr><td colspan="3" style="padding:12px 18px"><a href="#/equipment/checklists?asset=${esc(code)}">Change the checklist</a></td></tr></tfoot>` : ''}`,
+    pmparts: () => `<thead><tr><th>Part</th><th style="text-align:right">Qty</th><th>How often</th><th>Last changed</th><th>Next change</th><th style="text-align:right">In stock</th></tr></thead><tbody>${(d.pm_parts || []).map(p => `<tr ${planEdit ? `class="clickable" onclick="ppOpen(${p.id})"` : ''}>
+        <td data-label="Part">${p.sku ? `<span class="mono strong">${esc(p.sku)}</span> ` : ''}${esc(p.name)}</td><td data-label="Qty" style="text-align:right">${num(p.qty)} ${esc(p.unit || '')}</td>
+        <td data-label="How often">${esc(everyText(p))}</td><td data-label="Last changed" class="small">${esc(p.last_change || 'not known')}</td><td data-label="Next change" class="small">${esc(p.next_change || 'at the next PM')}</td>
+        <td data-label="In stock" style="text-align:right">${p.sku ? num(p.stock) : '<span class="tiny muted">not a store item</span>'}</td></tr>`).join('')
+        || empty(6, 'No parts on the PM plan.')}</tbody>
+        ${planEdit ? `<tfoot><tr><td colspan="6" style="padding:12px 18px"><a href="javascript:void 0" onclick="ppOpen(null, '${esc(code)}')">${I.plus} Add a part to the plan</a></td></tr></tfoot>` : ''}`,
   }[cur]();
   const facts = [['Code', a.code], ['Type', a.type], ['Area', a.area], ['Part of', a.parent_name || a.parent], ['EQ/PD no', a.eq_no], ['Shop floor code', a.floor_code], ['Status', a.status]].filter(x => x[1]);
   return { title: a.name, crumb:'Equipment', keepScroll: true,
@@ -740,12 +752,14 @@ function viewAsset(params){
     <div class="grid g4" style="margin-bottom:14px">
       <div class="stat"><div class="lbl">Preventive maintenance</div><div class="val" style="font-size:16px">${pm ? PM_STATE[pm.state] || '' : '<span class="small muted">not tracked</span>'}</div>
         <div class="meta">${pm ? `every ${pm.interval_days} d · last ${esc(pm.last_pm || 'never')}${pm.due_date ? ' · next ' + esc(pm.due_date) : ''}` : ''}</div></div>
-      <div class="stat"><div class="lbl">Failures (90 days)</div><div class="val">${num(k.failures) || 0}</div><div class="meta">${a.floor_code ? 'downtime ' + dur(k.downtime_min) : 'breakdown jobs'}</div></div>
+      <div class="stat"><div class="lbl">Failures (90 days)</div><div class="val">${num(k.failures) || 0}</div><div class="meta">${k.downtime_min != null ? 'downtime ' + dur(k.downtime_min) : 'breakdown jobs'}</div></div>
       <div class="stat"><div class="lbl">MTTR</div><div class="val">${dur(k.mttr_min)}</div><div class="meta">mean time to repair</div></div>
       <div class="stat"><div class="lbl">MTBF</div><div class="val">${k.mtbf_days == null ? '--' : num(k.mtbf_days) + ' d'}</div><div class="meta">mean time between failures</div></div></div>
     <div class="tabs" style="margin-bottom:14px">${tabs.map(([t, l, n]) => `<a class="tab ${t === cur ? 'on' : ''}" href="#/equipment/${esc(code)}?tab=${t}">${esc(l)} <span class="badge" style="padding:1px 7px">${n}</span></a>`).join('')}</div>
     <div class="card"><div class="tbl-wrap"><table class="tbl">${body}</table></div></div>` };
 }
+route('/equipment/parts', () => viewPmParts());
+route('/equipment/checklists', () => viewChecklists());
 route('/equipment/:code', viewAsset);
 function apDownload(code){
   const d = AP[code] || {}, a = eqByCode(code) || { name: code };
@@ -806,6 +820,234 @@ function eqOpen(code){
 }
 function eqSwitch(code){ $$('#layers .overlay').forEach(o => o.remove()); eqOpen(code); }
 
+/* ---- filters by equipment type, area or one piece of equipment (Overview, job history, PM, actions). F = { type, area, asset } */
+function fltHtml(F, id){
+  const all = (EQ.list || []).filter(a => a.status === 'Active');
+  const types = Array.from(new Set(all.map(a => a.type))).sort(), areas = Array.from(new Set(all.map(a => a.area).filter(Boolean))).sort();
+  const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
+  const a = F.asset ? eqByCode(F.asset) : null;
+  return `<select class="inp" id="${id}Type" style="width:auto" aria-label="Equipment type">${opt('', F.type || '', 'All equipment types')}${types.map(t => opt(t, F.type, t)).join('')}</select>
+    <select class="inp" id="${id}Area" style="width:auto" aria-label="Area">${opt('', F.area || '', 'All areas')}${areas.map(t => opt(t, F.area, t)).join('')}</select>
+    <input class="inp flt-asset" id="${id}Asset" list="${id}Assets" placeholder="One piece of equipment" aria-label="One piece of equipment" value="${esc(a ? a.name + ' (' + a.code + ')' : (F.asset || ''))}"><datalist id="${id}Assets">${spAssetOptions()}</datalist>`;
+}
+function fltBind(F, id, onChange){
+  const t = $('#' + id + 'Type'), ar = $('#' + id + 'Area'), as = $('#' + id + 'Asset');
+  if (t) t.onchange = e => { F.type = e.target.value; onChange(); };
+  if (ar) ar.onchange = e => { F.area = e.target.value; onChange(); };
+  if (as) as.onchange = e => { const v = e.target.value.trim(), c = v ? spAssetFrom(v) : ''; if (c && !eqByCode(c)) return; F.asset = c; onChange(); };
+}
+function fltMatch(F, code){
+  F = F || {};
+  if (!F.type && !F.area && !F.asset) return true;
+  const a = eqByCode(code); if (!a) return false;
+  return (!F.type || a.type === F.type) && (!F.area || a.area === F.area) && (!F.asset || a.code === F.asset || a.parent === F.asset);
+}
+const fltOn = F => !!(F.type || F.area || F.asset);
+
+/* ============================================================
+   PM plan (migration 024), under Equipment and parts: the parts each machine needs on PM and how often each is changed,
+   and each machine's PM checklist. The Engineering Manager (Preventive maintenance: edit) changes them.
+   GET /webhook/engineering/api/pm/plan; POST /pm/parts/save, /pm/checklist/save.
+   A part is changed at a PM when it falls due no later than pm_part_window_days after the PM (Settings).
+   ============================================================ */
+let PP = { data: null, f: { type: '', area: '', asset: '' }, q: '', ck: null };
+const EVERY_UNIT = { day: ['day', 'days'], week: ['week', 'weeks'], month: ['month', 'months'] };
+const everyText = p => 'every ' + p.every_n + ' ' + (EVERY_UNIT[p.every_unit] || ['', ''])[+p.every_n === 1 ? 0 : 1];
+const ppCanEdit = () => levelOf('engineering.pm') === 'edit';
+async function ppLoad(){
+  try { PP.data = await api('/webhook/engineering/api/pm/plan'); } catch (err) { PP.data = { error: err.message }; }
+  render();
+}
+function eqTabs(cur){
+  return `<div class="tabs" style="margin-bottom:14px">${[['list', 'Equipment', '/equipment'], ['parts', 'PM parts plan', '/equipment/parts'], ['checklists', 'PM checklists', '/equipment/checklists']]
+    .map(([k, l, h]) => `<a class="tab ${k === cur ? 'on' : ''}" href="#${h}">${l}</a>`).join('')}</div>`;
+}
+function ppParts(){ return ((PP.data || {}).parts || []).filter(p => fltMatch(PP.f, p.asset)); }
+function viewPmParts(){
+  if (!EQ.list && !EQ.loading) eqLoad();
+  if (!SP.list && !SP.loading) spLoad();
+  if (!PP.data) { PP.data = 'loading'; ppLoad(); }
+  const d = PP.data, ready = d && d !== 'loading' && !d.error, edit = ppCanEdit();
+  const head = pageHead('Equipment and parts', `The parts each machine needs on preventive maintenance, and how often each one is changed. A part is changed at a PM when it falls due no more than ${num((ready && d.window_days) || 14)} days after it (Settings). The PM notices list them.`,
+    (ready ? dlButton('ppDownload()') : '') + (edit ? `<button class="btn btn-primary" onclick="ppOpen(null)">${I.plus} Add a part</button>` : '')) + eqTabs('parts');
+  if (!ready) return { title:'PM parts plan', crumb:'Setup', html: head + `<div class="card"><div class="card-b ${d && d.error ? '' : 'small muted'}">${d && d.error ? emptyState('alert', 'Could not load', esc(d.error)) : 'Loading...'}</div></div>` };
+  const rows = ppParts(), today = todayIso();
+  return { title:'PM parts plan', crumb:'Setup', keepScroll: true,
+    html: head + `<div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">${fltHtml(PP.f, 'ppf')}</div>
+    <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Part</th><th style="text-align:right">Qty</th><th>How often</th><th>Last changed</th><th>Next change</th><th style="text-align:right">In stock</th></tr></thead>
+      <tbody>${rows.map(p => `<tr ${edit ? `class="clickable" onclick="ppOpen(${p.id})"` : ''}><td data-label="Equipment"><a class="strong" href="#/equipment/${esc(p.asset)}?tab=pmparts" onclick="event.stopPropagation()">${esc(p.asset_name)}</a><div class="tiny muted">${esc(p.area || '')}</div></td>
+        <td data-label="Part">${p.sku ? `<span class="mono strong">${esc(p.sku)}</span> ` : ''}${esc(p.name)}${p.note ? `<div class="tiny muted">${esc(p.note)}</div>` : ''}</td>
+        <td data-label="Qty" style="text-align:right">${num(p.qty)} ${esc(p.unit || '')}</td><td data-label="How often">${esc(everyText(p))}</td>
+        <td data-label="Last changed" class="small">${esc(p.last_change || 'not known')}</td>
+        <td data-label="Next change" class="small">${p.next_change ? (p.next_change < today ? `<span class="badge b-danger">${esc(p.next_change)}</span>` : esc(p.next_change)) : '<span class="badge b-warn">at the next PM</span>'}</td>
+        <td data-label="In stock" style="text-align:right">${p.sku ? (+p.stock < +p.qty ? `<span class="badge b-danger">${num(p.stock)}</span>` : num(p.stock)) : '<span class="tiny muted">not a store item</span>'}</td></tr>`).join('')
+        || `<tr><td colspan="7" class="muted" style="padding:16px">${(d.parts || []).length ? 'Nothing matches.' : 'No parts on the plan yet.' + (edit ? ' Add the parts each machine needs on PM and how often they are changed.' : '')}</td></tr>`}</tbody></table></div>
+      <div class="small muted" style="padding:12px 18px">${rows.length} of ${(d.parts || []).length} lines. The last change is the date set here, or the last time the part was issued for that machine, whichever is later.</div></div>`,
+    bind(){ fltBind(PP.f, 'ppf', render); } };
+}
+function ppDownload(){
+  downloadXlsx('PM parts plan', [{ name: 'PM parts plan', head: ['Code', 'Equipment', 'Area', 'SKU', 'Part', 'Qty', 'Unit', 'How often', 'Last changed', 'Next change', 'In stock', 'Note'],
+    rows: ppParts().map(p => [p.asset, p.asset_name, p.area, p.sku, p.name, +p.qty, p.unit, everyText(p), p.last_change, p.next_change, p.sku ? +p.stock : '', p.note]) }]);
+}
+function ppOpen(id, asset){
+  const all = (PP.data && PP.data.parts) || [], fromPage = Object.values(AP).flatMap(x => (x && x.pm_parts) || []);
+  const p = id ? (all.find(x => x.id === id) || fromPage.find(x => x.id === id)) : null;
+  const v = p || { asset: asset || '', sku: '', name: '', qty: '', every_n: 3, every_unit: 'month', last_changed_on: '', note: '' };
+  const a = v.asset ? eqByCode(v.asset) : null, it = v.sku ? spBySku(v.sku) : null;
+  openModal({ title: p ? 'PM part: ' + (p.asset_name || p.asset) : 'Add a part to the PM plan', size:'wide', sub: 'What a machine needs on preventive maintenance, and how often it is changed.',
+    body: `<form novalidate><div class="grid g2">
+      <div class="field" style="grid-column:1/-1"><label for="ppAsset">Machine or equipment</label><input class="inp" id="ppAsset" list="ppAssets" value="${esc(a ? a.name + ' (' + a.code + ')' : v.asset)}" placeholder="Type to search"><datalist id="ppAssets">${spAssetOptions()}</datalist></div>
+      <div class="field" style="grid-column:1/-1"><label for="ppPart">Part from the store</label><input class="inp" id="ppPart" list="ppSkus" value="${esc(it ? spLabel(it) : (v.sku || ''))}" placeholder="Type the SKU or the part name"><datalist id="ppSkus">${spSkuOptions()}</datalist>
+        <div class="hint">${I.info}<span>Not a store item (grease, oil...)? Leave this empty and type its name below.</span></div></div>
+      <div class="field" style="grid-column:1/-1"><label for="ppName">Or the material's name</label><input class="inp" id="ppName" maxlength="120" value="${esc(v.sku ? '' : (v.name || ''))}"></div>
+      <div class="field"><label for="ppQty">Quantity each time</label><input class="inp" id="ppQty" type="number" min="0" step="any" value="${esc(num(v.qty))}"></div>
+      <div class="field"><span class="lbl">Changed every</span><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" id="ppN" type="number" min="1" max="520" step="1" value="${esc(v.every_n)}" style="width:90px" aria-label="Every how many">
+        <select class="inp" id="ppUnit" style="width:auto" aria-label="Unit">${Object.keys(EVERY_UNIT).map(k => `<option value="${k}" ${v.every_unit === k ? 'selected' : ''}>${EVERY_UNIT[k][1]}</option>`).join('')}</select></div></div>
+      <div class="field"><label for="ppLast">Last changed on (if known)</label><input class="inp" id="ppLast" type="date" max="${todayIso()}" value="${esc(v.last_changed_on || '')}">
+        <div class="hint">${I.info}<span>Issuing the part for this machine later moves it on by itself.</span></div></div>
+      <div class="field"><label for="ppNote">Note (optional)</label><input class="inp" id="ppNote" maxlength="300" value="${esc(v.note || '')}"></div>
+      </div><div class="err-msg hide" data-err="ppAsset"></div></form>`,
+    footer: `${p ? `<button class="btn btn-danger" data-rm style="margin-right:auto">Take off the plan</button>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
+    onMount: (w, close) => {
+      const done = async r => { close(); toast('Saved', '', 'ok'); PP.data = null; AP = {}; PM.data = null; render(); return r; };
+      const rm = $('[data-rm]', w);
+      if (rm) rm.onclick = async () => { try { await api('/webhook/engineering/api/pm/parts/save', { method:'POST', body:{ part:{ id: p.id, active: false } } }); done(); } catch (e) { setErr('ppAsset', e.message, w); } };
+      $('[data-save]', w).onclick = async () => {
+        clearErrors(w);
+        const part = { id: p ? p.id : '', asset: spAssetFrom($('#ppAsset', w).value), sku: spSkuFrom($('#ppPart', w).value), name: $('#ppName', w).value.trim(),
+          qty: $('#ppQty', w).value.trim(), every_n: $('#ppN', w).value.trim(), every_unit: $('#ppUnit', w).value, last_changed_on: $('#ppLast', w).value, note: $('#ppNote', w).value.trim() };
+        if (!eqByCode(part.asset)) return setErr('ppAsset', 'Choose the machine or equipment from the list.', w);
+        if (part.sku && !spBySku(part.sku)) return setErr('ppAsset', 'Pick the part from the store list.', w);
+        if (!part.sku && part.name.length < 2) return setErr('ppAsset', 'Pick the part from the store list, or type the material\'s name.', w);
+        if (!(+part.qty > 0)) return setErr('ppAsset', 'Enter the quantity.', w);
+        if (!(+part.every_n >= 1)) return setErr('ppAsset', 'Say how often it is changed.', w);
+        try { await api('/webhook/engineering/api/pm/parts/save', { method:'POST', body:{ part } }); done(); } catch (e) { setErr('ppAsset', e.message, w); }
+      };
+    } });
+}
+
+/* ---- PM checklists: each machine's items (seeded from "PM Checklist Maintenance 2025 Rev.2"). /equipment/checklists?asset= */
+const CK_SECTIONS = ['Mechanics', 'Electric & air', 'Auxiliary'];
+function viewChecklists(){
+  if (!EQ.list && !EQ.loading) eqLoad();
+  if (!PP.data) { PP.data = 'loading'; ppLoad(); }
+  const d = PP.data, ready = d && d !== 'loading' && !d.error, edit = ppCanEdit();
+  const code = ((new URLSearchParams(currentPath().split('?')[1] || '')).get('asset') || '').toUpperCase();
+  const head = pageHead('Equipment and parts', 'The checklist a technician goes through on each PM. Every item is ticked, or marked not done with the reason.',
+    edit && !code ? `<button class="btn btn-primary" onclick="ckPick()">${I.plus} Make a checklist</button>` : '') + eqTabs('checklists');
+  if (!ready || !EQ.list) return { title:'PM checklists', crumb:'Setup', html: head + `<div class="card"><div class="card-b ${d && d.error ? '' : 'small muted'}">${d && d.error ? emptyState('alert', 'Could not load', esc(d.error)) : 'Loading...'}</div></div>` };
+  const lists = d.checklists || [];
+  if (!code) {
+    const shown = lists.filter(c => fltMatch(PP.f, c.asset) && (!PP.q || (c.name + ' ' + c.asset).toLowerCase().includes(PP.q.toLowerCase())));
+    return { title:'PM checklists', crumb:'Setup', keepScroll: true,
+      html: head + `<div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">${fltHtml(PP.f, 'ckf')}</div>
+      <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Area</th><th style="text-align:right">Items</th></tr></thead>
+        <tbody>${shown.map(c => `<tr class="clickable" onclick="go('/equipment/checklists?asset=${esc(c.asset)}')"><td data-label="Equipment" class="strong">${esc(c.name)}<div class="tiny muted mono">${esc(c.asset)}</div></td>
+          <td data-label="Area" class="small">${esc(c.area || '')}</td><td data-label="Items" style="text-align:right">${c.items.length}</td></tr>`).join('')
+          || `<tr><td colspan="3" class="muted" style="padding:16px">No checklists here.</td></tr>`}</tbody></table></div>
+        <div class="small muted" style="padding:12px 18px">${shown.length} of ${lists.length} machines have a checklist. A machine without one is recorded on PM with what was done only.</div></div>`,
+      bind(){ fltBind(PP.f, 'ckf', render); } };
+  }
+  const a = eqByCode(code), list = lists.find(c => c.asset === code);
+  if (!a) return { title:'PM checklists', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'No such equipment', '')}</div></div>` };
+  if (!PP.ck || PP.ck.asset !== code) PP.ck = { asset: code, items: ((list && list.items) || []).map(x => Object.assign({}, x)) };
+  const back = `<a class="btn btn-ghost btn-sm" href="#/equipment/checklists">${I.chevL} All checklists</a>`;
+  if (!edit) return { title: a.name, crumb:'Setup', html: back + pageHead('PM checklist: ' + a.name, '') + `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Section</th><th>Item</th><th>Standard</th></tr></thead>
+    <tbody>${PP.ck.items.map(c => `<tr><td class="small">${esc(c.section)}</td><td class="strong">${esc(c.item)}</td><td class="small">${esc(c.standard || '')}</td></tr>`).join('') || '<tr><td colspan="3" class="muted" style="padding:16px">No checklist yet.</td></tr>'}</tbody></table></div></div>` };
+  const others = lists.filter(c => c.asset !== code);
+  return { title: a.name, crumb:'Setup', keepScroll: true,
+    html: `<div class="row between" style="margin-bottom:12px">${back}<a class="small" href="#/equipment/${esc(code)}">See ${esc(a.name)}</a></div>` + pageHead('PM checklist: ' + a.name, 'Items in the order a technician goes through them. Items taken off stay on the PMs already done.')
+      + `<div class="card"><div class="card-b" id="ckRows">${ckRows()}</div>
+      <div class="card-b row" style="gap:10px;flex-wrap:wrap;border-top:1px solid var(--line-2)">
+        <button class="btn btn-ghost btn-sm" id="ckAdd">${I.plus} Add an item</button>
+        ${others.length ? `<select class="inp" id="ckCopy" style="width:auto"><option value="">Copy the items of another machine...</option>${others.map(c => `<option value="${esc(c.asset)}">${esc(c.name)} (${c.items.length})</option>`).join('')}</select>` : ''}
+        <span style="flex:1"></span><span class="err-msg hide" data-err="ckSave"></span><button class="btn btn-primary" id="ckSave">${I.check} Save the checklist</button></div></div>`,
+    bind(){
+      const box = $('#ckRows');
+      const keep = () => $$('[data-ck]', box).forEach(el => { const [i, k] = el.dataset.ck.split(':'); PP.ck.items[+i][k] = el.value; });
+      const redraw = () => { box.innerHTML = ckRows(); wire(); };
+      const wire = () => {
+        $$('[data-ck]', box).forEach(el => el.oninput = el.onchange = keep);
+        $$('[data-ck-mv]', box).forEach(b => b.onclick = () => { keep(); const [i, dir] = b.dataset.ckMv.split(':').map(Number), j = i + dir, L = PP.ck.items; if (j < 0 || j >= L.length) return; [L[i], L[j]] = [L[j], L[i]]; redraw(); });
+        $$('[data-ck-rm]', box).forEach(b => b.onclick = () => { keep(); PP.ck.items.splice(+b.dataset.ckRm, 1); redraw(); });
+      };
+      wire();
+      $('#ckAdd').onclick = () => { keep(); const last = PP.ck.items[PP.ck.items.length - 1]; PP.ck.items.push({ section: last ? last.section : 'Mechanics', item: '', standard: '' }); redraw(); const ins = $$('[data-ck$=":item"]', box); if (ins.length) ins[ins.length - 1].focus(); };
+      const cp = $('#ckCopy'); if (cp) cp.onchange = () => { const src = lists.find(c => c.asset === cp.value); if (!src) return; keep();
+        PP.ck.items = PP.ck.items.concat(src.items.map(x => ({ section: x.section, item: x.item, standard: x.standard }))); cp.value = ''; redraw(); toast('Copied', src.items.length + ' items from ' + src.name + '. Change what differs, then save.', 'ok'); };
+      $('#ckSave').onclick = async () => {
+        keep(); clearErrors(document);
+        const items = PP.ck.items.filter(x => String(x.item || '').trim() || String(x.standard || '').trim());
+        const bad = items.findIndex(x => String(x.item || '').trim().length < 2);
+        if (bad >= 0) return setErr('ckSave', 'Line ' + (bad + 1) + ': name the item.');
+        $('#ckSave').disabled = true;
+        try { const r = await api('/webhook/engineering/api/pm/checklist/save', { method:'POST', body:{ checklist:{ asset: code, items: items.map(x => ({ id: x.id || '', section: x.section, item: x.item.trim(), standard: String(x.standard || '').trim() })) } } });
+              toast('Checklist saved', r.items.length + ' items', 'ok'); PP.data = null; PP.ck = null; AP = {}; render(); }
+        catch (e) { setErr('ckSave', e.message); $('#ckSave').disabled = false; }
+      };
+    } };
+}
+function ckRows(){
+  const L = PP.ck.items;
+  if (!L.length) return '<div class="small muted">No items yet. Add them, or copy another machine\'s list.</div>';
+  return `<div class="ck-head tiny muted"><span>Section</span><span>Item</span><span>Standard (what good looks like)</span><span></span></div>` + L.map((x, i) => `<div class="ck-row">
+    <select class="inp" data-ck="${i}:section" aria-label="Section ${i + 1}">${CK_SECTIONS.map(s => `<option ${s === x.section ? 'selected' : ''}>${s}</option>`).join('')}</select>
+    <input class="inp" data-ck="${i}:item" maxlength="80" value="${esc(x.item || '')}" placeholder="e.g. Gear box" aria-label="Item ${i + 1}">
+    <input class="inp" data-ck="${i}:standard" maxlength="200" value="${esc(x.standard || '')}" placeholder="e.g. No leak, oil level max" aria-label="Standard ${i + 1}">
+    <div class="row" style="gap:2px;flex-wrap:nowrap"><button type="button" class="btn btn-ghost btn-sm" data-ck-mv="${i}:-1" ${i === 0 ? 'disabled' : ''} aria-label="Move up">&uarr;</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-ck-mv="${i}:1" ${i === L.length - 1 ? 'disabled' : ''} aria-label="Move down">&darr;</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-ck-rm="${i}" aria-label="Remove">${I.x}</button></div></div>`).join('');
+}
+function ckPick(){
+  const have = new Set(((PP.data || {}).checklists || []).map(c => c.asset));
+  openModal({ title:'Make a checklist', size:'narrow', sub:'For a machine that has none yet.',
+    body:`<div class="field"><label for="ckWhich">Machine or equipment</label><input class="inp" id="ckWhich" list="ckWhichL" placeholder="Type to search"><datalist id="ckWhichL">${(EQ.list || []).filter(a => a.status === 'Active' && !have.has(a.code)).map(a => `<option value="${esc(a.name + ' (' + a.code + ')')}">`).join('')}</datalist></div><div class="err-msg hide" data-err="ckWhich"></div>`,
+    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Next</button>`,
+    onMount: (w, close) => { $('[data-save]', w).onclick = () => { const c = spAssetFrom($('#ckWhich', w).value); if (!eqByCode(c)) return setErr('ckWhich', 'Choose it from the list.', w); close(); go('/equipment/checklists?asset=' + encodeURIComponent(c)); }; } });
+}
+
+/* ---- the checklist on a PM job: every item ticked "done", or "not done" with the reason. S = { [item id]: {result, reason, note} } */
+const CHK_REASONS = [['no_material', 'Material not available'], ['no_time', 'No time (production running)'], ['not_needed', 'Not needed this time'], ['other', 'Other']];
+const CHK_REASON = Object.fromEntries(CHK_REASONS);
+function chkState(items){ const S = {}; (items || []).forEach(x => { S[x.id] = { result: x.result || '', reason: x.reason || '', note: x.note || '' }; }); return S; }
+function chkHtml(items, S, dis){
+  const done = items.filter(x => S[x.id] && S[x.id].result).length;
+  const row = x => { const s = S[x.id] || {};
+    return `<div class="chk-row ${s.result ? 'chk-' + s.result : ''}">
+      <div class="chk-what"><div class="strong">${esc(x.item)}</div>${x.standard ? `<div class="tiny muted">${esc(x.standard)}</div>` : ''}</div>
+      <div class="chk-btns"><button type="button" class="btn btn-sm ${s.result === 'done' ? 'btn-primary' : 'btn-ghost'}" data-chk-res="${x.id}:done" ${dis}>${I.check} Done</button>
+        <button type="button" class="btn btn-sm ${s.result === 'not_done' ? 'btn-danger' : 'btn-ghost'}" data-chk-res="${x.id}:not_done" ${dis}>Not done</button></div>
+      ${s.result === 'not_done' ? `<div class="chk-why"><select class="inp" data-chk-reason="${x.id}" ${dis} aria-label="Why not done"><option value="">Why not?</option>${CHK_REASONS.map(([k, l]) => `<option value="${k}" ${s.reason === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <input class="inp" data-chk-note="${x.id}" maxlength="300" value="${esc(s.note || '')}" ${dis} placeholder="${s.reason === 'other' ? 'Say why (needed)' : 'Note (optional): which material...'}"></div>` : ''}</div>`; };
+  return `<div class="row between" style="margin-bottom:8px"><span class="small"><b>${done}</b> of ${items.length} answered</span>
+      ${dis ? '' : `<button type="button" class="btn btn-ghost btn-sm" data-chk-all>Mark the rest done</button>`}</div>`
+    + CK_SECTIONS.map(sec => { const L = items.filter(x => x.section === sec); return L.length ? `<div class="chk-sec">${esc(sec)}</div>` + L.map(row).join('') : ''; }).join('');
+}
+// wires the checklist inside box (re-draws itself on each tap); onChange(S) after every change
+function chkBind(box, items, S, dis, onChange){
+  if (!box) return;
+  const redraw = () => { box.innerHTML = chkHtml(items, S, dis); wire(); if (onChange) onChange(S); };
+  const wire = () => {
+    $$('[data-chk-res]', box).forEach(b => b.onclick = () => { const [id, r] = b.dataset.chkRes.split(':'); const s = S[id] || (S[id] = {}); s.result = s.result === r ? '' : r; if (s.result !== 'not_done') { s.reason = ''; } redraw(); });
+    $$('[data-chk-reason]', box).forEach(el => el.onchange = () => { S[el.dataset.chkReason].reason = el.value; redraw(); });
+    $$('[data-chk-note]', box).forEach(el => el.oninput = () => { S[el.dataset.chkNote].note = el.value; });
+    const all = $('[data-chk-all]', box); if (all) all.onclick = () => { items.forEach(x => { const s = S[x.id] || (S[x.id] = {}); if (!s.result) s.result = 'done'; }); redraw(); };
+  };
+  wire();
+}
+// what to send: answered items; { error } when one is not done without a reason, or (all) when items are left
+function chkCheck(items, S, all){
+  const out = [];
+  for (const x of items) {
+    const s = S[x.id] || {};
+    if (!s.result) { if (all) return { error: 'Tick every checklist item, or say why it was not done (' + items.filter(y => !(S[y.id] || {}).result).length + ' left).' }; out.push({ id: x.id, result: '' }); continue; }
+    if (s.result === 'not_done' && !s.reason) return { error: x.item + ': say why it was not done.' };
+    if (s.reason === 'other' && String(s.note || '').trim().length < 3) return { error: x.item + ': write why it was not done.' };
+    out.push({ id: x.id, result: s.result, reason: s.result === 'not_done' ? s.reason : '', note: s.result === 'not_done' ? String(s.note || '').trim() : '' });
+  }
+  return { checks: out };
+}
+
 /* ============================================================
    Engineering settings (migration 017: OKL_ENG_settings)
    The numbers Engineering can change; each has a lowest and highest value. GET /webhook/engineering/api/settings.
@@ -828,7 +1070,8 @@ function viewSettings(){
   const about = x => `<div class="strong">${esc(x.label)}</div><div class="small muted">${esc(x.help || '')}</div>
           ${x.updated_by ? `<div class="tiny muted">Changed by ${esc(x.updated_by)}, ${esc(when(x.updated_at))}</div>` : ''}`;
   // number settings in the table; list settings (one entry per line) each get their own block below it, so no row grows tall
-  const nums = ES.list.filter(x => x.unit !== 'list'), lists = ES.list.filter(x => x.unit === 'list');
+  const isList = x => x.unit === 'list' || x.unit === 'emails';
+  const nums = ES.list.filter(x => !isList(x)), lists = ES.list.filter(isList);
   return {
     title:'Settings', crumb:'Setup',
     html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
@@ -839,8 +1082,8 @@ function viewSettings(){
         <td data-label="Allowed" class="small muted">${Number(x.min)} to ${Number(x.max)}</td>
       </tr>`).join('')}</tbody></table></div>
       ${lists.map(x => `<div class="card-b" style="border-top:1px solid var(--line-2)">${about(x)}
-        <textarea class="inp" data-list="${esc(x.key)}" rows="${Math.min(10, (x.list || []).length + 1)}" style="width:100%;max-width:460px;margin-top:8px" ${dis}>${esc((x.list || []).join('\n'))}</textarea>
-        <div class="tiny muted" style="margin-top:4px">One per line, 2 to 20.</div></div>`).join('')}
+        <textarea class="inp" data-list="${esc(x.key)}" rows="${Math.max(2, Math.min(10, (x.list || []).length + 1))}" style="width:100%;max-width:460px;margin-top:8px" ${dis}>${esc((x.list || []).join('\n'))}</textarea>
+        <div class="tiny muted" style="margin-top:4px">${x.unit === 'emails' ? 'One e-mail address per line, up to 10.' : 'One per line, 2 to 20.'}</div></div>`).join('')}
       ${canEdit ? `<div class="card-b row" style="gap:10px;border-top:1px solid var(--line-2)"><button class="btn btn-primary" id="esSave">${I.check} Save changes</button><span class="err-msg hide" data-err="esSave"></span></div>` : ''}
     </div>`,
     bind(){
@@ -855,7 +1098,9 @@ function viewSettings(){
         }
         for (const el of $$('[data-list]')) {
           const x = ES.list.find(s => s.key === el.dataset.list), items = el.value.split('\n').map(s => s.trim()).filter(Boolean);
-          if (items.length < 2 || items.length > 20) { setErr('esSave', x.label + ': give 2 to 20 entries, one per line.'); el.focus(); return; }
+          if (x.unit === 'emails') {
+            if (items.length > 10 || items.some(e => !/^[^@\s|,;]+@[^@\s|,;]+\.[^@\s|,;]+$/.test(e))) { setErr('esSave', x.label + ': one e-mail address per line, up to 10.'); el.focus(); return; }
+          } else if (items.length < 2 || items.length > 20) { setErr('esSave', x.label + ': give 2 to 20 entries, one per line.'); el.focus(); return; }
           if (items.join('|') !== (x.list || []).join('|')) values[x.key] = items;
         }
         if (!Object.keys(values).length) { toast('Nothing changed', '', 'ok'); return; }
@@ -1362,6 +1607,7 @@ function jbBadge(j){
     case 'accepted': return `<span class="badge b-warn"><span class="dot"></span>On the way${who ? ' · ' + esc(who) : ''}</span>`;
     case 'working': return `<span class="badge b-info"><span class="dot"></span>Working${working ? ' · ' + esc(working) : ''}</span>`;
     case 'waiting_part': return '<span class="badge b-slate"><span class="dot"></span>Waiting for part</span>';
+    case 'to_report': return '<span class="badge b-warn"><span class="dot"></span>To report</span>';
     case 'done': return '<span class="badge b-ok">Done</span>';
     case 'cancelled': return '<span class="badge b-slate">Cancelled</span>';
   }
@@ -1372,6 +1618,7 @@ function jbClock(j){
   if (j.status === 'called' || j.status === 'accepted') return minsBetween(j.called_at || j.created_at);
   if (j.status === 'waiting_part') return minsBetween(j.waiting_since);
   if (j.status === 'working') return minsBetween(j.started_at || j.arrived_at);
+  if (j.source === 'report') return j.downtime_minutes;
   return j.labour_minutes;
 }
 async function jbLoad(force){
@@ -1388,14 +1635,23 @@ function jbAutoRefresh(on){
 }
 function jbTabs(cur){
   const b = JB.board || {}, n = k => (b[k] || []).length, open = (b.calls || []).filter(j => j.status === 'called').length;
-  const tabs = [['calls', 'Calls', n('calls'), open], ['mine', 'My jobs', n('mine')], ['open', 'Other open jobs', n('open')], ['history', 'History']];
+  const tabs = [['calls', 'Calls', n('calls'), open], ['mine', 'My jobs', n('mine')], ['open', 'Other open jobs', n('open')], ['reports', 'From the daily report', n('reports'), n('reports')], ['history', 'History']];
   return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k, l, c, warn]) => `<a class="tab ${k === cur ? 'on' : ''}" href="#/jobs${k === 'calls' ? '' : '?tab=' + k}">${esc(l)}${c != null ? ` <span class="badge ${warn ? 'b-warn' : ''}" style="padding:1px 7px">${c}</span>` : ''}</a>`).join('')}</div>`;
 }
 function jbCard(j){
   const me = jbMe(), mine = jbOnIt(j), canAct = levelOf('engineering.jobs') && ['submit', 'edit'].includes(levelOf('engineering.jobs')) && me.staff;
   let btn = '';
   if (canAct && j.status === 'called') btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); jbDo('${esc(j.job_id)}', 'accept')">I'm coming</button>`;
-  else if (canAct && j.status === 'accepted' && mine) btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); jbDo('${esc(j.job_id)}', 'arrive')">I'm at the machine</button>`;
+  else if (canAct && j.status === 'accepted' && mine) btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); jbDo('${esc(j.job_id)}', 'arrive')">Start job</button>`;
+  else if (canAct && j.status === 'to_report') btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); go('/jobs/${esc(j.job_id)}')">Fill in what was done</button>`;
+  if (j.status === 'to_report') {
+    const what = [j.area, j.report_product, 'down ' + dur(j.downtime_minutes)].filter(Boolean).map(esc).join(' · ');
+    return `<div class="card job-card" onclick="go('/jobs/${esc(j.job_id)}')"><div class="card-b">
+      <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div class="strong" style="font-size:16px">${esc(j.machine_name || j.asset)}</div>
+        <div class="mono small muted" style="white-space:nowrap">${esc(lagosDay(j.started_at).slice(0, 10))}</div></div>
+      <div class="small" style="margin:4px 0 2px">${esc(j.call_note || j.stop_reason || '')}</div><div class="small muted" style="margin-bottom:10px">${what}</div>
+      <div class="row" style="gap:10px;margin-bottom:${btn ? '12px' : '0'}">${jbBadge(j)}<span class="mono tiny muted" style="margin-left:auto">${esc(j.job_id)}</span></div>${btn}</div></div>`;
+  }
   const where = [j.area || j.stage, j.source === 'console' ? JOB_TYPE[j.type] : (j.stop_reason || JOB_TYPE[j.type]), j.called_by_name].filter(Boolean).map(esc).join(' · ');
   return `<div class="card job-card" onclick="go('/jobs/${esc(j.job_id)}')">
     <div class="card-b">
@@ -1421,9 +1677,10 @@ function viewJobs(){
   if (tab === 'history') return viewJobsHistory();
   if (!JB.board && !JB.error) jbLoad();
   JB.draft = null; jbAutoRefresh(true); pushCheck();
-  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
+  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs')), mgr = levelOf('engineering.jobs') === 'edit';
   const head = pageHead('Calls and jobs', 'Maintenance calls from the floor and the jobs Engineering is working on. This page refreshes by itself.',
-    canStart ? `<button class="btn btn-primary" onclick="go('/jobs/new')">${I.plus} Start a job without a call</button>` : '');
+    (mgr ? `<button class="btn btn-ghost" onclick="go('/jobs/report')">${I.download} Daily report issues</button>` : '')
+    + (canStart ? `<button class="btn btn-ghost" onclick="go('/jobs/record')">${I.check} Record finished work</button><button class="btn btn-primary" onclick="go('/jobs/new')">${I.plus} Start a job</button>` : ''));
   if (JB.error) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the jobs', esc(JB.error), `<button class="btn btn-primary" onclick="jbLoad(true)">Try again</button>`)}</div></div>` };
   if (!JB.board) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   const b = JB.board, list = b[tab] || [];
@@ -1432,10 +1689,12 @@ function viewJobs(){
   const open = (b.calls || []).filter(j => j.status === 'called');
   const sum = tab === 'calls' ? `<div class="small" style="margin-bottom:10px"><span class="badge ${open.length ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${(b.calls || []).length} open call${(b.calls || []).length === 1 ? '' : 's'} · ${open.length} not accepted yet</span>
     <span class="muted"> updated ${hm(b.now)}</span></div>` : '';
-  const empty = { calls: 'No open calls. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.' }[tab];
+  const empty = { calls: 'No open calls. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.',
+                  reports: 'Nothing to report. Issues from the daily packaging report (products the floor app does not cover) appear here for you to fill in.' }[tab];
   return {
     title:'Calls and jobs', crumb:'Maintenance', keepScroll: true,
     html: head + jbPushBanner() + notStaff + jbTabs(tab) + sum
+      + (tab === 'reports' && list.length ? `<div class="small muted" style="margin-bottom:10px">Issues from the daily packaging report. Open one, say what failed and what was done, and save it.</div>` : '')
       + (list.length ? `<div class="grid g3 job-grid">${list.map(jbCard).join('')}</div>` : `<div class="card"><div class="card-b">${emptyState('wrench', empty, '')}</div></div>`)
       + (tab === 'calls' ? `<div class="small muted" style="margin-top:12px">Machine stops nobody called in are on <a href="#/stops">Machine stops</a>.</div>` : ''),
   };
@@ -1471,8 +1730,10 @@ function viewJob(params, ctx){
   if (!j) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
   if (j.error) return { title:'Job', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Could not load the job', esc(j.error), `<button class="btn btn-primary" onclick="jbLoadOne('${esc(id)}')">Try again</button>`)}</div></div>` };
   const me = jbMe(), lvl = levelOf('engineering.jobs'), mgr = lvl === 'edit', can = ['submit', 'edit'].includes(lvl);
-  const onIt = jbOnIt(j), closed = j.status === 'done' || j.status === 'cancelled';
-  const canWrite = can && (onIt || mgr) && (!closed || (mgr && j.status === 'done'));
+  const onIt = jbOnIt(j), closed = j.status === 'done' || j.status === 'cancelled', rep = j.status === 'to_report';
+  const canWrite = can && (onIt || mgr || (rep && me.staff)) && (!closed || (mgr && j.status === 'done'));
+  const checks = j.checks || [];
+  if (!JB.chk || JB.chk.id !== id || JB.chk.at !== j.updated_at) JB.chk = { id, at: j.updated_at, S: chkState(checks) };
   const partsUntil = j.parts_until ? new Date(j.parts_until) : null;
   const canParts = can && (onIt || mgr) && j.status !== 'cancelled' && (j.status !== 'done' || mgr || (partsUntil && partsUntil > new Date()));
   const cats = (JB.board && JB.board.failure_categories) || JB.cats || [];
@@ -1490,12 +1751,14 @@ function viewJob(params, ctx){
   if (j.call_cancelled_at) tl.push(['Call cancelled on the floor', hm(j.call_cancelled_at)]);
   if (j.finished_at) tl.push([`Closed${j.closed_by ? ' by ' + j.closed_by : ''}`, dayHm(j.finished_at)]);
   const dis = canWrite && j.status !== 'called' && j.status !== 'accepted' ? '' : 'disabled';
+  const pmParts = (j.pm_parts || []).filter(p => p.sku && !(j.parts || []).some(m => m.sku === p.sku && m.status !== 'cancelled'));
   const parts = (j.parts || []).filter(p => p.status !== 'cancelled');
   const partStatus = p => p.reversed_by ? '<span class="badge b-slate">Reversed</span>' : p.status === 'waiting' ? '<span class="badge b-warn">Waiting hand-over</span>' : '<span class="badge b-ok">Handed over</span>';
   let actions = '';
-  if (can && me.staff && j.status === 'called') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'accept')">I'm coming</button><button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">I'm already at the machine</button>`;
-  else if (can && me.staff && j.status === 'accepted' && !onIt) actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join: I'm at the machine</button>`;
-  else if (can && me.staff && j.status === 'accepted') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">I'm at the machine</button>`;
+  if (can && me.staff && j.status === 'called') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'accept')">I'm coming</button>`;
+  else if (can && me.staff && j.status === 'accepted' && !onIt) actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join: start job</button>`;
+  else if (can && me.staff && j.status === 'accepted') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Start job (I'm at the machine)</button>`;
+  else if (canWrite && rep) actions = `<button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">${I.check} Save and close</button>`;
   else if (can && me.staff && !onIt && (j.status === 'working' || j.status === 'waiting_part')) actions = `<button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join this job</button>`;
   else if (canWrite && j.status === 'working') actions = `<button class="btn btn-ghost btn-lg" onclick="jbWait('${esc(id)}')">Waiting for part</button><button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">Job done</button>`;
   else if (canWrite && j.status === 'waiting_part') actions = `<button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'resume')">Back on it</button><button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">Job done</button>`;
@@ -1507,7 +1770,10 @@ function viewJob(params, ctx){
       <div class="row between" style="align-items:flex-start;flex-wrap:nowrap"><div><h2 style="font-size:20px;margin:0">${j.asset ? `<a href="#/equipment/${esc(j.asset)}" style="color:inherit">${esc(j.machine_name || j.asset_name || j.asset)}</a>` : esc(j.machine_name || j.machine_code)}</h2>
         <div class="small muted" style="margin-top:4px">${[j.area || j.stage, j.stop_reason, j.called_by_name ? 'called by ' + j.called_by_name : ''].filter(Boolean).map(esc).join(' · ')}</div></div>${jbBadge(j)}</div>
       ${!j.asset ? `<div class="notice warn" style="margin-top:12px">${I.alert}<div>The floor machine <b>${esc(j.machine_code)}</b> is not in the equipment register. Choose the equipment below before closing the job.</div></div>` : ''}
-      ${j.call_note ? `<div class="small" style="margin-top:8px"><b>Operator's note:</b> ${esc(j.call_note)}</div>` : ''}
+      ${j.source === 'report' ? `<div class="notice ${rep ? 'warn' : ''}" style="margin-top:12px">${I.info}<div><b>From the daily packaging report</b>${j.report_product ? ' (' + esc(j.report_product) + ')' : ''}, ${esc(lagosDay(j.started_at).slice(0, 10))}:
+          ${esc(j.call_note || '')}. Machine down ${dur(j.downtime_minutes)}.${rep ? ' Say what failed and what was done, then save it.' : ''}</div></div>`
+        : j.call_note ? `<div class="small" style="margin-top:8px"><b>${j.source === 'call' ? 'Operator\'s note' : 'Note'}:</b> ${esc(j.call_note)}</div>` : ''}
+      ${j.backfilled ? `<div class="small muted" style="margin-top:8px">Recorded from old records (no checklist).</div>` : ''}
     </div></div>
     <div class="grid g2" style="margin-bottom:14px">
       ${isCall ? `<div class="stat"><div class="lbl">${j.arrived_at ? 'Waited for a technician' : 'Waiting for a technician'}</div><div class="val mono">${dur(waited)}</div></div>` : ''}
@@ -1519,13 +1785,17 @@ function viewJob(params, ctx){
     <form id="jbForm" novalidate>
       ${!j.asset || (mgr && closed) ? `<div class="field"><label for="jbAsset">Machine or equipment</label><input class="inp" id="jbAsset" list="jbAssets" value="${esc(j.asset ? (j.asset_name + ' (' + j.asset + ')') : '')}" ${dis} placeholder="Type to search the register"><datalist id="jbAssets">${spAssetOptions()}</datalist></div>` : ''}
       ${j.type === 'breakdown' ? `<div class="field"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${String(j.failure_category || '').toLowerCase() === c.toLowerCase() ? 'on' : ''}" data-cat="${esc(c)}" ${dis}>${esc(c)}</button>`).join('')}</div></div>` : ''}
-      <div class="field"><label for="jbCause">Cause (optional)</label><textarea class="inp" id="jbCause" rows="2" maxlength="1000" ${dis} placeholder="e.g. Air cylinder seal worn">${esc(j.cause || '')}</textarea></div>
-      <div class="field"><label for="jbDone">What was done?</label><textarea class="inp" id="jbDone" rows="3" maxlength="2000" ${dis} placeholder="e.g. Replaced the seal kit and tested ten cycles">${esc(j.work_done || '')}</textarea></div>
+      ${checks.length ? `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>PM checklist</h3><div class="sub">Tick each item, or mark it not done and say why (for example, the material is not available).</div></div></div>
+        <div class="card-b" id="jbChk">${chkHtml(checks, JB.chk.S, dis)}</div></div>` : ''}
+      <div class="field"><label for="jbDone">${checks.length ? 'Anything else done? (optional)' : 'What was done?'}</label><textarea class="inp" id="jbDone" rows="3" maxlength="2000" ${dis} placeholder="${checks.length ? 'e.g. Also changed the belt' : 'e.g. Replaced the seal kit and tested ten cycles'}">${esc(j.work_done === 'PM checklist completed.' ? '' : (j.work_done || ''))}</textarea></div>
+      ${j.type === 'breakdown' ? `<div class="field"><label for="jbCause">Cause (optional)</label><input class="inp" id="jbCause" maxlength="1000" ${dis} placeholder="e.g. Air cylinder seal worn" value="${esc(j.cause || '')}"></div>` : ''}
       <div class="err-msg hide" data-err="jbDone"></div>
     </form>
     <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>Parts used <span class="muted" style="font-weight:500">(optional)</span></h3>
         <div class="sub">The storekeeper confirms the hand-over; stock moves then.${j.status === 'done' && partsUntil ? ' Parts can be added until ' + esc(dayHm(j.parts_until)) + (mgr ? ' (you can add later too).' : '.') : ''}</div></div>
         ${canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbAddPart('${esc(id)}')">${I.plus} Add parts</button>` : ''}</div>
+      ${pmParts.length ? `<div class="card-b" style="border-bottom:1px solid var(--line-2)"><div class="notice info">${I.info}<div style="flex:1">Due for change at this PM (PM parts plan): ${pmParts.map(p => esc(p.sku + ' ' + p.name + ' x ' + num(p.qty))).join(', ')}.</div>
+        ${canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbAddPart('${esc(id)}', true)">Add these</button>` : ''}</div></div>` : ''}
       <div class="card-b">${parts.length ? parts.map(p => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line-2)">
           <div><span class="mono strong">${esc(p.sku)}</span> · ${esc(p.description || '')}<div class="tiny muted">${esc(p.collected_by_name || '')} · ${esc(p.entry)}</div></div>
           <div class="row" style="gap:8px"><span class="mono strong">× ${num(p.qty)}</span>${partStatus(p)}${p.status === 'waiting' && canParts ? `<button class="btn btn-ghost btn-sm" onclick="jbRemovePart('${esc(id)}', ${p.id})">Remove</button>` : ''}</div></div>`).join('')
@@ -1537,10 +1807,11 @@ function viewJob(params, ctx){
     </div>`,
     bind(){
       $$('[data-cat]').forEach(b => b.onclick = () => { if (b.disabled) return; $$('[data-cat]').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+      chkBind($('#jbChk'), checks, JB.chk.S, dis);
     },
   };
 }
-route('/jobs/:id', params => params.id === 'new' ? viewJobNew() : viewJob(params));
+route('/jobs/:id', params => params.id === 'new' ? viewJobNew() : params.id === 'record' ? viewJobNew({ mode: 'record' }) : params.id === 'report' ? viewReport() : viewJob(params));
 route('/pm/jobs/:id', params => viewJob(params, { back: '/pm/effectiveness', label: 'PM effectiveness' }));
 
 function jbFormValues(){
@@ -1551,9 +1822,15 @@ function jbFormValues(){
 async function jbSave(id, action){
   const v = jbFormValues(), j = JB.one[id] || {};
   clearErrors(document);
+  const checks = j.checks || [];
+  if (checks.length && JB.chk && JB.chk.id === id) {
+    const c = chkCheck(checks, JB.chk.S, action === 'done' && j.type === 'preventive' && !j.backfilled);
+    if (c.error) return setErr('jbDone', c.error);
+    v.checks = c.checks;
+  }
   if (action === 'done') {
     if (j.type === 'breakdown' && !v.failure_category) return setErr('jbDone', 'Pick what failed.');
-    if (v.work_done.trim().length < 5) return setErr('jbDone', 'Say what was done.');
+    if (v.work_done.trim().length < 5 && !(checks.length && j.type === 'preventive')) return setErr('jbDone', 'Say what was done.');
     if (!j.asset && !(EQ.list || []).some(x => x.code === v.asset)) return setErr('jbDone', 'Choose the machine or equipment from the list.');
     const waiting = (j.parts || []).filter(p => p.status === 'waiting').length;
     const ok = await confirmDialog('Close the job', `Close <b>${esc(j.job_id)}</b> on ${esc(j.machine_name || '')}?${waiting ? ` ${waiting} part${waiting === 1 ? ' is' : 's are'} still waiting for the storekeeper; that is fine.` : ''}`, 'Job done');
@@ -1576,8 +1853,10 @@ function jbCancel(id){
       clearErrors(w); const reason = $('#jcWhy', w).value.trim(); if (reason.length < 5) return setErr('jcWhy', 'Say why.', w);
       try { await jbDo(id, 'cancel', { reason }); close(); } catch (e) { setErr('jcWhy', e.message, w); } }; } });
 }
-function jbAddPart(id){
-  const L = [plNew()], opt = { id: 'jpLines' };
+function jbAddPart(id, fromPlan){
+  const j = JB.one[id] || {};
+  const plan = fromPlan ? (j.pm_parts || []).filter(p => p.sku && spBySku(p.sku) && !(j.parts || []).some(m => m.sku === p.sku && m.status !== 'cancelled')) : [];
+  const L = plan.length ? plan.map(p => Object.assign(plNew(p.sku), { qty: num(p.qty) })) : [plNew()], opt = { id: 'jpLines' };
   openModal({ title:'Parts used on ' + id, size:'wide', sub:'One line per part. The storekeeper confirms the hand-over before the stock changes.',
     body:`${plHtml(L, opt)}<div class="err-msg hide" data-err="jpLines"></div>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.plus} Add the parts</button>`,
@@ -1601,9 +1880,24 @@ async function jbRemovePart(id, moveId){
   catch (e) { toast('Could not remove it', e.message, 'err', 7000); }
 }
 
-/* ---- start a job without a call. Each kind has its own address and goes back where it came from:
-   /jobs/new (breakdown found on a round, corrective, inspection, improvement), /pm/record (a PM, from Preventive
-   maintenance), /stops/<id>/job (a breakdown on a machine stop). ?asset= preselects the equipment. */
+/* ---- jobs without a call. Each kind has its own address and goes back where it came from (round 3, 29 Oct 2026):
+     /jobs/new        Start a job: work starting now (a breakdown found on a round, corrective, inspection, improvement)
+     /jobs/record     Record finished work: work already done, with its date, start and finish time
+     /stops/<id>/job  a breakdown on a machine stop: started now while the machine is still down, recorded once it runs again
+     /pm/record       a PM: starting now (the checklist is filled in on the job), or already finished (the checklist is here)
+   A call from the floor is only ever started from the call itself ("I'm coming", then "Start job").
+   ?asset= preselects the equipment. Dates and times are separate boxes (easier on a phone). */
+const JN_TYPES = [['breakdown', 'Breakdown'], ['corrective', 'Corrective'], ['inspection', 'Inspection'], ['improvement', 'Improvement']];
+const lagosDate = iso => lagosDay(iso).slice(0, 10), lagosTime = iso => lagosDay(iso).slice(11, 16);
+// a Lagos date and "HH:MM" -> ISO time; a finish time earlier than the start is the next day
+const jnIso = (date, time) => date && time ? date + 'T' + time + ':00+01:00' : '';
+function jnFinishIso(date, t0, t1){
+  if (!date || !t1) return '';
+  if (t0 && t1 < t0) { const d = new Date(date + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return jnIso(d.toISOString().slice(0, 10), t1); }
+  return jnIso(date, t1);
+}
+function jnChecklist(code){ const c = ((PP.data && PP.data.checklists) || []).find(x => x.asset === code); return c ? c.items : []; }
+function jnPlanParts(code){ const x = ((PM.data && PM.data.due) || []).find(r => r.asset === code); return ((x && x.parts) || []).filter(p => p.sku && spBySku(p.sku)); }
 function viewJobNew(ctx){
   ctx = ctx || {};
   const qs = new URLSearchParams(currentPath().split('?')[1] || ''), stopId = ctx.stop || qs.get('stop');
@@ -1612,78 +1906,328 @@ function viewJobNew(ctx){
   if (!SP.list && !SP.loading) spLoad();
   if (!JB.board && !JB.loading) jbLoad();
   if (stopId && !JB.stops && !JB.stopsLoading) jbLoadStops();
+  if (ctx.pm && !PP.data) { PP.data = 'loading'; ppLoad(); }
+  if (ctx.pm && !PM.data) { PM.data = 'loading'; pmLoad(); }
   const stop = stopId ? (Array.isArray(JB.stops) ? JB.stops : []).find(s => String(s.id) === String(stopId)) : null;
   const where = ctx.pm ? { back: '/pm', label: 'Preventive maintenance', crumb: 'Preventive maintenance' }
     : stopId ? { back: '/stops', label: 'Machine stops', crumb: 'Machine stops' } : { back: '/jobs', label: 'Calls and jobs', crumb: 'Maintenance' };
-  const types = ctx.pm ? [] : JOB_TYPES.filter(([k]) => k !== 'preventive');
-  const draftKey = currentPath();
-  if (!JB.draft || JB.draft.key !== draftKey) JB.draft = { key: draftKey, stop: stopId || '',
-    type: ctx.pm ? 'preventive' : stopId ? 'breakdown' : (JOB_TYPE[qs.get('type')] && qs.get('type') !== 'preventive' ? qs.get('type') : ''),
-    cat: '', parts: [plNew()], techs: [], when: stopId ? 'set' : 'now', asset: qs.get('asset') || '' };
-  const d = JB.draft, cats = (JB.board && JB.board.failure_categories) || [], me = jbMe();
   const back = `<a class="btn btn-ghost btn-sm" href="#${where.back}">${I.chevL} ${esc(where.label)}</a>`;
-  const title = ctx.pm ? 'Record a PM' : stopId ? 'Job on a machine stop' : 'Start a job';
-  if (stopId && !JB.stops) return { title, crumb: where.crumb, html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
-  if (stopId && !stop) return { title, crumb: where.crumb, html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('info', 'That stop is not on the list any more', 'A job may already cover it.')}</div></div>` };
-  const localIso = iso => { const t = new Date(new Date(iso).getTime() + 60 * 60 * 1000); return t.toISOString().slice(0, 16); };   // Lagos time for the input
+  const loadingTitle = ctx.pm ? 'Record a PM' : stopId ? 'Job on a machine stop' : ctx.mode === 'record' ? 'Record finished work' : 'Start a job';
+  if (stopId && !JB.stops) return { title: loadingTitle, crumb: where.crumb, html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
+  if (stopId && !stop) return { title: loadingTitle, crumb: where.crumb, html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('info', 'That stop is not on the list any more', 'A job may already cover it.')}</div></div>` };
+  const draftKey = currentPath();
+  if (!JB.draft || JB.draft.key !== draftKey) JB.draft = { key: draftKey,
+    type: ctx.pm ? 'preventive' : stopId ? 'breakdown' : (JOB_TYPE[qs.get('type')] && qs.get('type') !== 'preventive' ? qs.get('type') : ''),
+    cat: '', parts: [plNew()], partsFor: '', techs: [], asset: qs.get('asset') || '', note: '', work: '', pmMode: 'start', chk: null,
+    date: stop ? lagosDate(stop.started_at) : todayIso(), t0: stop ? lagosTime(stop.started_at) : '', t1: stop && stop.ended_at ? lagosTime(stop.ended_at) : '' };
+  const d = JB.draft, cats = (JB.board && JB.board.failure_categories) || [], me = jbMe();
+  const mode = ctx.pm ? d.pmMode : stopId ? (stop.still_down ? 'start' : 'record') : (ctx.mode || 'start');
+  const assetCode = stop && stop.asset ? stop.asset : spAssetFrom(d.assetText != null ? d.assetText : d.asset);
+  const items = ctx.pm && mode === 'record' && eqByCode(assetCode) ? jnChecklist(assetCode) : [];
+  if (ctx.pm && mode === 'record' && (!d.chk || d.chk.asset !== assetCode)) d.chk = { asset: assetCode, S: chkState(items) };
+  if (ctx.pm && mode === 'record' && eqByCode(assetCode) && d.partsFor !== assetCode && PM.data && PM.data !== 'loading' && !d.parts.some(l => l.sku)) {
+    const due = jnPlanParts(assetCode); if (due.length) d.parts = due.map(p => Object.assign(plNew(p.sku), { qty: num(p.qty) })); d.partsFor = assetCode;
+  }
+  const title = ctx.pm ? 'Record a PM' : stopId ? 'Job on a machine stop' : mode === 'start' ? 'Start a job' : 'Record finished work';
+  const sub = ctx.pm ? 'Preventive maintenance on one piece of equipment. Its next PM date is worked out from this. Past PMs from old records: Record past PMs.'
+    : stopId ? (mode === 'start' ? 'The machine is still down: start the job now. It is linked to the stop.' : 'The machine runs again: record what was done. The times come from the stop; change them if needed.')
+    : mode === 'start' ? 'Work you are starting now without a call. Fill in what was done on the job when you finish.' : 'Work that is already done: say when, and what was done.';
   const people = (SP.people || []).filter(p => p.enroll_id !== me.enroll_id);
-  const sub = ctx.pm ? 'Preventive maintenance on one piece of equipment. Its next PM date is worked out from this.'
-    : stopId ? 'A breakdown on a stop nobody called in. It is linked to the stop and leaves the Machine stops list.'
-    : 'A job without a call: a breakdown found on a round, corrective work, an inspection or an improvement. A PM is recorded under Preventive maintenance.';
   const popt = { id: 'jnLines', optional: true };
+  const typeChips = !ctx.pm && !stopId;
+  const showCat = d.type === 'breakdown' && mode === 'record';
+  const timeBoxes = mode === 'record' ? `<div class="grid g3 jn-when">
+      <div class="field"><label for="jnDate">Date</label><input class="inp" type="date" id="jnDate" value="${esc(d.date)}" max="${todayIso()}"></div>
+      <div class="field"><label for="jnT0">Started</label><input class="inp" type="time" id="jnT0" value="${esc(d.t0)}"></div>
+      <div class="field"><label for="jnT1">Finished</label><input class="inp" type="time" id="jnT1" value="${esc(d.t1)}"><div class="hint">${I.info}<span>Earlier than the start? Then it is the next day.</span></div></div></div>` : '';
+  const pmLoading = ctx.pm && mode === 'record' && (!PP.data || PP.data === 'loading');
   return {
     title, crumb: where.crumb, keepScroll: true,
-    html: back + pageHead(title, sub) + `
+    html: back + pageHead(title, sub, ctx.pm && levelOf('engineering.jobs') === 'edit' ? `<button class="btn btn-ghost" onclick="go('/pm/backfill')">Record past PMs</button>` : '') + `
     ${stop ? `<div class="card" style="margin-bottom:14px"><div class="card-b"><div class="strong">${esc(stop.machine_name)}</div><div class="small muted">${esc(stop.reason)} · stopped ${esc(dayHm(stop.started_at))} · ${stop.still_down ? 'still down' : dur(stop.minutes)}</div></div></div>` : ''}
     <form id="jnForm" novalidate>
-      ${stop && stop.asset ? '' : `<div class="field"><label for="jnAsset">Which machine or equipment?</label><input class="inp" id="jnAsset" list="jnAssets" value="${esc(d.assetText != null ? d.assetText : (d.asset && eqByCode(d.asset) ? eqByCode(d.asset).name + ' (' + d.asset + ')' : ''))}" placeholder="Type to search: compressor, Kunlong, AHU 1.4..."><datalist id="jnAssets">${spAssetOptions()}</datalist>
-        <div class="hint">${I.info}<span>Production machines and other equipment are in one list.</span></div></div>`}
-      ${types.length && !stopId ? `<div class="field"><span class="lbl">Type of job</span><div class="row" style="gap:8px">${types.map(([k, l]) => `<button type="button" class="chip big-chip ${d.type === k ? 'on' : ''}" data-type="${k}">${l}</button>`).join('')}</div></div>` : ''}
-      <div class="field" id="jnCatWrap" style="${d.type === 'breakdown' ? '' : 'display:none'}"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${d.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>
-      <div class="field"><label for="jnDone">What did you find, and what was done?</label><textarea class="inp" id="jnDone" rows="3" maxlength="2000" placeholder="${ctx.pm ? 'e.g. Greased the bearings, changed the belts, checked the sensors' : 'e.g. Oil level low and a loose belt. Topped up and re-tensioned.'}">${esc(d.work || '')}</textarea></div>
-      <div class="field"><label for="jnCause">${ctx.pm ? 'Findings to follow up (optional)' : 'Cause (optional)'}</label><input class="inp" id="jnCause" maxlength="1000" value="${esc(d.cause || '')}"></div>
-      ${people.length ? `<div class="field"><span class="lbl">Who else worked on it? (optional)</span><div class="row" style="gap:6px">${people.map(p => `<button type="button" class="chip ${d.techs.includes(p.enroll_id) ? 'on' : ''}" data-tech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
-      <div class="field"><span class="lbl">Parts used <span class="muted" style="font-weight:500">(optional; the storekeeper confirms the hand-over)</span></span>${plHtml(d.parts, popt)}</div>
-      <div class="field"><span class="lbl">Start time</span><div class="row" style="gap:8px"><div class="seg"><button type="button" class="${d.when === 'now' ? 'on' : ''}" data-when="now">Now · ${hm(new Date().toISOString())}</button><button type="button" class="${d.when === 'set' ? 'on' : ''}" data-when="set">Earlier</button></div>
-        <input class="inp" type="datetime-local" id="jnStart" style="width:auto;${d.when === 'set' ? '' : 'display:none'}" value="${d.start || (stop ? localIso(stop.started_at) : '')}" max="${localIso(new Date().toISOString())}"></div></div>
+      ${ctx.pm ? `<div class="field"><span class="lbl">The PM is</span><div class="seg"><button type="button" class="${mode === 'start' ? 'on' : ''}" data-pmmode="start">Starting now</button><button type="button" class="${mode === 'record' ? 'on' : ''}" data-pmmode="record">Already finished</button></div></div>` : ''}
+      ${stop && stop.asset ? '' : `<div class="field"><label for="jnAsset">Which machine or equipment?</label><input class="inp" id="jnAsset" list="jnAssets" value="${esc(d.assetText != null ? d.assetText : (d.asset && eqByCode(d.asset) ? eqByCode(d.asset).name + ' (' + d.asset + ')' : ''))}" placeholder="Type to search: compressor, Kunlong, AHU 1.4..."><datalist id="jnAssets">${spAssetOptions()}</datalist></div>`}
+      ${typeChips ? `<div class="field"><span class="lbl">Type of job</span><div class="row" style="gap:8px">${JN_TYPES.map(([k, l]) => `<button type="button" class="chip big-chip ${d.type === k ? 'on' : ''}" data-type="${k}">${l}</button>`).join('')}</div></div>` : ''}
+      ${showCat || (typeChips && mode === 'record') ? `<div class="field" id="jnCatWrap" style="${showCat ? '' : 'display:none'}"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${d.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>` : ''}
+      ${mode === 'start' && !ctx.pm ? `<div class="field"><label for="jnNote">What is wrong? (optional)</label><input class="inp" id="jnNote" maxlength="500" value="${esc(d.note || (stop ? stop.reason : ''))}" placeholder="e.g. Belt slipping on the conveyor"></div>` : ''}
+      ${pmLoading ? '<div class="small muted" style="margin-bottom:12px">Loading the checklist...</div>' : ''}
+      ${items.length ? `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>PM checklist</h3><div class="sub">Tick each item, or mark it not done and say why.</div></div></div><div class="card-b" id="jnChk">${chkHtml(items, d.chk.S, '')}</div></div>` : ''}
+      ${mode === 'record' ? `<div class="field"><label for="jnDone">${items.length ? 'Anything else done? (optional)' : 'What was done?'}</label><textarea class="inp" id="jnDone" rows="3" maxlength="2000" placeholder="${ctx.pm ? 'e.g. Greased the bearings, changed the belts' : 'e.g. Re-tensioned the belt and topped up the oil'}">${esc(d.work || '')}</textarea></div>` : ''}
+      ${people.length ? `<div class="field"><span class="lbl">Who else ${mode === 'start' ? 'is working on it' : 'worked on it'}? (optional)</span><div class="row" style="gap:6px">${people.map(p => `<button type="button" class="chip ${d.techs.includes(p.enroll_id) ? 'on' : ''}" data-tech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+      ${mode === 'record' ? `<div class="field"><span class="lbl">Parts used <span class="muted" style="font-weight:500">(optional; the storekeeper confirms the hand-over)</span></span>${plHtml(d.parts, popt)}
+        ${ctx.pm && d.partsFor === assetCode && d.parts.some(l => l.sku) ? `<div class="tiny muted" style="margin-top:4px">Filled in from the PM parts plan: change what was not used.</div>` : ''}</div>` : ''}
+      ${timeBoxes}
       <div class="err-msg hide" data-err="jnDone"></div>
     </form>
-    <div class="row job-actions" style="gap:10px"><button class="btn btn-ghost btn-lg" id="jnLog">Log as already done</button><button class="btn btn-primary btn-lg" id="jnStartBtn">Start job</button></div>`,
+    <div class="row job-actions" style="gap:10px"><button class="btn btn-primary btn-lg" id="jnGo">${mode === 'start' ? (ctx.pm ? 'Start the PM' : 'Start job') : (ctx.pm ? 'Save the PM' : 'Save the job')}</button></div>`,
     bind(){
-      $$('[data-type]').forEach(b => b.onclick = () => { d.type = b.dataset.type; $$('[data-type]').forEach(x => x.classList.toggle('on', x === b)); $('#jnCatWrap').style.display = d.type === 'breakdown' ? '' : 'none'; });
+      $$('[data-pmmode]').forEach(b => b.onclick = () => { keep(); d.pmMode = b.dataset.pmmode; render(); });
+      $$('[data-type]').forEach(b => b.onclick = () => { d.type = b.dataset.type; $$('[data-type]').forEach(x => x.classList.toggle('on', x === b)); const w = $('#jnCatWrap'); if (w) w.style.display = d.type === 'breakdown' ? '' : 'none'; });
       $$('[data-cat]').forEach(b => b.onclick = () => { d.cat = b.dataset.cat; $$('[data-cat]').forEach(x => x.classList.toggle('on', x === b)); });
       $$('[data-tech]').forEach(b => b.onclick = () => { const k = b.dataset.tech; d.techs = d.techs.includes(k) ? d.techs.filter(x => x !== k) : d.techs.concat(k); b.classList.toggle('on'); });
-      $$('[data-when]').forEach(b => b.onclick = () => { d.when = b.dataset.when; $$('[data-when]').forEach(x => x.classList.toggle('on', x === b)); $('#jnStart').style.display = d.when === 'set' ? '' : 'none'; });
-      const keep = () => { const a = $('#jnAsset'); if (a) d.assetText = a.value; d.work = $('#jnDone').value; d.cause = $('#jnCause').value; d.start = $('#jnStart').value; };
-      ['#jnAsset', '#jnDone', '#jnCause', '#jnStart'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', keep); });
-      plBind(document, d.parts, popt);
-      const send = async done => {
-        clearErrors(document);
-        const a = $('#jnAsset'), asset = stop && stop.asset ? stop.asset : spAssetFrom(a ? a.value : '');
-        const work = $('#jnDone').value.trim(), start = $('#jnStart').value;
-        if (!stop && !(EQ.list || []).some(x => x.code === asset && x.status === 'Active')) return setErr('jnDone', 'Choose the machine or equipment from the list.');
+      function keep(){ const a = $('#jnAsset'); if (a) d.assetText = a.value; [['#jnNote', 'note'], ['#jnDone', 'work'], ['#jnDate', 'date'], ['#jnT0', 't0'], ['#jnT1', 't1']].forEach(([id, k]) => { const el = $(id); if (el) d[k] = el.value; }); }
+      ['#jnNote', '#jnDone', '#jnDate', '#jnT0', '#jnT1'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', keep); });
+      const a = $('#jnAsset');
+      if (a) { a.addEventListener('input', keep); if (ctx.pm && mode === 'record') a.addEventListener('change', () => { keep(); render(); }); }
+      if (items.length) chkBind($('#jnChk'), items, d.chk.S, '');
+      if (mode === 'record') plBind(document, d.parts, popt);
+      $('#jnGo').onclick = async () => {
+        keep(); clearErrors(document);
+        const asset = stop && stop.asset ? stop.asset : spAssetFrom(a ? a.value : '');
+        if (!(stop && stop.asset) && !(EQ.list || []).some(x => x.code === asset && x.status === 'Active')) return setErr('jnDone', 'Choose the machine or equipment from the list.');
         if (!d.type) return setErr('jnDone', 'Pick the type of job.');
-        if (d.when === 'set' && !start) return setErr('jnDone', 'Enter the start time, or choose Now.');
-        if (done && work.length < 5) return setErr('jnDone', 'Say what was found and done.');
-        if (done && d.type === 'breakdown' && !d.cat) return setErr('jnDone', 'Pick what failed.');
-        const chk = plCheck(d.parts, popt);
-        if (chk.error) return setErr('jnDone', 'Parts: ' + chk.error);
-        const job = { asset, type: d.type, failure_category: d.type === 'breakdown' ? d.cat : '', work_done: work, cause: $('#jnCause').value.trim(), done,
-                      started_at: d.when === 'set' ? start + ':00+01:00' : '', technicians: d.techs, stop_id: stop ? stop.id : '',
-                      parts: chk.lines.map(p => ({ sku: p.sku, qty: p.qty })) };
-        $$('.job-actions .btn').forEach(b => b.disabled = true);
+        const job = { asset, type: d.type, technicians: d.techs, stop_id: stop ? stop.id : '', done: mode === 'record' };
+        if (mode === 'start') job.note = String(d.note || (stop ? stop.reason : '') || '').trim();
+        else {
+          if (d.type === 'breakdown' && !d.cat) return setErr('jnDone', 'Pick what failed.');
+          if (items.length) { const c = chkCheck(items, d.chk.S, true); if (c.error) return setErr('jnDone', c.error); job.checks = c.checks; }
+          if (String(d.work || '').trim().length < 5 && !items.length) return setErr('jnDone', 'Say what was done.');
+          if (!d.date || !d.t0 || !d.t1) return setErr('jnDone', 'Enter the date, and the start and finish times.');
+          job.started_at = jnIso(d.date, d.t0); job.finished_at = jnFinishIso(d.date, d.t0, d.t1);
+          if (new Date(job.finished_at) > new Date(Date.now() + 5 * 60000)) return setErr('jnDone', 'The finish time is in the future.');
+          const chk = plCheck(d.parts, popt);
+          if (chk.error) return setErr('jnDone', 'Parts: ' + chk.error);
+          Object.assign(job, { failure_category: d.type === 'breakdown' ? d.cat : '', work_done: String(d.work || '').trim(), parts: chk.lines.map(p => ({ sku: p.sku, qty: p.qty })) });
+        }
+        $('#jnGo').disabled = true;
         try { const r = await api('/webhook/engineering/api/jobs/start', { method:'POST', body:{ job } }); JB.draft = null; JB.stops = null; JB.one[r.job.job_id] = r.job; AP = {};
               if (ctx.pm) PM.data = null;
-              toast(done ? (ctx.pm ? 'PM recorded' : 'Job logged') : 'Job started', r.job.job_id, 'ok'); jbLoad(true); go((ctx.pm ? '/pm/jobs/' : '/jobs/') + r.job.job_id); }
-        catch (e) { setErr('jnDone', e.message); $$('.job-actions .btn').forEach(b => b.disabled = false); }
+              toast(mode === 'record' ? (ctx.pm ? 'PM recorded' : 'Job recorded') : (ctx.pm ? 'PM started' : 'Job started'), r.job.job_id, 'ok'); jbLoad(true); go((ctx.pm ? '/pm/jobs/' : '/jobs/') + r.job.job_id); }
+        catch (e) { setErr('jnDone', e.message); $('#jnGo').disabled = false; }
       };
-      $('#jnLog').onclick = () => send(true);
-      $('#jnStartBtn').onclick = () => send(false);
     },
   };
 }
 route('/pm/record', () => viewJobNew({ pm: true }));
 route('/stops/:id/job', params => viewJobNew({ stop: params.id }));
+
+/* ---- past PMs from old records (Engineering Manager): one date, several machines at once. No checklist; marked "backfilled". */
+let BF = { date: '', picked: [], f: { type: '', area: '', asset: '' }, q: '', work: '', techs: [] };
+function viewBackfill(){
+  if (!EQ.list && !EQ.loading) eqLoad();
+  if (!SP.list && !SP.loading) spLoad();
+  if (!PM.data) { PM.data = 'loading'; pmLoad(); }
+  const back = `<a class="btn btn-ghost btn-sm" href="#/pm">${I.chevL} Preventive maintenance</a>`;
+  if (levelOf('engineering.jobs') !== 'edit') return { title:'Record past PMs', crumb:'Preventive maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager records past PMs', '')}</div></div>` };
+  const due = (PM.data && PM.data.due) || [];
+  if (!EQ.list || PM.data === 'loading') return { title:'Record past PMs', crumb:'Preventive maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
+  const q = BF.q.trim().toLowerCase();
+  const shown = due.filter(x => fltMatch(BF.f, x.asset) && (!q || (x.name + ' ' + x.asset + ' ' + (x.area || '')).toLowerCase().includes(q)));
+  return { title:'Record past PMs', crumb:'Preventive maintenance', keepScroll: true,
+    html: back + pageHead('Record past PMs', 'PMs done before the system, from the old sheets or paper. Pick the date, tick every machine done that day, and save. Each becomes a finished PM (no checklist). Machines that already have a PM that day are skipped.') + `
+    <div class="card" style="margin-bottom:14px"><div class="card-b"><div class="grid g2">
+      <div class="field"><label for="bfDate">Date of the PM</label><input class="inp" type="date" id="bfDate" max="${todayIso()}" value="${esc(BF.date)}"></div>
+      <div class="field"><label for="bfWork">What was done (optional)</label><input class="inp" id="bfWork" maxlength="500" value="${esc(BF.work)}" placeholder="PM done (recorded from old records)."></div></div>
+      ${(SP.people || []).length ? `<div class="field"><span class="lbl">Who did it (optional)</span><div class="row" style="gap:6px">${SP.people.map(p => `<button type="button" class="chip ${BF.techs.includes(p.enroll_id) ? 'on' : ''}" data-bftech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+    </div></div>
+    <div class="card"><div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:8px;flex-wrap:wrap">
+        <div class="search filter-search"><span class="ic">${I.search}</span><input class="inp" id="bfQ" style="padding-left:34px;border-radius:20px" placeholder="Search" value="${esc(BF.q)}"></div>${fltHtml(BF.f, 'bff')}
+        <button class="btn btn-ghost btn-sm" id="bfAll">Tick all shown</button><button class="btn btn-ghost btn-sm" id="bfNone">Clear</button></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th style="width:40px"></th><th>Equipment</th><th>Type</th><th>Area</th><th>Last PM</th></tr></thead>
+        <tbody>${shown.map(x => `<tr><td><input type="checkbox" data-bf="${esc(x.asset)}" ${BF.picked.includes(x.asset) ? 'checked' : ''} aria-label="${esc(x.name)}"></td>
+          <td data-label="Equipment" class="strong">${esc(x.name)}<div class="tiny muted mono">${esc(x.asset)}</div></td><td data-label="Type" class="small">${esc(x.type)}</td>
+          <td data-label="Area" class="small">${esc(x.area || '')}</td><td data-label="Last PM" class="small">${esc(x.last_pm || '--')}</td></tr>`).join('') || '<tr><td colspan="5" class="muted" style="padding:16px">Nothing matches.</td></tr>'}</tbody></table></div>
+      <div class="card-b row between" style="border-top:1px solid var(--line-2);flex-wrap:wrap;gap:10px"><span class="small"><b id="bfN">${BF.picked.length}</b> ticked</span>
+        <span class="err-msg hide" data-err="bfSave"></span><button class="btn btn-primary" id="bfSave">${I.check} Save the PMs</button></div></div>`,
+    bind(){
+      fltBind(BF.f, 'bff', render);
+      const q = $('#bfQ'); if (q) q.addEventListener('input', debounce(e => { BF.q = e.target.value; render(); const el = $('#bfQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 200));
+      $('#bfDate').onchange = e => { BF.date = e.target.value; };
+      $('#bfWork').oninput = e => { BF.work = e.target.value; };
+      $$('[data-bftech]').forEach(b => b.onclick = () => { const k = b.dataset.bftech; BF.techs = BF.techs.includes(k) ? BF.techs.filter(x => x !== k) : BF.techs.concat(k); b.classList.toggle('on'); });
+      const count = () => { $('#bfN').textContent = BF.picked.length; };
+      $$('[data-bf]').forEach(c => c.onchange = () => { const k = c.dataset.bf; BF.picked = c.checked ? BF.picked.concat(k) : BF.picked.filter(x => x !== k); count(); });
+      $('#bfAll').onclick = () => { BF.picked = Array.from(new Set(BF.picked.concat(shown.map(x => x.asset)))); render(); };
+      $('#bfNone').onclick = () => { BF.picked = []; render(); };
+      $('#bfSave').onclick = async () => {
+        clearErrors(document);
+        if (!BF.date) return setErr('bfSave', 'Pick the date of the PM.');
+        if (!BF.picked.length) return setErr('bfSave', 'Tick the machines done that day.');
+        if (BF.picked.length > 80) return setErr('bfSave', 'At most 80 machines at once.');
+        if (!await confirmDialog('Record past PMs', `Record a PM on <b>${esc(BF.date)}</b> for <b>${BF.picked.length}</b> machine${BF.picked.length === 1 ? '' : 's'}?`, 'Save')) return;
+        $('#bfSave').disabled = true;
+        try { const r = await api('/webhook/engineering/api/jobs/backfill', { method:'POST', body:{ backfill:{ date: BF.date, assets: BF.picked, work_done: BF.work.trim(), technicians: BF.techs } } });
+              toast(r.added.length + ' PM' + (r.added.length === 1 ? '' : 's') + ' recorded', r.skipped.length ? r.skipped.length + ' already had a PM that day: ' + r.skipped.join(', ') : '', 'ok', 7000);
+              BF.picked = []; PM.data = null; AP = {}; render(); }
+        catch (e) { setErr('bfSave', e.message); $('#bfSave').disabled = false; }
+      };
+    } };
+}
+route('/pm/backfill', viewBackfill);
+
+/* ---- issues from the daily packaging report (round 3; temporary, until the floor app covers every product).
+   /jobs/report (Engineering Manager): upload "OKL PERSONNEL PACKAGING - <MONTH>.xlsx" (first sheet, DAILY DOWNTIME TRACKER)
+   or type one issue in. Each issue becomes a breakdown "to report" that technicians fill in (Calls and jobs, From the daily
+   report). Products the floor app already covers are left out. The same date + machine + issue is only added once, so the
+   month's file can be uploaded again every day. POST /webhook/engineering/api/jobs/report {report: {dry, close, lines}} */
+const RP_LIVE = /zaiki|mintacid/i;     // products the floor app covers: their stops come from the floor
+let RP = { rows: null, file: '', from: '', close: false, error: '', busy: false, one: { date: '', asset: '', product: '', text: '', minutes: '', action: '' } };
+const rpNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const RP_RULES = [[/^kun(g)?lon(g)?(\d)$/, m => 'KUNLONG_' + m[3]], [/^jcmc[o0](\d)$/, m => 'JCMCO_' + m[1]], [/^wifa(machine)?$/, () => 'WIFA'], [/^ima(pg)?$/, () => 'IMA_PG'],
+  [/^hoonga$/, () => 'HOONGA'], [/^chi(e)?mei(\d)$/, m => 'CHIMEI_' + m[2]], [/^(xiaolun|coating(machine)?)$/, () => 'COATING_XIAOLUN'], [/^wraptech$/, () => 'WRAPTECH'],
+  [/^siebler(\d)$/, m => 'SIEBLER_' + m[1]], [/^duankwei(\d)$/, m => 'DUANKWEI_' + m[1]], [/^(dynafold|folding(machine)?)$/, () => 'FOLDING_DYNAFOLD']];
+// the register code for a machine name in the report ('' when unsure); the manager's earlier picks are remembered on this browser
+function rpMachine(name){
+  const n = rpNorm(name); if (!n) return '';
+  let saved = {}; try { saved = JSON.parse(localStorage.getItem('okl.eng.rpMachines') || '{}'); } catch (e) { saved = {}; }
+  if (saved[n] && eqByCode(saved[n])) return saved[n];
+  for (const [re, f] of RP_RULES) { const m = re.exec(n); if (m && eqByCode(f(m))) return f(m); }
+  const hit = (EQ.list || []).filter(a => a.status === 'Active' && (rpNorm(a.name) === n || rpNorm(a.code) === n));
+  return hit.length === 1 ? hit[0].code : '';
+}
+function rpRemember(name, code){ try { const k = 'okl.eng.rpMachines', m = JSON.parse(localStorage.getItem(k) || '{}'); m[rpNorm(name)] = code; localStorage.setItem(k, JSON.stringify(m)); } catch (e) { /* this browser keeps nothing */ } }
+const RP_MINS = /\(?\s*(\d{1,4})\s*min(?:ute)?s?\s*\)?(?:\s*\(\s*cumulatively\s*\))?/i;
+// one cell: blocks of "Machine" then "issue (N mins)" lines -> [{ machine, text, minutes, raw }]
+function rpParseCell(cell){
+  const out = []; let machine = '';
+  for (const raw of String(cell || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) { machine = ''; continue; }
+    const m = RP_MINS.exec(line);
+    if (!m) {
+      const last = out[out.length - 1];
+      if (machine && last && last.machine === machine) last.text += ' ' + line.replace(/^[,.;\s]+/, '');
+      else machine = line;
+      continue;
+    }
+    let text = line.replace(RP_MINS, ' ').replace(/\s+/g, ' ').replace(/^[,.;\s]+|[,.;\s]+$/g, '').trim(), mach = machine;
+    if (!mach) {      // "Wraptech videojet nozzle washing (31mins)": the machine starts the line
+      const w = text.split(' ');
+      for (const k of [2, 1]) { const nm = w.slice(0, k).join(' '); if (w.length > k && (rpMachine(nm) || RP_RULES.some(([re]) => re.test(rpNorm(nm))))) { mach = w.slice(0, k).join(' '); text = w.slice(k).join(' '); break; } }
+    }
+    if (text.length >= 3) out.push({ machine: mach, text, minutes: +m[1], raw: (mach ? mach + ': ' : '') + line });
+  }
+  return out;
+}
+const rpDay = v => {
+  if (typeof v === 'number' && v > 30000 && v < 80000) return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000).toISOString().slice(0, 10);
+  if (v instanceof Date) return new Date(Date.UTC(v.getFullYear(), v.getMonth(), v.getDate())).toISOString().slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v || '')); return m ? m[0] : '';
+};
+// the first sheet -> one row per issue: { date, product, machine (as written), asset (guess), text, minutes, action, raw }
+function rpParseSheet(aoa){
+  const issueRow = aoa.findIndex(r => (r || []).some(c => /^issues?$/i.test(String(c).trim())));
+  if (issueRow < 1) throw new Error('This does not look like the daily packaging report: no "Issue" row on the first sheet.');
+  const heads = aoa[issueRow - 1] || [], cols = [];
+  for (let c = 1; c < heads.length; c++) {
+    const h = String(heads[c] || '').trim();
+    if (!h) continue;
+    if (/\(ctns\)/i.test(h) || /machine output/i.test(h)) break;
+    cols.push({ c, product: h.replace(/\s*\(.*$/, '').trim() || h });
+  }
+  const out = [];
+  for (let r = issueRow + 1; r < aoa.length; r++) {
+    const row = aoa[r] || [], date = rpDay(row[0]);
+    if (!date) continue;
+    for (const { c, product } of cols) {
+      if (RP_LIVE.test(product)) continue;
+      const action = String(row[c + 1] || '').trim();
+      rpParseCell(row[c]).forEach(x => out.push({ date, product, machine: x.machine, asset: rpMachine(x.machine), text: x.text, minutes: x.minutes,
+        action: /^issues?$|^action$/i.test(action) ? '' : action, raw: x.raw, pick: true, status: '' }));
+    }
+  }
+  return out;
+}
+async function rpFile(file){
+  RP.error = ''; RP.rows = null; RP.file = file ? file.name : ''; RP.busy = true; render();
+  try {
+    const XLSX = await loadSheetJS();
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+    RP.rows = rpParseSheet(aoa);
+    if (!RP.rows.length) throw new Error('No issues found on the first sheet (Zaiki and Mintacid are left out: the floor app covers them).');
+    await rpCheck();
+  } catch (e) { RP.error = e.message; RP.rows = RP.rows && RP.rows.length ? RP.rows : null; }
+  finally { RP.busy = false; render(); }
+}
+const rpLine = x => ({ date: x.date, asset: x.asset, product: x.product, text: x.text, minutes: String(x.minutes), action: x.action, raw: x.raw });
+// ask the server which lines are new and which were added before (nothing is stored)
+async function rpCheck(){
+  const ready = RP.rows.filter(x => x.asset);
+  for (let i = 0; i < ready.length; i += 400) {
+    const part = ready.slice(i, i + 400), r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ dry: true, lines: part.map(rpLine) } } });
+    (r.lines || []).forEach(l => { const x = part[l.n - 1]; x.status = l.status; x.error = l.error || ''; x.job_id = l.job_id || ''; if (l.status === 'exists') x.pick = false; });
+  }
+}
+function rpShown(){ return (RP.rows || []).filter(x => !RP.from || x.date >= RP.from); }
+function viewReport(){
+  if (!EQ.list && !EQ.loading) eqLoad();
+  const back = `<a class="btn btn-ghost btn-sm" href="#/jobs?tab=reports">${I.chevL} Calls and jobs</a>`;
+  if (levelOf('engineering.jobs') !== 'edit') return { title:'Daily report issues', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager adds issues from the daily report', '')}</div></div>` };
+  const rows = rpShown(), toAdd = rows.filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error');
+  const opts = cur => `<option value="">Choose the machine...</option>` + (EQ.list || []).filter(a => a.status === 'Active' && ['Machine', 'Line', 'Utility'].includes(a.type)).sort((a, b) => a.name.localeCompare(b.name))
+    .map(a => `<option value="${esc(a.code)}" ${a.code === cur ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  const st = x => x.status === 'exists' ? `<span class="badge b-slate">Added before${x.job_id ? ' · ' + esc(x.job_id) : ''}</span>` : x.status === 'added' ? `<span class="badge b-ok">Added · ${esc(x.job_id)}</span>`
+    : !x.asset ? '<span class="badge b-warn">Choose the machine</span>' : x.status === 'error' ? `<span class="badge b-danger">${esc(x.error)}</span>` : '<span class="badge b-info">New</span>';
+  const o = RP.one;
+  return { title:'Daily report issues', crumb:'Maintenance', keepScroll: true,
+    html: back + pageHead('Issues from the daily packaging report', 'For products the floor app does not cover yet (all but Zaiki and Mintacid). Each issue becomes a breakdown that technicians fill in: what failed and what was done. Upload the month\'s file as often as you like: issues already added are skipped.') + `
+    <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>From the Excel file</h3><div class="sub">"OKL PERSONNEL PACKAGING - &lt;MONTH&gt;.xlsx", first sheet (Daily downtime tracker).</div></div></div>
+      <div class="card-b"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><input type="file" id="rpFile" accept=".xlsx,.xls" class="inp" style="width:auto">
+        ${RP.busy ? '<span class="small muted">Reading...</span>' : ''}${RP.file && !RP.busy ? `<span class="small muted">${esc(RP.file)}</span>` : ''}</div>
+        ${RP.error ? `<div class="notice warn" style="margin-top:10px">${I.alert}<div>${esc(RP.error)}</div></div>` : ''}</div>
+      ${RP.rows ? `<div class="card-b filter-bar row" style="gap:10px;flex-wrap:wrap;border-top:1px solid var(--line-2);align-items:center">
+          <label class="small">From <input class="inp" type="date" id="rpFrom" value="${esc(RP.from)}" style="width:auto"></label>
+          <label class="small row" style="gap:6px"><input type="checkbox" id="rpClose" ${RP.close ? 'checked' : ''}> Close them as they are (technicians do not fill them in)</label>
+          <span style="flex:1"></span><span class="small">${rows.length} issues in the file${RP.from ? ' from ' + esc(RP.from) : ''}, <b>${toAdd.length}</b> to add</span></div>
+        <div class="tbl-wrap"><table class="tbl"><thead><tr><th style="width:36px"></th><th>Date</th><th>Product</th><th>Machine</th><th>Issue</th><th style="text-align:right">Minutes</th><th>Status</th></tr></thead>
+          <tbody>${rows.map(x => { const i = RP.rows.indexOf(x); return `<tr><td><input type="checkbox" data-rp-pick="${i}" ${x.pick && x.status !== 'exists' && x.status !== 'added' ? 'checked' : ''} ${x.status === 'exists' || x.status === 'added' ? 'disabled' : ''} aria-label="Add this issue"></td>
+            <td data-label="Date" class="small mono">${esc(x.date)}</td><td data-label="Product" class="small">${esc(x.product)}</td>
+            <td data-label="Machine"><select class="inp" data-rp-asset="${i}" style="min-width:170px" ${x.status === 'exists' || x.status === 'added' ? 'disabled' : ''}>${opts(x.asset)}</select>${x.machine ? `<div class="tiny muted">"${esc(x.machine)}"</div>` : ''}</td>
+            <td data-label="Issue" class="small">${esc(x.text)}${x.action ? `<div class="tiny muted">Action: ${esc(x.action)}</div>` : ''}</td><td data-label="Minutes" style="text-align:right" class="mono">${x.minutes}</td><td data-label="Status">${st(x)}</td></tr>`; }).join('')
+            || '<tr><td colspan="7" class="muted" style="padding:16px">No issues in this period.</td></tr>'}</tbody></table></div>
+        <div class="card-b row between" style="border-top:1px solid var(--line-2);gap:10px;flex-wrap:wrap"><span class="err-msg hide" data-err="rpAdd"></span><span style="flex:1"></span>
+          <button class="btn btn-primary" id="rpAdd" ${toAdd.length ? '' : 'disabled'}>${I.plus} Add ${toAdd.length} issue${toAdd.length === 1 ? '' : 's'}</button></div>` : ''}
+    </div>
+    <div class="card"><div class="card-h"><div><h3>Add one issue by hand</h3><div class="sub">When the file is not to hand.</div></div></div><div class="card-b"><div class="grid g3">
+      <div class="field"><label for="rp1Date">Date</label><input class="inp" type="date" id="rp1Date" max="${todayIso()}" value="${esc(o.date || todayIso())}"></div>
+      <div class="field"><label for="rp1Asset">Machine</label><select class="inp" id="rp1Asset">${opts(o.asset)}</select></div>
+      <div class="field"><label for="rp1Product">Product (optional)</label><input class="inp" id="rp1Product" maxlength="60" value="${esc(o.product)}" placeholder="e.g. Procold"></div>
+      <div class="field" style="grid-column:1/-1"><label for="rp1Text">What happened?</label><input class="inp" id="rp1Text" maxlength="300" value="${esc(o.text)}" placeholder="e.g. Feeding track adjustment"></div>
+      <div class="field"><label for="rp1Min">Minutes lost</label><input class="inp" type="number" min="0" max="1440" step="1" id="rp1Min" value="${esc(o.minutes)}"></div>
+      <div class="field" style="grid-column:span 2"><label for="rp1Action">Action taken, if known (optional)</label><input class="inp" id="rp1Action" maxlength="500" value="${esc(o.action)}"></div></div>
+      <div class="row" style="gap:10px"><span class="err-msg hide" data-err="rp1"></span><span style="flex:1"></span><button class="btn btn-primary" id="rp1Add">${I.plus} Add the issue</button></div></div></div>`,
+    bind(){
+      const f = $('#rpFile'); if (f) f.onchange = () => { if (f.files && f.files[0]) rpFile(f.files[0]); };
+      const fr = $('#rpFrom'); if (fr) fr.onchange = e => { RP.from = e.target.value; render(); };
+      const cl = $('#rpClose'); if (cl) cl.onchange = e => { RP.close = e.target.checked; };
+      $$('[data-rp-pick]').forEach(c => c.onchange = () => { RP.rows[+c.dataset.rpPick].pick = c.checked; render(); });
+      $$('[data-rp-asset]').forEach(s => s.onchange = async () => { const x = RP.rows[+s.dataset.rpAsset]; x.asset = s.value; x.status = ''; if (x.machine && x.asset) rpRemember(x.machine, x.asset);
+        if (x.asset) { RP.rows.filter(y => !y.asset && rpNorm(y.machine) === rpNorm(x.machine) && x.machine).forEach(y => { y.asset = x.asset; }); try { await rpCheck(); } catch (e) { /* checked again on adding */ } } render(); });
+      const add = $('#rpAdd'); if (add) add.onclick = async () => {
+        clearErrors(document);
+        const lines = rpShown().filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error' && x.status !== 'added');
+        if (!lines.length) return;
+        if (!await confirmDialog('Add the issues', `Add <b>${lines.length}</b> issue${lines.length === 1 ? '' : 's'} as breakdowns${RP.close ? ', closed as they are' : ' for technicians to fill in'}?`, 'Add')) return;
+        add.disabled = true;
+        try {
+          let added = 0;
+          for (let i = 0; i < lines.length; i += 400) {
+            const part = lines.slice(i, i + 400), r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ close: RP.close, lines: part.map(rpLine) } } });
+            (r.lines || []).forEach(l => { const x = part[l.n - 1]; x.status = l.status; x.job_id = l.job_id || ''; });
+            added += r.added || 0;
+          }
+          toast(added + ' issue' + (added === 1 ? '' : 's') + ' added', RP.close ? '' : 'Technicians see them under From the daily report.', 'ok', 6000); JB.board = null; render();
+        } catch (e) { setErr('rpAdd', e.message); add.disabled = false; }
+      };
+      const keep = () => Object.assign(RP.one, { date: $('#rp1Date').value, asset: $('#rp1Asset').value, product: $('#rp1Product').value, text: $('#rp1Text').value, minutes: $('#rp1Min').value, action: $('#rp1Action').value });
+      ['#rp1Date', '#rp1Asset', '#rp1Product', '#rp1Text', '#rp1Min', '#rp1Action'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', keep); if (el) el.addEventListener('change', keep); });
+      $('#rp1Add').onclick = async () => {
+        keep(); clearErrors(document);
+        const x = RP.one;
+        if (!x.date || !x.asset) return setErr('rp1', 'Give the date and the machine.');
+        if (x.text.trim().length < 3) return setErr('rp1', 'Say what happened.');
+        if (!/^\d{1,4}$/.test(String(x.minutes).trim()) || +x.minutes > 1440) return setErr('rp1', 'Give the minutes lost (0 to 1440).');
+        $('#rp1Add').disabled = true;
+        try { const r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ lines: [{ date: x.date, asset: x.asset, product: x.product.trim(), text: x.text.trim(), minutes: String(x.minutes).trim(), action: x.action.trim() }] } } });
+              if (r.added) { toast('Issue added', (r.lines[0] || {}).job_id || '', 'ok'); RP.one = { date: x.date, asset: '', product: x.product, text: '', minutes: '', action: '' }; JB.board = null; }
+              else toast('Already added', 'The same issue is there already for that day and machine.', 'ok');
+              render(); }
+        catch (e) { setErr('rp1', e.message); $('#rp1Add').disabled = false; }
+      };
+    } };
+}
 
 /* ---- history */
 async function jbLoadHistory(){
@@ -1692,31 +2236,34 @@ async function jbLoadHistory(){
   catch (err) { JB.history = { error: err.message }; }
   render();
 }
+function jbHistShown(){ return (Array.isArray(JB.history) ? JB.history : []).filter(j => fltMatch(JB.hf, j.asset)); }
 function viewJobsHistory(){
   if (!JB.board && !JB.loading) jbLoad();
+  if (!EQ.list && !EQ.loading) eqLoad();
+  JB.hf = JB.hf || { type: '', area: '', asset: '' };
   if (!JB.history) { JB.history = 'loading'; jbLoadHistory(); }
   const h = JB.history, head = pageHead('Calls and jobs', 'Every job, newest first (the last 30 days unless you pick dates).', Array.isArray(h) ? dlButton('jbHistoryDownload()') : '') + jbTabs('history')
     + `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="jhFrom" value="${esc(JB.histFrom)}" style="width:auto"></label>
        <label class="small">to <input class="inp" type="date" id="jhTo" value="${esc(JB.histTo)}" style="width:auto"></label>
-       <select class="inp" id="jhType" style="width:auto"><option value="">All types</option>${JOB_TYPES.map(([k, l]) => `<option value="${k}" ${JB.histType === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
-  const bind = () => { [['#jhFrom', 'histFrom'], ['#jhTo', 'histTo'], ['#jhType', 'histType']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { JB[k] = e.target.value; JB.history = null; render(); }; }); };
+       <select class="inp" id="jhType" style="width:auto"><option value="">All job types</option>${JOB_TYPES.map(([k, l]) => `<option value="${k}" ${JB.histType === k ? 'selected' : ''}>${l}</option>`).join('')}</select>${fltHtml(JB.hf, 'jf')}</div>`;
+  const bind = () => { [['#jhFrom', 'histFrom'], ['#jhTo', 'histTo'], ['#jhType', 'histType']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { JB[k] = e.target.value; JB.history = null; render(); }; }); fltBind(JB.hf, 'jf', render); };
   if (h === 'loading') return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>`, bind };
   if (h.error) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(h.error))}</div></div>`, bind };
   return { title:'Calls and jobs', crumb:'Maintenance', keepScroll: true, bind,
     html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Job</th><th>Equipment</th><th>Type</th><th>What failed / what was done</th><th>Technicians</th><th>Time</th><th>Status</th></tr></thead>
-      <tbody>${h.map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}<div class="tiny muted">${esc(dayHm(j.finished_at || j.created_at))}</div></td>
+      <tbody>${jbHistShown().map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}<div class="tiny muted">${esc(dayHm(j.finished_at || j.created_at))}</div></td>
         <td data-label="Equipment"><div class="strong">${esc(j.machine_name || '')}</div><div class="tiny muted">${esc(j.stop_reason || '')}</div></td><td data-label="Type">${esc(JOB_TYPE[j.type] || j.type)}</td>
         <td data-label="Work" class="small">${j.failure_category ? `<b>${esc(j.failure_category)}</b>: ` : ''}${esc(j.work_done || j.cancel_reason || '')}</td>
         <td data-label="Technicians" class="small">${esc((j.technicians || []).map(t => t.name).join(', '))}</td><td data-label="Time" class="mono small">${j.labour_minutes != null ? dur(j.labour_minutes) : ''}</td>
         <td data-label="Status">${jbBadge(j)}</td></tr>`).join('') || `<tr><td colspan="7" class="muted" style="padding:16px">No jobs in this period.</td></tr>`}</tbody></table></div>
-      <div class="small muted" style="padding:12px 18px">${h.length} jobs. Mirrored to the Maintenance Google Sheet (Breakdowns tab).</div></div>` };
+      <div class="small muted" style="padding:12px 18px">${jbHistShown().length} of ${h.length} jobs. Mirrored to the Maintenance Google Sheet (Breakdowns tab).</div></div>` };
 }
 
 function jbHistoryDownload(){
   downloadXlsx('Jobs' + (JB.histFrom ? ' from ' + JB.histFrom : '') + (JB.histTo ? ' to ' + JB.histTo : ''), [{ name: 'Jobs',
     head: ['Job', 'Type', 'Status', 'Equipment', 'Stop reason', 'Called', 'Accepted', 'Arrived', 'Started', 'Finished', 'What failed', 'Cause', 'What was done', 'Technicians', 'Labour (min)', 'Parts'],
-    rows: (Array.isArray(JB.history) ? JB.history : []).map(j => [j.job_id, JOB_TYPE[j.type] || j.type, j.status, j.machine_name || j.asset_name || j.asset, j.stop_reason,
+    rows: jbHistShown().map(j => [j.job_id, JOB_TYPE[j.type] || j.type, j.status, j.machine_name || j.asset_name || j.asset, j.stop_reason,
       lagosDay(j.called_at), lagosDay(j.accepted_at), lagosDay(j.arrived_at), lagosDay(j.started_at), lagosDay(j.finished_at), j.failure_category, j.cause, j.work_done || j.cancel_reason,
       (j.technicians || []).map(t => t.name).join(', '), j.labour_minutes, (j.parts || []).filter(p => p.status !== 'cancelled').map(p => p.sku + ' x ' + num(p.qty)).join(', ')]) }]);
 }
@@ -1825,7 +2372,7 @@ async function pushTurnOn(){
    breakdown, or the first floor machine stop of pm_failure_minutes or more. GET /webhook/engineering/api/pm.
    A PM is recorded here (/pm/record) and opens here (/pm/jobs/<id>).
    ============================================================ */
-let PM = { data: null, from: '', to: '', q: '', type: '', state: '' };
+let PM = { data: null, from: '', to: '', q: '', state: '', f: { type: '', area: '', asset: '' } };
 async function pmLoad(){
   try { const q = new URLSearchParams(); if (PM.from) q.set('from', PM.from); if (PM.to) q.set('to', PM.to); PM.data = await api('/webhook/engineering/api/pm?' + q.toString()); }
   catch (err) { PM.data = { error: err.message }; }
@@ -1833,20 +2380,23 @@ async function pmLoad(){
 }
 function pmDueFiltered(){
   const q = PM.q.trim().toLowerCase();
-  return ((PM.data || {}).due || []).filter(x => (!PM.type || x.type === PM.type) && (!PM.state || x.state === PM.state)
+  return ((PM.data || {}).due || []).filter(x => fltMatch(PM.f, x.asset) && (!PM.state || x.state === PM.state)
     && (!q || [x.asset, x.name, x.area, x.type].join(' ').toLowerCase().includes(q)));
 }
+function pmEffFiltered(){ return ((PM.data || {}).effectiveness || []).filter(x => fltMatch(PM.f, x.asset)); }
 function viewPm(tab){
   if (!PM.data) { PM.data = 'loading'; pmLoad(); }
-  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
+  if (!EQ.list && !EQ.loading) eqLoad();
+  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs')), mgr = levelOf('engineering.jobs') === 'edit';
   const d = PM.data, ready = d && d !== 'loading' && !d.error;
   const head = pageHead('Preventive maintenance', tab === 'due' ? 'What is due on every piece of equipment that is maintained. Set an interval per item in Equipment; the rest use the default.'
       : 'How long each PM held before the equipment broke down again.',
-    (ready ? dlButton(`pmDownload('${tab}')`) : '') + (canStart ? `<button class="btn btn-primary" onclick="go('/pm/record')">${I.plus} Record a PM</button>` : ''))
+    (ready ? dlButton(`pmDownload('${tab}')`) : '') + (mgr ? `<button class="btn btn-ghost" onclick="go('/pm/backfill')">Record past PMs</button>` : '')
+    + (canStart ? `<button class="btn btn-primary" onclick="go('/pm/record')">${I.plus} Record a PM</button>` : ''))
     + `<div class="tabs" style="margin-bottom:14px"><a class="tab ${tab === 'due' ? 'on' : ''}" href="#/pm">PM due</a><a class="tab ${tab === 'eff' ? 'on' : ''}" href="#/pm/effectiveness">PM effectiveness</a></div>`;
   if (d === 'loading') return { title:'Preventive maintenance', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (d.error) return { title:'Preventive maintenance', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
-  const due = d.due || [], eff = d.effectiveness || [];
+  const due = d.due || [], eff = pmEffFiltered();
   if (tab === 'eff') {
     const scored = eff.filter(x => x.effectiveness != null), avg = scored.length ? Math.round(scored.reduce((s, x) => s + +x.effectiveness, 0) / scored.length) : null;
     const effBadge = s => s === 'Failed early' ? '<span class="badge b-danger">Failed early</span>' : s === 'Running' ? '<span class="badge b-info">Running</span>' : '<span class="badge b-ok">Held to the next PM</span>';
@@ -1857,18 +2407,17 @@ function viewPm(tab){
         <div class="stat"><div class="lbl">Failed early</div><div class="val">${eff.filter(x => x.status === 'Failed early').length}</div></div>
         <div class="stat"><div class="lbl">Still running</div><div class="val">${eff.filter(x => x.status === 'Running').length}</div></div></div>
       <div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="pmFrom" value="${esc(PM.from)}" style="width:auto"></label>
-        <label class="small">to <input class="inp" type="date" id="pmTo" value="${esc(PM.to)}" style="width:auto"></label><span class="small muted">Default: the last 6 months.</span></div>
+        <label class="small">to <input class="inp" type="date" id="pmTo" value="${esc(PM.to)}" style="width:auto"></label>${fltHtml(PM.f, 'pe')}<span class="small muted">Default: the last 6 months.</span></div>
       <div class="card"><div class="card-h"><div><div class="sub">Target = days to the next PM date. Achieved = days until the first breakdown or a machine stop of ${num(d.failure_minutes)} min or more.</div></div></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>PM</th><th>Equipment</th><th>PM date</th><th>Next PM</th><th style="text-align:right">Target</th><th>First failure</th><th style="text-align:right">Achieved</th><th style="text-align:right">%</th><th>Status</th></tr></thead>
         <tbody>${eff.map(x => `<tr class="clickable" onclick="go('/pm/jobs/${esc(x.job_id)}')"><td class="mono small" data-label="PM">${esc(x.job_id)}${x.weekend && x.type !== 'preventive' ? `<div class="tiny muted">weekend ${esc(x.type)}</div>` : ''}</td>
-          <td data-label="Equipment">${esc(x.asset_name)}</td><td data-label="PM date" class="small">${esc(x.pm_date)}</td><td data-label="Next PM" class="small">${esc(x.next_pm_date)}</td>
+          <td data-label="Equipment">${esc(x.asset_name)}${x.backfilled ? '<div class="tiny muted">from old records</div>' : ''}</td><td data-label="PM date" class="small">${esc(x.pm_date)}</td><td data-label="Next PM" class="small">${esc(x.next_pm_date)}</td>
           <td data-label="Target" style="text-align:right">${x.target_days} d</td><td data-label="First failure" class="small">${x.failure_date ? esc(x.failure_date) + `<div class="tiny muted">${esc(x.failure_ref || '')}${x.failure_minutes != null ? ', ' + x.failure_minutes + ' min' : ''}</div>` : '--'}</td>
           <td data-label="Achieved" style="text-align:right">${x.achieved_days} d</td><td data-label="%" style="text-align:right" class="strong">${x.effectiveness == null ? '--' : x.effectiveness + '%'}</td><td data-label="Status">${effBadge(x.status)}</td></tr>`).join('')
           || `<tr><td colspan="9" class="muted" style="padding:16px">No PM recorded in this period.</td></tr>`}</tbody></table></div></div>`,
-      bind(){ [['#pmFrom', 'from'], ['#pmTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { PM[k] = e.target.value; PM.data = null; render(); }; }); } };
+      bind(){ [['#pmFrom', 'from'], ['#pmTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { PM[k] = e.target.value; PM.data = null; render(); }; }); fltBind(PM.f, 'pe', render); } };
   }
   const n = k => due.filter(x => x.state === k).length, rows = pmDueFiltered();
-  const types = Array.from(new Set(due.map(x => x.type))).sort();
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
   return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
     html: head + `<div class="grid g4" style="margin-bottom:14px">
@@ -1879,18 +2428,21 @@ function viewPm(tab){
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
         <div class="search filter-search"><span class="ic">${I.search}</span><input class="inp" id="pmQ" style="padding-left:34px;border-radius:20px" placeholder="Search equipment or area" value="${esc(PM.q)}"></div>
-        <select class="inp" id="pmType" style="width:auto">${opt('', PM.type, 'All types')}${types.map(t => opt(t, PM.type, t)).join('')}</select>
+        ${fltHtml(PM.f, 'pd')}
         <select class="inp" id="pmState" style="width:auto">${opt('', PM.state, 'Any status')}${Object.entries(PM_STATE_TEXT).map(([k, l]) => opt(k, PM.state, l)).join('')}</select>
       </div></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Type</th><th>Area</th><th style="text-align:right">Every</th><th>Last PM</th><th>Next due</th><th>Status</th><th></th></tr></thead>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Equipment</th><th>Type</th><th>Area</th><th style="text-align:right">Every</th><th>Last PM</th><th>Next due</th><th>Status</th><th>Parts for the next PM</th><th></th></tr></thead>
       <tbody>${rows.map(x => `<tr><td data-label="Equipment"><a class="strong" href="#/equipment/${esc(x.asset)}">${esc(x.name)}</a><div class="tiny muted mono">${esc(x.asset)}</div></td><td data-label="Type" class="small">${esc(x.type || '')}</td>
         <td data-label="Area" class="small">${esc(x.area || '')}</td><td data-label="Every" style="text-align:right">${x.interval_days} d</td><td data-label="Last PM" class="small">${esc(x.last_pm || '--')}</td><td data-label="Next due" class="small">${esc(x.due_date || '--')}</td>
-        <td data-label="Status">${PM_STATE[x.state] || ''}</td><td style="text-align:right">${canStart ? `<button class="btn btn-ghost btn-sm" onclick="go('/pm/record?asset=${encodeURIComponent(x.asset)}')">Record PM</button>` : ''}</td></tr>`).join('')
-        || `<tr><td colspan="8" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody></table></div>
-      <div class="small muted" style="padding:12px 18px">${rows.length} of ${due.length} shown. Default interval ${num(d.default_interval)} days (Settings).</div></div>`,
+        <td data-label="Status">${PM_STATE[x.state] || ''}${x.checklist_items ? '' : '<div class="tiny muted">no checklist</div>'}</td>
+        <td data-label="Parts" class="small">${(x.parts || []).map(p => `<div>${esc((p.sku ? p.sku + ' ' : '') + p.name)} x ${num(p.qty)}${p.sku && +p.stock < +p.qty ? ' <span class="badge b-danger">short</span>' : ''}</div>`).join('') || '<span class="muted">--</span>'}</td>
+        <td style="text-align:right">${canStart ? `<button class="btn btn-ghost btn-sm" onclick="go('/pm/record?asset=${encodeURIComponent(x.asset)}')">Record PM</button>` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="9" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody></table></div>
+      <div class="small muted" style="padding:12px 18px">${rows.length} of ${due.length} shown. Default interval ${num(d.default_interval)} days (Settings). Parts come from the <a href="#/equipment/parts">PM parts plan</a>.</div></div>`,
     bind(){
       const q = $('#pmQ'); if (q) q.addEventListener('input', debounce(e => { PM.q = e.target.value; render(); const el = $('#pmQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 200));
-      [['#pmType', 'type'], ['#pmState', 'state']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => pmSet(k, e.target.value); });
+      [['#pmState', 'state']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => pmSet(k, e.target.value); });
+      fltBind(PM.f, 'pd', render);
     },
   };
 }
@@ -1900,9 +2452,10 @@ function pmSet(k, v){ PM[k] = (k === 'state' && PM.state === v) ? '' : v; render
 function pmDownload(tab){
   const d = PM.data || {};
   if (tab === 'eff') return downloadXlsx('PM effectiveness', [{ name: 'PM effectiveness', head: ['PM', 'Equipment code', 'Equipment', 'PM date', 'Next PM date', 'Target days', 'First failure', 'Failure', 'Failure minutes', 'Achieved days', 'Effectiveness %', 'Status'],
-    rows: (d.effectiveness || []).map(x => [x.job_id, x.asset, x.asset_name, x.pm_date, x.next_pm_date, x.target_days, x.failure_date, x.failure_ref, x.failure_minutes, x.achieved_days, x.effectiveness, x.status]) }]);
-  downloadXlsx('PM due', [{ name: 'PM due', head: ['Code', 'Equipment', 'Type', 'Area', 'Every (days)', 'Last PM', 'Next due', 'Status'],
-    rows: pmDueFiltered().map(x => [x.asset, x.name, x.type, x.area, x.interval_days, x.last_pm, x.due_date, PM_STATE_TEXT[x.state] || x.state]) }]);
+    rows: pmEffFiltered().map(x => [x.job_id, x.asset, x.asset_name, x.pm_date, x.next_pm_date, x.target_days, x.failure_date, x.failure_ref, x.failure_minutes, x.achieved_days, x.effectiveness, x.status]) }]);
+  downloadXlsx('PM due', [{ name: 'PM due', head: ['Code', 'Equipment', 'Type', 'Area', 'Every (days)', 'Last PM', 'Next due', 'Status', 'Checklist items', 'Parts for the next PM'],
+    rows: pmDueFiltered().map(x => [x.asset, x.name, x.type, x.area, x.interval_days, x.last_pm, x.due_date, PM_STATE_TEXT[x.state] || x.state, x.checklist_items,
+      (x.parts || []).map(p => (p.sku ? p.sku + ' ' : '') + p.name + ' x ' + num(p.qty)).join('; ')]) }]);
 }
 
 /* ============================================================
@@ -1910,13 +2463,13 @@ function pmDownload(tab){
    /actions (the list and the suggestions), /actions/new, /actions/<CA-0001> (one action on its own page, so it can be
    linked from a message). GET /webhook/engineering/api/actions; POST /actions/save, /actions/dismiss.
    ============================================================ */
-let AC = { data: null, filter: 'open', preset: null };
+let AC = { data: null, filter: 'open', preset: null, f: { type: '', area: '', asset: '' } };
 const AC_STATUS = { open: ['Open', 'b-warn'], in_progress: ['In progress', 'b-info'], done: ['Done, to check', 'b-brand'], verified: ['Effective', 'b-ok'],
                     not_effective: ['Not effective', 'b-danger'], cancelled: ['Cancelled', 'b-slate'] };
 async function acLoad(){ try { AC.data = await api('/webhook/engineering/api/actions'); } catch (err) { AC.data = { error: err.message }; } render(); if (!EQ.list && !EQ.loading) eqLoad(); }
 function acBadge(a){ const s = AC_STATUS[a.status] || [a.status, '']; return `<span class="badge ${s[1]}">${esc(s[0])}</span>${a.overdue ? ' <span class="badge b-danger">Overdue</span>' : ''}`; }
 const acOpenNow = a => ['open', 'in_progress', 'done'].includes(a.status);
-function acList(){ return ((AC.data || {}).actions || []).filter(a => AC.filter === 'all' || (AC.filter === 'open' ? acOpenNow(a) : !acOpenNow(a))); }
+function acList(){ return ((AC.data || {}).actions || []).filter(a => (AC.filter === 'all' || (AC.filter === 'open' ? acOpenNow(a) : !acOpenNow(a))) && fltMatch(AC.f, a.asset)); }
 function viewActions(){
   if (!AC.data) { AC.data = 'loading'; acLoad(); }
   const can = ['submit', 'edit'].includes(levelOf('engineering.actions')), d = AC.data, ready = d && d !== 'loading' && !d.error;
@@ -1933,13 +2486,14 @@ function viewActions(){
         <td data-label="Rule">${x.rule === 'repeat' ? '<span class="badge b-warn">Repeats</span>' : '<span class="badge b-danger">Long stop</span>'}</td>
         <td style="text-align:right">${can ? `<div class="row" style="gap:6px;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="acRaise(${i})">Raise an action</button><button class="btn btn-ghost btn-sm" onclick="acDismiss(${i})">No action needed</button></div>` : ''}</td></tr>`).join('')
         || `<tr><td colspan="3" class="muted" style="padding:16px">Nothing suggested.</td></tr>`}</tbody></table></div></div>
-    <div class="row" style="gap:8px;margin-bottom:10px">${[['open', 'Open'], ['closed', 'Closed'], ['all', 'All']].map(([k, l]) => `<button class="chip ${AC.filter === k ? 'on' : ''}" onclick="AC.filter='${k}'; render()">${l}</button>`).join('')}</div>
+    <div class="row filter-bar" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">${[['open', 'Open'], ['closed', 'Closed'], ['all', 'All']].map(([k, l]) => `<button class="chip ${AC.filter === k ? 'on' : ''}" onclick="AC.filter='${k}'; render()">${l}</button>`).join('')}${fltHtml(AC.f, 'acf')}</div>
     <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Action</th><th>Equipment</th><th>Title</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead>
       <tbody>${list.map(a => `<tr class="clickable" onclick="go('/actions/${esc(a.action_no)}')"><td class="mono small" data-label="Action">${esc(a.action_no)}<div class="tiny muted">${a.kind === 'corrective' ? 'Corrective' : 'Preventive'}</div></td>
         <td data-label="Equipment">${esc(a.asset_name || a.asset)}</td><td data-label="Title"><div class="strong">${esc(a.title)}</div>${a.trigger ? `<div class="tiny muted">${esc(a.trigger)}</div>` : ''}</td>
         <td data-label="Owner" class="small">${esc(a.owner_name || '')}</td><td data-label="Due" class="small">${esc(a.due_date)}</td><td data-label="Status">${acBadge(a)}</td></tr>`).join('')
         || `<tr><td colspan="6" class="muted" style="padding:16px">No actions here.</td></tr>`}</tbody></table></div>
-      <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Actions tab).</div></div>` };
+      <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Actions tab).</div></div>`,
+    bind(){ fltBind(AC.f, 'acf', render); } };
 }
 route('/actions', viewActions);
 function acDownload(){
@@ -2038,7 +2592,7 @@ route('/actions/:no', params => viewAction(params.no));
      Follow-up    corrective and preventive actions, the store
    A failure = a breakdown job, or a floor stop with a machine reason of pm_failure_minutes or more that no job covers.
    ============================================================ */
-let OV = { data: null, preset: '30', from: '', to: '' };
+let OV = { data: null, preset: '30', from: '', to: '', f: { type: '', area: '', asset: '' } };
 const OV_PRESETS = [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Pick dates']];
 const OV_TABS = [['reliability', 'Reliability', '/overview'], ['response', 'Response', '/overview/response'], ['preventive', 'Preventive', '/overview/preventive'], ['followup', 'Follow-up', '/overview/followup']];
 function ovRange(){
@@ -2050,23 +2604,28 @@ function ovRange(){
 }
 async function ovLoad(){
   const r = ovRange();
-  try { OV.data = await api('/webhook/engineering/api/overview?from=' + r.from + '&to=' + r.to); } catch (err) { OV.data = { error: err.message }; }
+  const f = ['type', 'area', 'asset'].filter(k => OV.f[k]).map(k => '&' + k + '=' + encodeURIComponent(OV.f[k])).join('');
+  try { OV.data = await api('/webhook/engineering/api/overview?from=' + r.from + '&to=' + r.to + f); } catch (err) { OV.data = { error: err.message }; }
   render();
 }
 function ovSet(k, v){ OV[k] = v; if (k === 'preset' && v === 'custom') { const r = ovRange(); OV.from = r.from; OV.to = r.to; } OV.data = null; render(); }
 const ovPct = (a, b) => b ? Math.round(100 * a / b) + '%' : '--';
 const ovStat = (lbl, val, meta, link, kind) => `<div class="stat ${link ? 'link' : ''} ${kind ? 'acc-' + kind : ''}" ${link ? `onclick="go('${link}')"` : ''}><div class="lbl">${esc(lbl)}</div><div class="val">${val == null ? '--' : val}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>`;
 function viewOverview(tab){
+  if (!EQ.list && !EQ.loading) eqLoad();
   if (!OV.data) { OV.data = 'loading'; ovLoad(); }
   const d = OV.data, r = ovRange();
   const filters = `<div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:flex-end">
       <div class="field" style="margin:0"><label for="ovPreset">Period</label><select class="inp" id="ovPreset" style="width:auto">${OV_PRESETS.map(([k, l]) => `<option value="${k}" ${OV.preset === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field" style="margin:0"><label for="ovFrom">From</label><input class="inp" type="date" id="ovFrom" value="${esc(r.from)}" max="${todayIso()}" style="width:auto" ${OV.preset === 'custom' ? '' : 'disabled'}></div>
-      <div class="field" style="margin:0"><label for="ovTo">To</label><input class="inp" type="date" id="ovTo" value="${esc(r.to)}" max="${todayIso()}" style="width:auto" ${OV.preset === 'custom' ? '' : 'disabled'}></div></div>`;
+      <div class="field" style="margin:0"><label for="ovTo">To</label><input class="inp" type="date" id="ovTo" value="${esc(r.to)}" max="${todayIso()}" style="width:auto" ${OV.preset === 'custom' ? '' : 'disabled'}></div>
+      <div class="field" style="margin:0"><span class="lbl">Equipment</span><div class="row" style="gap:8px;flex-wrap:wrap">${fltHtml(OV.f, 'ov')}${fltOn(OV.f) ? `<button class="btn btn-ghost btn-sm" onclick="OV.f = { type: '', area: '', asset: '' }; OV.data = null; render()">Clear</button>` : ''}</div></div></div>
+      ${fltOn(OV.f) ? '<div class="tiny muted" style="margin:-4px 0 10px">Filtered to the equipment chosen. The store figures (Follow-up) are for the whole store.</div>' : ''}`;
   const head = pageHead('Overview', 'Maintenance at a glance for the period you pick.', d && d !== 'loading' && !d.error ? dlButton('ovDownload()') : '') + filters
     + `<div class="tabs" style="margin-bottom:14px">${OV_TABS.map(([k, l, h]) => `<a class="tab ${k === tab ? 'on' : ''}" href="#${h}">${l}</a>`).join('')}</div>`;
   const bind = () => {
     const p = $('#ovPreset'); if (p) p.onchange = e => ovSet('preset', e.target.value);
+    fltBind(OV.f, 'ov', () => { OV.data = null; render(); });
     [['#ovFrom', 'from'], ['#ovTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { if (e.target.value) ovSet(k, e.target.value); }; });
   };
   if (d === 'loading') return { title:'Overview', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>`, bind };
@@ -2081,11 +2640,11 @@ function ovReliability(d){
       ${ovStat('Failures', num(x.failures) || 0, 'breakdowns, and machine stops of ' + num(d.failure_minutes) + ' min or more')}
       ${ovStat('MTTR', dur(x.mttr_min), 'mean time to repair: failure to running again')}
       ${ovStat('MTBF', x.mtbf_days == null ? '--' : num(x.mtbf_days) + ' days', 'mean time between failures on the same equipment')}
-      ${ovStat('Machine downtime (floor)', dur(x.downtime_min), num(x.stops) + ' stops with a machine reason', '/stops')}</div>
+      ${ovStat('Machine downtime', dur(x.downtime_min), 'floor ' + dur(x.floor_downtime_min) + ' (' + num(x.stops) + ' stops), daily report ' + dur(x.report_downtime_min) + ' (' + num(x.report_issues) + ' issues)', '/stops')}</div>
     <div class="card"><div class="card-h"><div><h3>Equipment</h3><div class="sub">Most downtime first. Open one to see its history.</div></div></div><div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Equipment</th><th style="text-align:right">Failures</th><th style="text-align:right">Downtime</th><th style="text-align:right">Floor stops</th><th style="text-align:right">MTTR</th><th style="text-align:right">MTBF</th><th>Last failure</th></tr></thead>
+      <thead><tr><th>Equipment</th><th style="text-align:right">Failures</th><th style="text-align:right">Downtime</th><th style="text-align:right">Stops / issues</th><th style="text-align:right">MTTR</th><th style="text-align:right">MTBF</th><th>Last failure</th></tr></thead>
       <tbody>${(x.equipment || []).map(m => `<tr class="clickable" onclick="go('/equipment/${esc(m.asset)}')"><td data-label="Equipment"><div class="strong">${esc(m.name)}</div><div class="tiny muted">${esc(m.type || '')}</div></td>
-        <td data-label="Failures" style="text-align:right">${m.failures}</td><td data-label="Downtime" style="text-align:right">${dur(m.downtime_min)}</td><td data-label="Floor stops" style="text-align:right">${m.stops}</td>
+        <td data-label="Failures" style="text-align:right">${m.failures}</td><td data-label="Downtime" style="text-align:right">${dur(m.downtime_min)}</td><td data-label="Stops / issues" style="text-align:right">${m.stops + (m.report_issues || 0)}</td>
         <td data-label="MTTR" style="text-align:right">${dur(m.mttr_min)}</td><td data-label="MTBF" style="text-align:right">${m.mtbf_days == null ? '--' : num(m.mtbf_days) + ' d'}</td>
         <td data-label="Last failure" class="small">${esc(dayHm(m.last_failure))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted" style="padding:16px">No failures or machine stops in this period.</td></tr>'}</tbody></table></div></div>`;
 }
@@ -2095,7 +2654,7 @@ function ovResponse(d){
       ${ovStat('Calls from the floor', num(x.calls) || 0, (x.not_accepted_now || 0) + ' not accepted right now', '/jobs', x.not_accepted_now ? 'warn' : '')}
       ${ovStat('Response time', dur(x.response_min), 'called to accepted, average')}
       ${ovStat('Wait for maintenance', dur(x.wait_min), 'called to technician at the machine, average')}
-      ${ovStat('Open jobs', num(x.open_now) || 0, (x.open_over_day || 0) + ' open over 24 h, ' + (x.waiting_part || 0) + ' waiting for a part', '/jobs?tab=open', x.open_over_day ? 'warn' : '')}</div>
+      ${ovStat('Open jobs', num(x.open_now) || 0, (x.open_over_day || 0) + ' open over 24 h, ' + (x.waiting_part || 0) + ' waiting for a part; ' + (x.to_report || 0) + ' report issues to fill in', '/jobs?tab=open', x.open_over_day ? 'warn' : '')}</div>
     <div class="card"><div class="card-h"><div><h3>Open jobs</h3><div class="sub">Oldest first.</div></div></div><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Job</th><th>Equipment</th><th>Type</th><th>Since</th><th>Status</th></tr></thead>
       <tbody>${(x.open_jobs || []).map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}</td>
@@ -2109,6 +2668,7 @@ function ovPreventive(d){
       ${ovStat('PM overdue', num(x.overdue) || 0, (x.due_week || 0) + ' due this week', '/pm', x.overdue ? 'danger' : '')}
       ${ovStat('PM effectiveness', x.effectiveness == null ? '--' : x.effectiveness + '%', (x.done || 0) + ' PMs in the period', '/pm/effectiveness')}
       ${ovStat('Planned work', x.planned_pct == null ? '--' : x.planned_pct + '%', 'of labour hours: everything but breakdowns')}</div>
+    ${x.checks_not_done ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>${x.checks_not_done} PM checklist item${x.checks_not_done === 1 ? ' was' : 's were'} not done in this period, ${x.checks_no_material || 0} for want of material.</div></div>` : ''}
     <div class="grid g2">
       <div class="card"><div class="card-h"><h3>Labour by type of job</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Type</th><th style="text-align:right">Jobs</th><th style="text-align:right">Hours</th></tr></thead>
         <tbody>${(x.hours || []).map(t => `<tr><td>${esc(JOB_TYPE[t.type] || t.type)}</td><td style="text-align:right">${t.jobs}</td><td style="text-align:right">${num(t.hours)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted" style="padding:16px">No jobs in this period.</td></tr>'}</tbody></table></div></div>
@@ -2139,8 +2699,9 @@ route('/overview/preventive', () => viewOverview('preventive'));
 route('/overview/followup', () => viewOverview('followup'));
 function ovDownload(){
   const d = OV.data || {}, rl = d.reliability || {}, rs = d.response || {}, pv = d.preventive || {}, fu = d.followup || {}, cw = fu.count_week || {};
-  const summary = [['Period', d.from + ' to ' + d.to],
-    ['Failures', rl.failures], ['MTTR (min)', rl.mttr_min], ['MTBF (days)', rl.mtbf_days], ['Machine downtime on the floor (min)', rl.downtime_min], ['Machine stops on the floor', rl.stops],
+  const fl = d.filter || {};
+  const summary = [['Period', d.from + ' to ' + d.to], ['Equipment', [fl.type, fl.area, fl.asset].filter(Boolean).join(', ') || 'all'],
+    ['Failures', rl.failures], ['MTTR (min)', rl.mttr_min], ['MTBF (days)', rl.mtbf_days], ['Machine downtime (min)', rl.downtime_min], ['Of which on the floor (min)', rl.floor_downtime_min], ['Of which in the daily report (min)', rl.report_downtime_min], ['Daily report issues', rl.report_issues], ['Machine stops on the floor', rl.stops],
     ['Calls from the floor', rs.calls], ['Response time (min)', rs.response_min], ['Wait for maintenance (min)', rs.wait_min], ['Open jobs now', rs.open_now], ['Open over 24 h', rs.open_over_day], ['Waiting for a part', rs.waiting_part],
     ['PM items tracked', pv.tracked], ['PM on schedule', pv.on_schedule], ['PM overdue', pv.overdue], ['PM due this week', pv.due_week], ['No PM recorded', pv.no_record], ['PMs in the period', pv.done],
     ['PM effectiveness %', pv.effectiveness], ['Planned work % of hours', pv.planned_pct],

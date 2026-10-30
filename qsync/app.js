@@ -114,10 +114,10 @@ const PRODUCTS_META = {
 };
 const UNIT_OPTIONS = { OSD: ['kg', 'tablets'], OLD: ['litres'] };
 const STAGE_OPTIONS = {
-  OSD: ['Granulation', 'Compression', 'Sacheting/Blistering/Stripping', 'Finished Product'],
-  OLD: ['Mixing', 'Filling/Sacheting', 'Finished Product']
+  OSD: ['Granulation', 'Compression', 'Finished Product'],   // primary packaging is not raised any more (QC, 29 Oct 2026); old requests keep their stage
+  OLD: ['Mixing', 'Finished Product']   // filling/sacheting is skipped like primary packaging (QC, 30 Oct 2026)
 };
-const ALL_STAGES = Array.from(new Set([...STAGE_OPTIONS.OSD, ...STAGE_OPTIONS.OLD]));
+const ALL_STAGES = Array.from(new Set([...STAGE_OPTIONS.OSD, 'Sacheting/Blistering/Stripping', 'Filling/Sacheting', ...STAGE_OPTIONS.OLD]));
 function yearsFromDates(items, field){
   const years = new Set();
   items.forEach(it => { const v = it[field]; if (v){ const w = watParts(v); if (w) years.add(w.y); } });
@@ -1005,7 +1005,8 @@ function viewProducts(){
     title:'Products and specifications', crumb:'Administration',
     html: `
     ${pageHead('Products and specifications',
-      'Acceptance criteria used to build the live IPQA testing form. Editing a limit here takes effect on IPQA\'s next form load.')}
+      'Acceptance criteria used to build the live IPQA testing form. A new product or a change is started by the QC Supervisor, reviewed by the QC Manager and approved by the QA Manager; it takes effect on the next IPQA form load once approved.',
+      hasLabRole('qc_supervisor') ? `<button class="btn btn-primary" onclick="productDialog()">${I.plus} New product</button>` : '')}
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
         <div class="row" style="gap:10px">
@@ -1052,7 +1053,7 @@ function viewProductDetail(id){
           </div>
           <div class="row" style="margin-top:16px;align-items:center;gap:12px;padding-top:14px;border-top:1px solid var(--line-2)">
             <div class="kv-item" style="flex:1"><div class="k">Shelf life</div><div class="v">${p.shelfLifeMonths} months</div></div>
-            ${canEdit() ? `<button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Edit</button>` : ''}
+            ${hasLabRole('qc_supervisor') ? `<button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Request change</button>` : ''}
           </div>
         </div>
       </div>
@@ -1067,7 +1068,7 @@ function viewProductDetail(id){
               <td class="small" data-label="Acceptance criteria">${esc(s.specText || (s.specMin!=null && s.specMax!=null ? `${s.specMin} - ${s.specMax}${s.unit?' '+s.unit:''}` : '--'))}</td>
               <td data-label="Type"><span class="chip">${s.specText ? 'Complies / Does not' : 'Numeric'}</span></td>
               <td style="text-align:right">${s.specText ? '<span class="tiny muted">Fixed</span>' :
-                (canEdit() ? `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Edit limits</button>` : '<span class="tiny muted">View only</span>')}</td>
+                (hasLabRole('qc_supervisor') ? `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Request change</button>` : '<span class="tiny muted">View only</span>')}</td>
             </tr>`).join('') : `<tr><td colspan="4" class="muted" style="padding:16px">No parameters imported for this stage.</td></tr>`}</tbody>
           </table></div>
         </div>`;
@@ -1077,61 +1078,38 @@ function viewProductDetail(id){
 }
 function editSpec(specId){
   let found = null;
-  for (const p of S.products){ const s = (p.specs||[]).find(x => x.id === specId); if (s){ found = s; break; } }
+  for (const p of S.products){ const s = (p.specs||[]).find(x => x.id === specId); if (s){ found = { s, p }; break; } }
   if (!found) return;
-  const s = found;
-  openModal({
-    title:`Edit limits - ${s.parameterName}`, sub:`Stage: ${esc(s.stage)}`,
-    body:`<form id="specForm" novalidate>
-      <div class="notice warn">${I.alert}<div>This changes the admin console's copy only - the live Google Sheet is unaffected.</div></div>
-      <div class="grid g2">
-        <div class="field"><label for="spMin">Lower limit</label>
-          <div class="inp-group"><input class="inp" id="spMin" value="${s.specMin ?? ''}" inputmode="decimal">
-            <div class="addon">${esc(s.unit||'')}</div></div><div class="err-msg hide" data-err="spMin"></div></div>
-        <div class="field"><label for="spMax">Upper limit</label>
-          <div class="inp-group"><input class="inp" id="spMax" value="${s.specMax ?? ''}" inputmode="decimal">
-            <div class="addon">${esc(s.unit||'')}</div></div><div class="err-msg hide" data-err="spMax"></div></div>
-      </div>
-    </form>`,
-    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save limits</button>`,
-    onMount:(w,close) => {
-      $('[data-save]',w).onclick = async () => {
-        clearErrors(w);
-        const min = parseFloat($('#spMin',w).value), max = parseFloat($('#spMax',w).value);
-        if (isNaN(min)) return setErr('spMin','Enter a numeric lower limit.',w);
-        if (isNaN(max)) return setErr('spMax','Enter a numeric upper limit.',w);
-        if (max <= min) return setErr('spMax','The upper limit must be greater than the lower limit.',w);
-        try {
-          await api('/webhook/admin/api/specs/edit', { method:'POST', body:{ spec_id:specId, spec_min:min, spec_max:max } });
-          s.specMin = min; s.specMax = max;
-          close(); render(); toast('Specification updated', esc(s.parameterName)+' is now '+min+' - '+max+' '+(s.unit||''), 'ok');
-        } catch (err){ setErr('spMax', err.message, w); }
-      };
+  const s = found.s, p = found.p;
+  signDialog({
+    title:`Change limits - ${s.parameterName}`, sub:`${p.name} - ${s.stage}. The QC Manager reviews it, then the QA Manager approves it.`, ok:'Sign and send',
+    meaning:'You start this change as QC Supervisor. The limits stay as they are until the QA Manager approves.',
+    body:`<div class="grid g2">
+        <div class="field"><label for="spMin">Lower limit</label><div class="inp-group"><input class="inp" id="spMin" value="${s.specMin ?? ''}" inputmode="decimal"><div class="addon">${esc(s.unit||'')}</div></div></div>
+        <div class="field"><label for="spMax">Upper limit</label><div class="inp-group"><input class="inp" id="spMax" value="${s.specMax ?? ''}" inputmode="decimal"><div class="addon">${esc(s.unit||'')}</div></div></div></div>`,
+    reason:'Why is this needed?', reasonRequired:true,
+    submit: async ({ password, reason, wrap }) => {
+      const min = parseFloat($('#spMin',wrap).value), max = parseFloat($('#spMax',wrap).value);
+      if (isNaN(min) || isNaN(max)) throw new Error('Enter a number for both limits.');
+      if (max <= min) throw new Error('The upper limit must be greater than the lower limit.');
+      await labPost('/change/submit', { kind:'product', action:'edit', target_id:p.id, reason, password, payload:{ spec_changes:[{ id:specId, spec_min:min, spec_max:max }] } });
+      toast('Sent to the QC Manager', esc(p.name)+' - '+esc(s.parameterName), 'ok');
     }
   });
 }
 function editShelfLife(productId){
   const p = S.products.find(x => x.id === productId);
   if (!p) return;
-  openModal({
-    title:`Edit shelf life - ${esc(p.name)}`, sub:'Used to calculate Exp Date on new test requests for this product',
-    body:`<form id="shelfForm" novalidate>
-      <div class="field"><label for="slMonths">Shelf life (months)</label>
-        <input class="inp" id="slMonths" value="${p.shelfLifeMonths}" inputmode="numeric">
-        <div class="err-msg hide" data-err="slMonths"></div></div>
-    </form>`,
-    footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save</button>`,
-    onMount:(w,close) => {
-      $('[data-save]',w).onclick = async () => {
-        clearErrors(w);
-        const months = parseInt($('#slMonths',w).value, 10);
-        if (!Number.isFinite(months) || months <= 0) return setErr('slMonths','Enter a whole number of months greater than zero.',w);
-        try {
-          await api('/webhook/admin/api/products/edit', { method:'POST', body:{ product_id:productId, shelf_life_months:months } });
-          p.shelfLifeMonths = months;
-          close(); render(); toast('Shelf life updated', esc(p.name)+' is now '+months+' months', 'ok');
-        } catch (err){ setErr('slMonths', err.message, w); }
-      };
+  signDialog({
+    title:`Change shelf life - ${p.name}`, sub:'Used to calculate Exp Date on new test requests. The QC Manager reviews it, then the QA Manager approves it.', ok:'Sign and send',
+    meaning:'You start this change as QC Supervisor. The shelf life stays as it is until the QA Manager approves.',
+    body:`<div class="field"><label for="slMonths">Shelf life (months)</label><input class="inp" id="slMonths" value="${p.shelfLifeMonths}" inputmode="numeric"></div>`,
+    reason:'Why is this needed?', reasonRequired:true,
+    submit: async ({ password, reason, wrap }) => {
+      const months = parseInt($('#slMonths',wrap).value, 10);
+      if (!Number.isFinite(months) || months <= 0) throw new Error('Enter a whole number of months greater than zero.');
+      await labPost('/change/submit', { kind:'product', action:'edit', target_id:productId, reason, password, payload:{ shelf_life_months:months } });
+      toast('Sent to the QC Manager', esc(p.name), 'ok');
     }
   });
 }
