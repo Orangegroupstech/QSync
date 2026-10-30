@@ -219,6 +219,15 @@ function matchRoute(path){
   return null;
 }
 
+/* Corrective and preventive actions are switched off for now (user, 30 Oct 2026): until the rest of the system runs
+   properly, other modules cover what they would do. Nothing is deleted (pages, data, workflow and database stay);
+   true brings back the menu item, the pages, the Overview figures and the equipment tab. */
+let ACTIONS_ON = false;
+/* Machine stops (floor stops nobody called in) is switched off too (user, 30 Oct 2026): Calls and jobs covers it (calls from
+   the floor, "Start a job" for anything else, the daily report issues). Floor stops still count as failures in PM
+   effectiveness and the KPIs, and still show on each machine's page. true brings the page back. */
+let STOPS_ON = false;
+
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   const mgr = levelOf('engineering.jobs') === 'edit';
@@ -229,7 +238,7 @@ function navModel(){
       { path:'/stops', label:'Machine stops', icon:'alert' },
       { path:'/pm', label:'Preventive maintenance', icon:'checkCircle' },
       { path:'/actions', label:'Corrective and preventive actions', icon:'edit' },
-    ] },
+    ].filter(it => (ACTIONS_ON || it.path !== '/actions') && (STOPS_ON || it.path !== '/stops')) },
     { title:'Logs', items:[
       { path:'/ahu', label:'AHU Temperature Log', icon:'thermo' },
       { path:'/outdoor', label:'Outdoor Units', icon:'thermo' },
@@ -705,7 +714,7 @@ function viewAsset(params){
   const canJob = ['submit', 'edit'].includes(levelOf('engineering.jobs')), k = d.kpis || {}, pm = d.pm;
   const tabs = [['jobs', 'Jobs', (d.jobs || []).length], ['failures', 'Failures', (d.failures || []).length]]
     .concat(a.floor_code ? [['stops', 'Floor stops', (d.stops || []).length]] : [])
-    .concat([['actions', 'Actions', (d.actions || []).length], ['parts', 'Parts used', (d.parts || []).length]])
+    .concat(ACTIONS_ON ? [['actions', 'Actions', (d.actions || []).length]] : []).concat([['parts', 'Parts used', (d.parts || []).length]])
     .concat(a.type === 'Outdoor unit' ? [['readings', 'Monthly readings', (d.outdoor || []).length]] : [])
     .concat([['checklist', 'PM checklist', (d.checklist || []).length], ['pmparts', 'PM parts', (d.pm_parts || []).length]]);
   const cur = tabs.some(t => t[0] === tab) ? tab : 'jobs';
@@ -774,6 +783,9 @@ function apDownload(code){
       rows: (d.outdoor || []).map(r => [String(r.month).slice(0, 7), r.running ? 'yes' : 'no', r.amps, r.low_psi, r.high_psi, r.superheat, r.subcooling, r.checked_on, r.checked_by, r.status]) }] : []));
 }
 
+// where a machine's PM failures come from (026): the floor app, the daily packaging report, or breakdown jobs only
+const FAIL_SRC = { floor: 'Floor app', report: 'Daily report', jobs: 'Breakdown jobs only' };
+const FAIL_FROM = { floor: 'failures from the floor app', report: 'failures from the daily report', jobs: 'failures from breakdown jobs only' };
 function eqOpen(code){
   const a = code ? eqByCode(code) : null, isNew = !a, canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
   const v = a || { code: '', name: '', type: 'Machine', area: '', parent: '', eq_no: '', floor_code: '', pm_interval_days: '', status: 'Active', notes: '' };
@@ -796,6 +808,10 @@ function eqOpen(code){
           <div class="hint">${I.info}<span>Floor stops and maintenance calls for this code come to this equipment.</span></div></div>
         <div class="field"><label for="eqPm">PM interval (days)</label><input class="inp" id="eqPm" type="number" min="1" max="730" value="${esc(v.pm_interval_days || '')}" ${dis} placeholder="default from Settings"></div>
         <div class="field"><label for="eqStatusSel">Status</label><select class="inp" id="eqStatusSel" ${dis}><option ${v.status === 'Active' ? 'selected' : ''}>Active</option><option ${v.status === 'Inactive' ? 'selected' : ''}>Inactive</option></select></div>
+        <div class="field"><label for="eqFail">PM failures come from</label><select class="inp" id="eqFail" ${dis}>
+          <option value="" ${v.failure_source ? '' : 'selected'}>Automatic${a && !a.failure_source && a.failure_from ? ' (' + esc(FAIL_SRC[a.failure_from]) + ')' : ''}</option>
+          ${Object.entries(FAIL_SRC).map(([k, l]) => `<option value="${k}" ${v.failure_source === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          <div class="hint">${I.info}<span>Floor app: only for lines the floor app logs (Zaiki, Mintacid). Daily report: production machines. Breakdown jobs only: AHUs, utilities and the like.</span></div></div>
       </div>
       <div class="field"><label for="eqNotes">Notes</label><textarea class="inp" id="eqNotes" rows="2" maxlength="500" ${dis}>${esc(v.notes || '')}</textarea></div>
       ${kids.length ? `<div class="small"><b>Parts (${kids.length}):</b> ${kids.map(k => `<a href="javascript:void 0" onclick="eqSwitch('${esc(k.code)}')">${esc(k.name)}</a>`).join(', ')}</div>` : ''}
@@ -808,7 +824,8 @@ function eqOpen(code){
         clearErrors(w);
         const asset = { is_new: isNew, code: ($('#eqCode', w).value || '').trim().toUpperCase(), name: $('#eqName', w).value.trim(), type: $('#eqTypeSel', w).value,
           area: $('#eqAreaIn', w).value.trim(), parent: $('#eqParent', w).value, eq_no: $('#eqEq', w).value.trim(), floor_code: $('#eqFloor', w).value.trim().toUpperCase(),
-          pm_interval_days: $('#eqPm', w).value.trim(), status: $('#eqStatusSel', w).value, notes: $('#eqNotes', w).value.trim() };
+          pm_interval_days: $('#eqPm', w).value.trim(), status: $('#eqStatusSel', w).value, notes: $('#eqNotes', w).value.trim(), failure_source: $('#eqFail', w).value };
+        if (asset.failure_source === 'floor' && !asset.floor_code) return setErr('eqName', 'Failures can only come from the floor app when it has a shop floor machine code.', w);
         if (isNew && !/^[A-Z0-9][A-Z0-9_.-]{1,39}$/.test(asset.code)) return setErr('eqName', 'The code must be 2 to 40 capital letters, digits, dots, dashes or underscores.', w);
         if (asset.name.length < 2) return setErr('eqName', 'Give it a name.', w);
         sv.disabled = true;
@@ -1071,7 +1088,8 @@ function viewSettings(){
           ${x.updated_by ? `<div class="tiny muted">Changed by ${esc(x.updated_by)}, ${esc(when(x.updated_at))}</div>` : ''}`;
   // number settings in the table; list settings (one entry per line) each get their own block below it, so no row grows tall
   const isList = x => x.unit === 'list' || x.unit === 'emails';
-  const nums = ES.list.filter(x => !isList(x)), lists = ES.list.filter(isList);
+  const off = x => (!STOPS_ON && /^recent_stops_/.test(x.key)) || (!ACTIONS_ON && /^ca_/.test(x.key));   // they only drive switched-off pages
+  const nums = ES.list.filter(x => !isList(x) && !off(x)), lists = ES.list.filter(isList);
   return {
     title:'Settings', crumb:'Setup',
     html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
@@ -1599,6 +1617,8 @@ const minsBetween = (a, b) => (a ? Math.max(0, Math.round(((b ? new Date(b) : ne
 function dur(m){ if (m == null) return '--'; if (m < 60) return m + ' min'; const h = Math.floor(m / 60); return h + ' h ' + String(m % 60).padStart(2, '0') + ' min'; }
 function jbMe(){ return (JB.board && JB.board.me) || {}; }
 function jbOnIt(j){ return (j.technicians || []).some(t => t.enroll_id === jbMe().enroll_id); }
+// one tab per job: a job you are on is under My jobs only, not also under Calls or Other open jobs
+function jbList(k){ const l = (JB.board || {})[k] || []; return k === 'calls' || k === 'open' ? l.filter(j => !jbOnIt(j)) : l; }
 function jbBadge(j){
   const who = j.accepted_by_name ? (j.accepted_by === jbMe().enroll_id ? 'you' : j.accepted_by_name) : '';
   const working = (j.technicians || []).map(t => t.enroll_id === jbMe().enroll_id ? 'you' : t.name).join(', ');
@@ -1634,7 +1654,7 @@ function jbAutoRefresh(on){
   if (on) JB.timer = setInterval(() => { if (/^\/jobs(\/|$)/.test(currentPath()) && !document.querySelector('#layers .overlay') && !JB.draft) jbLoad(true); else if (!/^\/jobs/.test(currentPath())) jbAutoRefresh(false); }, 30000);
 }
 function jbTabs(cur){
-  const b = JB.board || {}, n = k => (b[k] || []).length, open = (b.calls || []).filter(j => j.status === 'called').length;
+  const n = k => jbList(k).length, open = jbList('calls').filter(j => j.status === 'called').length;
   const tabs = [['calls', 'Calls', n('calls'), open], ['mine', 'My jobs', n('mine')], ['open', 'Other open jobs', n('open')], ['reports', 'From the daily report', n('reports'), n('reports')], ['history', 'History']];
   return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k, l, c, warn]) => `<a class="tab ${k === cur ? 'on' : ''}" href="#/jobs${k === 'calls' ? '' : '?tab=' + k}">${esc(l)}${c != null ? ` <span class="badge ${warn ? 'b-warn' : ''}" style="padding:1px 7px">${c}</span>` : ''}</a>`).join('')}</div>`;
 }
@@ -1683,20 +1703,20 @@ function viewJobs(){
     + (canStart ? `<button class="btn btn-ghost" onclick="go('/jobs/record')">${I.check} Record finished work</button><button class="btn btn-primary" onclick="go('/jobs/new')">${I.plus} Start a job</button>` : ''));
   if (JB.error) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the jobs', esc(JB.error), `<button class="btn btn-primary" onclick="jbLoad(true)">Try again</button>`)}</div></div>` };
   if (!JB.board) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
-  const b = JB.board, list = b[tab] || [];
+  const b = JB.board, list = jbList(tab);
   const me = b.me || {};
   const notStaff = canStart && !me.staff ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>Your account is not linked to an Engineering employee, so you can look but not take calls. Ask an admin to link it (Users).</div></div>` : '';
   const open = (b.calls || []).filter(j => j.status === 'called');
-  const sum = tab === 'calls' ? `<div class="small" style="margin-bottom:10px"><span class="badge ${open.length ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${(b.calls || []).length} open call${(b.calls || []).length === 1 ? '' : 's'} · ${open.length} not accepted yet</span>
+  const sum = tab === 'calls' ? `<div class="small" style="margin-bottom:10px"><span class="badge ${open.length ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${(b.calls || []).length} open call${(b.calls || []).length === 1 ? '' : 's'} · ${open.length} not accepted yet${(b.calls || []).length > list.length ? ' · ' + ((b.calls || []).length - list.length) + ' yours, under My jobs' : ''}</span>
     <span class="muted"> updated ${hm(b.now)}</span></div>` : '';
-  const empty = { calls: 'No open calls. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.',
+  const empty = { calls: 'No open calls for you to take. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.',
                   reports: 'Nothing to report. Issues from the daily packaging report (products the floor app does not cover) appear here for you to fill in.' }[tab];
   return {
     title:'Calls and jobs', crumb:'Maintenance', keepScroll: true,
     html: head + jbPushBanner() + notStaff + jbTabs(tab) + sum
       + (tab === 'reports' && list.length ? `<div class="small muted" style="margin-bottom:10px">Issues from the daily packaging report. Open one, say what failed and what was done, and save it.</div>` : '')
       + (list.length ? `<div class="grid g3 job-grid">${list.map(jbCard).join('')}</div>` : `<div class="card"><div class="card-b">${emptyState('wrench', empty, '')}</div></div>`)
-      + (tab === 'calls' ? `<div class="small muted" style="margin-top:12px">Machine stops nobody called in are on <a href="#/stops">Machine stops</a>.</div>` : ''),
+      + (tab === 'calls' && STOPS_ON ? `<div class="small muted" style="margin-top:12px">Machine stops nobody called in are on <a href="#/stops">Machine stops</a>.</div>` : ''),
   };
 }
 route('/jobs', viewJobs);
@@ -1756,7 +1776,7 @@ function viewJob(params, ctx){
   const partStatus = p => p.reversed_by ? '<span class="badge b-slate">Reversed</span>' : p.status === 'waiting' ? '<span class="badge b-warn">Waiting hand-over</span>' : '<span class="badge b-ok">Handed over</span>';
   let actions = '';
   if (can && me.staff && j.status === 'called') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'accept')">I'm coming</button>`;
-  else if (can && me.staff && j.status === 'accepted' && !onIt) actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join: start job</button>`;
+  else if (can && me.staff && j.status === 'accepted' && !onIt) actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join this job</button>`;
   else if (can && me.staff && j.status === 'accepted') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Start job (I'm at the machine)</button>`;
   else if (canWrite && rep) actions = `<button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">${I.check} Save and close</button>`;
   else if (can && me.staff && !onIt && (j.status === 'working' || j.status === 'waiting_part')) actions = `<button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join this job</button>`;
@@ -1931,7 +1951,8 @@ function viewJobNew(ctx){
   const title = ctx.pm ? 'Record a PM' : stopId ? 'Job on a machine stop' : mode === 'start' ? 'Start a job' : 'Record finished work';
   const sub = ctx.pm ? 'Preventive maintenance on one piece of equipment. Its next PM date is worked out from this. Past PMs from old records: Record past PMs.'
     : stopId ? (mode === 'start' ? 'The machine is still down: start the job now. It is linked to the stop.' : 'The machine runs again: record what was done. The times come from the stop; change them if needed.')
-    : mode === 'start' ? 'Work you are starting now without a call. Fill in what was done on the job when you finish.' : 'Work that is already done: say when, and what was done.';
+    : (mode === 'start' ? 'Work you are starting now without a call. Fill in what was done on the job when you finish.' : 'Work that is already done: say when, and what was done.')
+      + ' A PM is recorded from Preventive maintenance (it has the checklist).';
   const people = (SP.people || []).filter(p => p.enroll_id !== me.enroll_id);
   const popt = { id: 'jnLines', optional: true };
   const typeChips = !ctx.pm && !stopId;
@@ -2000,7 +2021,7 @@ function viewJobNew(ctx){
   };
 }
 route('/pm/record', () => viewJobNew({ pm: true }));
-route('/stops/:id/job', params => viewJobNew({ stop: params.id }));
+route('/stops/:id/job', params => STOPS_ON ? viewJobNew({ stop: params.id }) : (go('/jobs/new'), { title:'Calls and jobs', crumb:'Maintenance', html: '' }));
 
 /* ---- past PMs from old records (Engineering Manager): one date, several machines at once. No checklist; marked "backfilled". */
 let BF = { date: '', picked: [], f: { type: '', area: '', asset: '' }, q: '', work: '', techs: [] };
@@ -2060,9 +2081,10 @@ route('/pm/backfill', viewBackfill);
    /jobs/report (Engineering Manager): upload "OKL PERSONNEL PACKAGING - <MONTH>.xlsx" (first sheet, DAILY DOWNTIME TRACKER)
    or type one issue in. Each issue becomes a breakdown "to report" that technicians fill in (Calls and jobs, From the daily
    report). Products the floor app already covers are left out. The same date + machine + issue is only added once, so the
-   month's file can be uploaded again every day. POST /webhook/engineering/api/jobs/report {report: {dry, close, lines}} */
+   month's file can be uploaded again every day. POST /webhook/engineering/api/jobs/report {report: {dry, close, lines, days}}
+   days = the report days read (026): PM effectiveness waits for them on machines judged from the report. */
 const RP_LIVE = /zaiki|mintacid/i;     // products the floor app covers: their stops come from the floor
-let RP = { rows: null, file: '', from: '', close: false, error: '', busy: false, one: { date: '', asset: '', product: '', text: '', minutes: '', action: '' } };
+let RP = { rows: null, days: [], newDays: [], reportTo: '', file: '', from: '', close: false, error: '', busy: false, one: { date: '', asset: '', product: '', text: '', minutes: '', action: '' } };
 const rpNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const RP_RULES = [[/^kun(g)?lon(g)?(\d)$/, m => 'KUNLONG_' + m[3]], [/^jcmc[o0](\d)$/, m => 'JCMCO_' + m[1]], [/^wifa(machine)?$/, () => 'WIFA'], [/^ima(pg)?$/, () => 'IMA_PG'],
   [/^hoonga$/, () => 'HOONGA'], [/^chi(e)?mei(\d)$/, m => 'CHIMEI_' + m[2]], [/^(xiaolun|coating(machine)?)$/, () => 'COATING_XIAOLUN'], [/^wraptech$/, () => 'WRAPTECH'],
@@ -2116,10 +2138,11 @@ function rpParseSheet(aoa){
     if (/\(ctns\)/i.test(h) || /machine output/i.test(h)) break;
     cols.push({ c, product: h.replace(/\s*\(.*$/, '').trim() || h });
   }
-  const out = [];
+  const out = [], days = new Set();
   for (let r = issueRow + 1; r < aoa.length; r++) {
     const row = aoa[r] || [], date = rpDay(row[0]);
     if (!date) continue;
+    days.add(date);                // a row for the day = that day was reported, issues or not
     for (const { c, product } of cols) {
       if (RP_LIVE.test(product)) continue;
       const action = String(row[c + 1] || '').trim();
@@ -2127,35 +2150,43 @@ function rpParseSheet(aoa){
         action: /^issues?$|^action$/i.test(action) ? '' : action, raw: x.raw, pick: true, status: '' }));
     }
   }
+  out.days = Array.from(days).sort();
   return out;
 }
 async function rpFile(file){
-  RP.error = ''; RP.rows = null; RP.file = file ? file.name : ''; RP.busy = true; render();
+  RP.error = ''; RP.rows = null; RP.days = []; RP.newDays = []; RP.file = file ? file.name : ''; RP.busy = true; render();
   try {
     const XLSX = await loadSheetJS();
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
-    RP.rows = rpParseSheet(aoa);
-    if (!RP.rows.length) throw new Error('No issues found on the first sheet (Zaiki and Mintacid are left out: the floor app covers them).');
+    RP.rows = rpParseSheet(aoa); RP.days = RP.rows.days;
+    if (!RP.days.length) throw new Error('No days found on the first sheet.');
     await rpCheck();
-  } catch (e) { RP.error = e.message; RP.rows = RP.rows && RP.rows.length ? RP.rows : null; }
+  } catch (e) { RP.error = e.message; RP.rows = RP.rows && RP.days.length ? RP.rows : null; }
   finally { RP.busy = false; render(); }
 }
 const rpLine = x => ({ date: x.date, asset: x.asset, product: x.product, text: x.text, minutes: String(x.minutes), action: x.action, raw: x.raw });
-// ask the server which lines are new and which were added before (nothing is stored)
+// ask the server which lines are new and which were added before, and which report days were not read before (nothing is stored)
 async function rpCheck(){
   const ready = RP.rows.filter(x => x.asset);
-  for (let i = 0; i < ready.length; i += 400) {
-    const part = ready.slice(i, i + 400), r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ dry: true, lines: part.map(rpLine) } } });
+  for (let i = 0; i === 0 || i < ready.length; i += 400) {
+    const part = ready.slice(i, i + 400), r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ dry: true, lines: part.map(rpLine), days: i ? [] : RP.days } } });
     (r.lines || []).forEach(l => { const x = part[l.n - 1]; x.status = l.status; x.error = l.error || ''; x.job_id = l.job_id || ''; if (l.status === 'exists') x.pick = false; });
+    if (!i) { RP.newDays = r.new_days || []; RP.reportTo = r.report_to || ''; }
   }
 }
 function rpShown(){ return (RP.rows || []).filter(x => !RP.from || x.date >= RP.from); }
+// the days to mark as read: shown, and with no issue still waiting for a machine or refused
+function rpDaysToMark(){
+  const open = new Set(rpShown().filter(x => x.pick && x.status !== 'exists' && x.status !== 'added' && (!x.asset || x.status === 'error')).map(x => x.date));
+  return RP.days.filter(d => (!RP.from || d >= RP.from) && !open.has(d));
+}
 function viewReport(){
   if (!EQ.list && !EQ.loading) eqLoad();
   const back = `<a class="btn btn-ghost btn-sm" href="#/jobs?tab=reports">${I.chevL} Calls and jobs</a>`;
   if (levelOf('engineering.jobs') !== 'edit') return { title:'Daily report issues', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager adds issues from the daily report', '')}</div></div>` };
-  const rows = rpShown(), toAdd = rows.filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error');
+  const rows = rpShown(), toAdd = rows.filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error' && x.status !== 'added');
+  const markDays = RP.rows ? rpDaysToMark() : [], newMark = markDays.filter(d => RP.newDays.includes(d)), held = RP.rows ? RP.days.filter(d => (!RP.from || d >= RP.from) && !markDays.includes(d)) : [];
   const opts = cur => `<option value="">Choose the machine...</option>` + (EQ.list || []).filter(a => a.status === 'Active' && ['Machine', 'Line', 'Utility'].includes(a.type)).sort((a, b) => a.name.localeCompare(b.name))
     .map(a => `<option value="${esc(a.code)}" ${a.code === cur ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
   const st = x => x.status === 'exists' ? `<span class="badge b-slate">Added before${x.job_id ? ' · ' + esc(x.job_id) : ''}</span>` : x.status === 'added' ? `<span class="badge b-ok">Added · ${esc(x.job_id)}</span>`
@@ -2167,7 +2198,11 @@ function viewReport(){
       <div class="card-b"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><input type="file" id="rpFile" accept=".xlsx,.xls" class="inp" style="width:auto">
         ${RP.busy ? '<span class="small muted">Reading...</span>' : ''}${RP.file && !RP.busy ? `<span class="small muted">${esc(RP.file)}</span>` : ''}</div>
         ${RP.error ? `<div class="notice warn" style="margin-top:10px">${I.alert}<div>${esc(RP.error)}</div></div>` : ''}</div>
-      ${RP.rows ? `<div class="card-b filter-bar row" style="gap:10px;flex-wrap:wrap;border-top:1px solid var(--line-2);align-items:center">
+      ${RP.rows ? `<div class="card-b small" style="border-top:1px solid var(--line-2)">${RP.reportTo ? `Read so far up to <b>${esc(RP.reportTo)}</b>.` : 'No report day read yet.'}
+          The file has ${RP.days.length} day${RP.days.length === 1 ? '' : 's'} (${esc(RP.days[0] || '')} to ${esc(RP.days[RP.days.length - 1] || '')})${newMark.length ? `, <b>${newMark.length}</b> not read before` : ''}.
+          ${held.length ? `<span class="muted">${held.length} day${held.length === 1 ? '' : 's'} with issues still to sort out (machine or error) will be marked read once they are added.</span>` : ''}
+          <div class="tiny muted" style="margin-top:4px">PM effectiveness waits for these days on machines judged from the report, so read it in even when there are no new issues.</div></div>
+        <div class="card-b filter-bar row" style="gap:10px;flex-wrap:wrap;border-top:1px solid var(--line-2);align-items:center">
           <label class="small">From <input class="inp" type="date" id="rpFrom" value="${esc(RP.from)}" style="width:auto"></label>
           <label class="small row" style="gap:6px"><input type="checkbox" id="rpClose" ${RP.close ? 'checked' : ''}> Close them as they are (technicians do not fill them in)</label>
           <span style="flex:1"></span><span class="small">${rows.length} issues in the file${RP.from ? ' from ' + esc(RP.from) : ''}, <b>${toAdd.length}</b> to add</span></div>
@@ -2178,7 +2213,8 @@ function viewReport(){
             <td data-label="Issue" class="small">${esc(x.text)}${x.action ? `<div class="tiny muted">Action: ${esc(x.action)}</div>` : ''}</td><td data-label="Minutes" style="text-align:right" class="mono">${x.minutes}</td><td data-label="Status">${st(x)}</td></tr>`; }).join('')
             || '<tr><td colspan="7" class="muted" style="padding:16px">No issues in this period.</td></tr>'}</tbody></table></div>
         <div class="card-b row between" style="border-top:1px solid var(--line-2);gap:10px;flex-wrap:wrap"><span class="err-msg hide" data-err="rpAdd"></span><span style="flex:1"></span>
-          <button class="btn btn-primary" id="rpAdd" ${toAdd.length ? '' : 'disabled'}>${I.plus} Add ${toAdd.length} issue${toAdd.length === 1 ? '' : 's'}</button></div>` : ''}
+          <button class="btn btn-primary" id="rpAdd" ${toAdd.length || newMark.length ? '' : 'disabled'}>${I.plus} ${toAdd.length ? `Add ${toAdd.length} issue${toAdd.length === 1 ? '' : 's'}${newMark.length ? ` and mark ${newMark.length} day${newMark.length === 1 ? '' : 's'} read` : ''}`
+            : `Mark ${newMark.length} day${newMark.length === 1 ? '' : 's'} read (no new issues)`}</button></div>` : ''}
     </div>
     <div class="card"><div class="card-h"><div><h3>Add one issue by hand</h3><div class="sub">When the file is not to hand.</div></div></div><div class="card-b"><div class="grid g3">
       <div class="field"><label for="rp1Date">Date</label><input class="inp" type="date" id="rp1Date" max="${todayIso()}" value="${esc(o.date || todayIso())}"></div>
@@ -2198,17 +2234,20 @@ function viewReport(){
       const add = $('#rpAdd'); if (add) add.onclick = async () => {
         clearErrors(document);
         const lines = rpShown().filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error' && x.status !== 'added');
-        if (!lines.length) return;
-        if (!await confirmDialog('Add the issues', `Add <b>${lines.length}</b> issue${lines.length === 1 ? '' : 's'} as breakdowns${RP.close ? ', closed as they are' : ' for technicians to fill in'}?`, 'Add')) return;
+        if (!lines.length && !rpDaysToMark().some(d => RP.newDays.includes(d))) return;
+        if (lines.length && !await confirmDialog('Add the issues', `Add <b>${lines.length}</b> issue${lines.length === 1 ? '' : 's'} as breakdowns${RP.close ? ', closed as they are' : ' for technicians to fill in'}?`, 'Add')) return;
         add.disabled = true;
         try {
           let added = 0;
-          for (let i = 0; i < lines.length; i += 400) {
-            const part = lines.slice(i, i + 400), r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ close: RP.close, lines: part.map(rpLine) } } });
+          for (let i = 0; i === 0 || i < lines.length; i += 400) {    // the days go with the last part, once every issue is in
+            const part = lines.slice(i, i + 400), last = i + 400 >= lines.length;
+            const r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ close: RP.close, lines: part.map(rpLine), days: last ? rpDaysToMark() : [] } } });
             (r.lines || []).forEach(l => { const x = part[l.n - 1]; x.status = l.status; x.job_id = l.job_id || ''; });
             added += r.added || 0;
+            if (last) { RP.reportTo = r.report_to || RP.reportTo; RP.newDays = RP.newDays.filter(d => !rpDaysToMark().includes(d)); }
           }
-          toast(added + ' issue' + (added === 1 ? '' : 's') + ' added', RP.close ? '' : 'Technicians see them under From the daily report.', 'ok', 6000); JB.board = null; render();
+          toast(added + ' issue' + (added === 1 ? '' : 's') + ' added', (RP.reportTo ? 'Report read up to ' + RP.reportTo + '. ' : '') + (RP.close || !added ? '' : 'Technicians see them under Calls and jobs > From the daily report.'), 'ok', 6000);
+          JB.board = null; PM.data = null; render();
         } catch (e) { setErr('rpAdd', e.message); add.disabled = false; }
       };
       const keep = () => Object.assign(RP.one, { date: $('#rp1Date').value, asset: $('#rp1Asset').value, product: $('#rp1Product').value, text: $('#rp1Text').value, minutes: $('#rp1Min').value, action: $('#rp1Action').value });
@@ -2294,7 +2333,8 @@ function viewStops(){
         || `<tr><td colspan="6" class="muted" style="padding:16px">No machine stops to look at. Calls from the floor are on Calls and jobs.</td></tr>`}</tbody></table></div>
       <div class="small muted" style="padding:12px 18px">${s.length} stop${s.length === 1 ? '' : 's'}.</div></div>` };
 }
-route('/stops', viewStops);
+route('/stops', () => STOPS_ON ? viewStops() : { title:'Machine stops', crumb:'Maintenance',
+  html: `<div class="card"><div class="card-b">${emptyState('info', 'Switched off for now', 'Use Calls and jobs: calls from the floor, the daily report issues, or Start a job.', `<button class="btn btn-primary" onclick="go('/jobs')">Calls and jobs</button>`)}</div></div>` });
 function jbStopsDownload(){
   downloadXlsx('Machine stops', [{ name: 'Machine stops', head: ['Machine', 'Stage', 'Reason', 'Stopped', 'Ended', 'Minutes', 'Still down', "Operator's note", 'In the register'],
     rows: (Array.isArray(JB.stops) ? JB.stops : []).map(x => [x.machine_name, x.stage, x.reason, lagosDay(x.started_at), lagosDay(x.ended_at), x.minutes, x.still_down ? 'yes' : '', x.note, x.asset ? 'yes' : 'no']) }]);
@@ -2399,21 +2439,28 @@ function viewPm(tab){
   const due = d.due || [], eff = pmEffFiltered();
   if (tab === 'eff') {
     const scored = eff.filter(x => x.effectiveness != null), avg = scored.length ? Math.round(scored.reduce((s, x) => s + +x.effectiveness, 0) / scored.length) : null;
-    const effBadge = s => s === 'Failed early' ? '<span class="badge b-danger">Failed early</span>' : s === 'Running' ? '<span class="badge b-info">Running</span>' : '<span class="badge b-ok">Held to the next PM</span>';
+    const effBadge = s => s === 'Failed early' ? '<span class="badge b-danger">Failed early</span>' : s === 'Running' ? '<span class="badge b-info">Running</span>'
+      : s === 'Waiting for the daily report' ? '<span class="badge b-warn">Waiting for the daily report</span>' : '<span class="badge b-ok">Held to the next PM</span>';
+    const waiting = eff.filter(x => x.status === 'Waiting for the daily report').length, repTo = (eff.find(x => x.report_to) || {}).report_to;
+    const fromReport = eff.some(x => x.failure_source === 'report'), canReport = levelOf('engineering.jobs') === 'edit';
     return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
       html: head + `<div class="grid g4" style="margin-bottom:14px">
         <div class="stat"><div class="lbl">PM effectiveness</div><div class="val">${avg == null ? '--' : avg + '%'}</div><div class="meta">${scored.length} finished PM runs</div></div>
         <div class="stat"><div class="lbl">PMs in the period</div><div class="val">${eff.length}</div></div>
         <div class="stat"><div class="lbl">Failed early</div><div class="val">${eff.filter(x => x.status === 'Failed early').length}</div></div>
-        <div class="stat"><div class="lbl">Still running</div><div class="val">${eff.filter(x => x.status === 'Running').length}</div></div></div>
+        <div class="stat"><div class="lbl">Still running</div><div class="val">${eff.filter(x => x.status === 'Running').length}</div>${waiting ? `<div class="meta">${waiting} waiting for the daily report</div>` : ''}</div></div>
+      ${fromReport ? `<div class="notice ${waiting ? 'warn' : 'info'}" style="margin-bottom:12px">${I.info}<div>Machines the floor app does not cover are judged from the daily packaging report and breakdown jobs.
+        ${repTo ? `The report has been read up to <b>${esc(repTo)}</b>.` : '<b>No daily report has been read yet.</b>'}
+        ${waiting ? ` ${waiting} PM${waiting === 1 ? '' : 's'} wait${waiting === 1 ? 's' : ''} for it: without it, "no failure" cannot be trusted.` : ''}
+        ${canReport ? ` <a href="#/jobs/report">Upload the daily report</a>` : ''}</div></div>` : ''}
       <div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="pmFrom" value="${esc(PM.from)}" style="width:auto"></label>
         <label class="small">to <input class="inp" type="date" id="pmTo" value="${esc(PM.to)}" style="width:auto"></label>${fltHtml(PM.f, 'pe')}<span class="small muted">Default: the last 6 months.</span></div>
-      <div class="card"><div class="card-h"><div><div class="sub">Target = days to the next PM date. Achieved = days until the first breakdown or a machine stop of ${num(d.failure_minutes)} min or more.</div></div></div>
+      <div class="card"><div class="card-h"><div><div class="sub">Target = days to the next PM date. Achieved = days until the first breakdown job, floor stop or daily report issue of ${num(d.failure_minutes)} min or more. Where failures come from is set on each machine (Equipment and parts).</div></div></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>PM</th><th>Equipment</th><th>PM date</th><th>Next PM</th><th style="text-align:right">Target</th><th>First failure</th><th style="text-align:right">Achieved</th><th style="text-align:right">%</th><th>Status</th></tr></thead>
         <tbody>${eff.map(x => `<tr class="clickable" onclick="go('/pm/jobs/${esc(x.job_id)}')"><td class="mono small" data-label="PM">${esc(x.job_id)}${x.weekend && x.type !== 'preventive' ? `<div class="tiny muted">weekend ${esc(x.type)}</div>` : ''}</td>
-          <td data-label="Equipment">${esc(x.asset_name)}${x.backfilled ? '<div class="tiny muted">from old records</div>' : ''}</td><td data-label="PM date" class="small">${esc(x.pm_date)}</td><td data-label="Next PM" class="small">${esc(x.next_pm_date)}</td>
+          <td data-label="Equipment">${esc(x.asset_name)}<div class="tiny muted">${esc(FAIL_FROM[x.failure_source] || '')}${x.backfilled ? ' · PM from old records' : ''}</div></td><td data-label="PM date" class="small">${esc(x.pm_date)}</td><td data-label="Next PM" class="small">${esc(x.next_pm_date)}</td>
           <td data-label="Target" style="text-align:right">${x.target_days} d</td><td data-label="First failure" class="small">${x.failure_date ? esc(x.failure_date) + `<div class="tiny muted">${esc(x.failure_ref || '')}${x.failure_minutes != null ? ', ' + x.failure_minutes + ' min' : ''}</div>` : '--'}</td>
-          <td data-label="Achieved" style="text-align:right">${x.achieved_days} d</td><td data-label="%" style="text-align:right" class="strong">${x.effectiveness == null ? '--' : x.effectiveness + '%'}</td><td data-label="Status">${effBadge(x.status)}</td></tr>`).join('')
+          <td data-label="Achieved" style="text-align:right">${x.achieved_days == null ? '--' : x.achieved_days + ' d'}</td><td data-label="%" style="text-align:right" class="strong">${x.effectiveness == null ? '--' : x.effectiveness + '%'}</td><td data-label="Status">${effBadge(x.status)}</td></tr>`).join('')
           || `<tr><td colspan="9" class="muted" style="padding:16px">No PM recorded in this period.</td></tr>`}</tbody></table></div></div>`,
       bind(){ [['#pmFrom', 'from'], ['#pmTo', 'to']].forEach(([id, k]) => { const el = $(id); if (el) el.onchange = e => { PM[k] = e.target.value; PM.data = null; render(); }; }); fltBind(PM.f, 'pe', render); } };
   }
@@ -2451,8 +2498,9 @@ route('/pm/effectiveness', () => viewPm('eff'));
 function pmSet(k, v){ PM[k] = (k === 'state' && PM.state === v) ? '' : v; render(); }
 function pmDownload(tab){
   const d = PM.data || {};
-  if (tab === 'eff') return downloadXlsx('PM effectiveness', [{ name: 'PM effectiveness', head: ['PM', 'Equipment code', 'Equipment', 'PM date', 'Next PM date', 'Target days', 'First failure', 'Failure', 'Failure minutes', 'Achieved days', 'Effectiveness %', 'Status'],
-    rows: pmEffFiltered().map(x => [x.job_id, x.asset, x.asset_name, x.pm_date, x.next_pm_date, x.target_days, x.failure_date, x.failure_ref, x.failure_minutes, x.achieved_days, x.effectiveness, x.status]) }]);
+  if (tab === 'eff') return downloadXlsx('PM effectiveness', [{ name: 'PM effectiveness', head: ['PM', 'Equipment code', 'Equipment', 'PM date', 'Next PM date', 'Target days', 'First failure', 'Failure', 'Failure minutes', 'Achieved days', 'Effectiveness %', 'Status', 'Failures from', 'Daily report read to'],
+    rows: pmEffFiltered().map(x => [x.job_id, x.asset, x.asset_name, x.pm_date, x.next_pm_date, x.target_days, x.failure_date, x.failure_ref, x.failure_minutes, x.achieved_days, x.effectiveness, x.status,
+      FAIL_FROM[x.failure_source] || '', x.report_to || '']) }]);
   downloadXlsx('PM due', [{ name: 'PM due', head: ['Code', 'Equipment', 'Type', 'Area', 'Every (days)', 'Last PM', 'Next due', 'Status', 'Checklist items', 'Parts for the next PM'],
     rows: pmDueFiltered().map(x => [x.asset, x.name, x.type, x.area, x.interval_days, x.last_pm, x.due_date, PM_STATE_TEXT[x.state] || x.state, x.checklist_items,
       (x.parts || []).map(p => (p.sku ? p.sku + ' ' : '') + p.name + ' x ' + num(p.qty)).join('; ')]) }]);
@@ -2495,7 +2543,9 @@ function viewActions(){
       <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Actions tab).</div></div>`,
     bind(){ fltBind(AC.f, 'acf', render); } };
 }
-route('/actions', viewActions);
+function acOff(){ return { title:'Corrective and preventive actions', crumb:'Maintenance',
+  html: `<div class="card"><div class="card-b">${emptyState('info', 'Switched off for now', 'Corrective and preventive actions are not in use yet. What was recorded is kept.')}</div></div>` }; }
+route('/actions', () => ACTIONS_ON ? viewActions() : acOff());
 function acDownload(){
   downloadXlsx('Actions', [{ name: 'Actions', head: ['Action', 'Type', 'Status', 'Equipment code', 'Equipment', 'Title', 'What happened', 'Root cause', 'Action to take', 'Owner', 'Due', 'Overdue', 'Raised by', 'Raised', 'Done', 'What was done', 'Checked by', 'Check note', 'Linked jobs', 'Trigger'],
     rows: acList().map(a => [a.action_no, a.kind === 'corrective' ? 'Corrective' : 'Preventive', (AC_STATUS[a.status] || [a.status])[0], a.asset, a.asset_name, a.title, a.problem, a.root_cause, a.action_to_take,
@@ -2581,8 +2631,8 @@ function viewAction(no){
     }); },
   };
 }
-route('/actions/new', () => viewAction(null));
-route('/actions/:no', params => viewAction(params.no));
+route('/actions/new', () => ACTIONS_ON ? viewAction(null) : acOff());
+route('/actions/:no', params => ACTIONS_ON ? viewAction(params.no) : acOff());
 
 /* ============================================================
    Overview (migration 023): the manager's KPIs for a date range, on four tabs. GET /webhook/engineering/api/overview?from&to
@@ -2594,7 +2644,7 @@ route('/actions/:no', params => viewAction(params.no));
    ============================================================ */
 let OV = { data: null, preset: '30', from: '', to: '', f: { type: '', area: '', asset: '' } };
 const OV_PRESETS = [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Pick dates']];
-const OV_TABS = [['reliability', 'Reliability', '/overview'], ['response', 'Response', '/overview/response'], ['preventive', 'Preventive', '/overview/preventive'], ['followup', 'Follow-up', '/overview/followup']];
+const OV_TABS = [['reliability', 'Reliability', '/overview'], ['response', 'Response', '/overview/response'], ['preventive', 'Preventive', '/overview/preventive'], ['followup', ACTIONS_ON ? 'Follow-up' : 'Store', '/overview/followup']];
 function ovRange(){
   const t = todayIso(), back = n => { const d = new Date(t + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
   if (OV.preset === 'custom') return { from: OV.from || back(29), to: OV.to || t };
@@ -2620,7 +2670,7 @@ function viewOverview(tab){
       <div class="field" style="margin:0"><label for="ovFrom">From</label><input class="inp" type="date" id="ovFrom" value="${esc(r.from)}" max="${todayIso()}" style="width:auto" ${OV.preset === 'custom' ? '' : 'disabled'}></div>
       <div class="field" style="margin:0"><label for="ovTo">To</label><input class="inp" type="date" id="ovTo" value="${esc(r.to)}" max="${todayIso()}" style="width:auto" ${OV.preset === 'custom' ? '' : 'disabled'}></div>
       <div class="field" style="margin:0"><span class="lbl">Equipment</span><div class="row" style="gap:8px;flex-wrap:wrap">${fltHtml(OV.f, 'ov')}${fltOn(OV.f) ? `<button class="btn btn-ghost btn-sm" onclick="OV.f = { type: '', area: '', asset: '' }; OV.data = null; render()">Clear</button>` : ''}</div></div></div>
-      ${fltOn(OV.f) ? '<div class="tiny muted" style="margin:-4px 0 10px">Filtered to the equipment chosen. The store figures (Follow-up) are for the whole store.</div>' : ''}`;
+      ${fltOn(OV.f) ? `<div class="tiny muted" style="margin:-4px 0 10px">Filtered to the equipment chosen. The store figures (${ACTIONS_ON ? 'Follow-up' : 'Store'}) are for the whole store.</div>` : ''}`;
   const head = pageHead('Overview', 'Maintenance at a glance for the period you pick.', d && d !== 'loading' && !d.error ? dlButton('ovDownload()') : '') + filters
     + `<div class="tabs" style="margin-bottom:14px">${OV_TABS.map(([k, l, h]) => `<a class="tab ${k === tab ? 'on' : ''}" href="#${h}">${l}</a>`).join('')}</div>`;
   const bind = () => {
@@ -2640,7 +2690,7 @@ function ovReliability(d){
       ${ovStat('Failures', num(x.failures) || 0, 'breakdowns, and machine stops of ' + num(d.failure_minutes) + ' min or more')}
       ${ovStat('MTTR', dur(x.mttr_min), 'mean time to repair: failure to running again')}
       ${ovStat('MTBF', x.mtbf_days == null ? '--' : num(x.mtbf_days) + ' days', 'mean time between failures on the same equipment')}
-      ${ovStat('Machine downtime', dur(x.downtime_min), 'floor ' + dur(x.floor_downtime_min) + ' (' + num(x.stops) + ' stops), daily report ' + dur(x.report_downtime_min) + ' (' + num(x.report_issues) + ' issues)', '/stops')}</div>
+      ${ovStat('Machine downtime', dur(x.downtime_min), 'floor ' + dur(x.floor_downtime_min) + ' (' + num(x.stops) + ' stops), daily report ' + dur(x.report_downtime_min) + ' (' + num(x.report_issues) + ' issues)', STOPS_ON ? '/stops' : '')}</div>
     <div class="card"><div class="card-h"><div><h3>Equipment</h3><div class="sub">Most downtime first. Open one to see its history.</div></div></div><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Equipment</th><th style="text-align:right">Failures</th><th style="text-align:right">Downtime</th><th style="text-align:right">Stops / issues</th><th style="text-align:right">MTTR</th><th style="text-align:right">MTBF</th><th>Last failure</th></tr></thead>
       <tbody>${(x.equipment || []).map(m => `<tr class="clickable" onclick="go('/equipment/${esc(m.asset)}')"><td data-label="Equipment"><div class="strong">${esc(m.name)}</div><div class="tiny muted">${esc(m.type || '')}</div></td>
@@ -2678,6 +2728,10 @@ function ovPreventive(d){
 }
 function ovFollowup(d){
   const x = d.followup || {}, cw = x.count_week || {};
+  if (!ACTIONS_ON) return `<div class="grid g4" style="margin-bottom:16px">
+      ${ovStat('Out of stock', num(x.out_of_stock) || 0, (x.reorder || 0) + ' more at or below the reorder level', '/spares')}
+      ${ovStat('Hand-overs waiting', num(x.handovers_waiting) || 0, 'parts recorded on jobs, not confirmed', '/spares/handovers', x.handovers_waiting ? 'warn' : '')}
+      ${ovStat('Weekly count', (cw.done || 0) + ' of ' + (cw.items || 0), 'this week', '/spares/counts')}</div>`;
   return `<h3 style="margin:4px 0 10px">Corrective and preventive actions</h3><div class="grid g4" style="margin-bottom:16px">
       ${ovStat('Actions open', num(x.actions_open) || 0, (x.actions_to_check || 0) + ' done, waiting to be checked', '/actions')}
       ${ovStat('Actions overdue', num(x.actions_overdue) || 0, 'past their due date', '/actions', x.actions_overdue ? 'danger' : '')}
@@ -2705,8 +2759,8 @@ function ovDownload(){
     ['Calls from the floor', rs.calls], ['Response time (min)', rs.response_min], ['Wait for maintenance (min)', rs.wait_min], ['Open jobs now', rs.open_now], ['Open over 24 h', rs.open_over_day], ['Waiting for a part', rs.waiting_part],
     ['PM items tracked', pv.tracked], ['PM on schedule', pv.on_schedule], ['PM overdue', pv.overdue], ['PM due this week', pv.due_week], ['No PM recorded', pv.no_record], ['PMs in the period', pv.done],
     ['PM effectiveness %', pv.effectiveness], ['Planned work % of hours', pv.planned_pct],
-    ['Actions open', fu.actions_open], ['Actions overdue', fu.actions_overdue], ['Actions to check', fu.actions_to_check], ['Actions effective', fu.effective], ['Actions not effective', fu.not_effective],
-    ['Suggested actions', fu.suggestions], ['Out of stock', fu.out_of_stock], ['At or below reorder', fu.reorder], ['Hand-overs waiting', fu.handovers_waiting], ['Weekly count done', (cw.done || 0) + ' of ' + (cw.items || 0)]];
+    ...(ACTIONS_ON ? [['Actions open', fu.actions_open], ['Actions overdue', fu.actions_overdue], ['Actions to check', fu.actions_to_check], ['Actions effective', fu.effective], ['Actions not effective', fu.not_effective],
+    ['Suggested actions', fu.suggestions]] : []), ['Out of stock', fu.out_of_stock], ['At or below reorder', fu.reorder], ['Hand-overs waiting', fu.handovers_waiting], ['Weekly count done', (cw.done || 0) + ' of ' + (cw.items || 0)]];
   downloadXlsx('Engineering overview ' + d.from + ' to ' + d.to, [
     { name: 'Summary', head: ['KPI', 'Value'], rows: summary },
     { name: 'Equipment', head: ['Code', 'Equipment', 'Type', 'Failures', 'Downtime (min)', 'Floor stops', 'MTTR (min)', 'MTBF (days)', 'Last failure'],
@@ -2715,7 +2769,7 @@ function ovDownload(){
     { name: 'Open jobs', head: ['Job', 'Equipment', 'Type', 'Status', 'Since'], rows: (rs.open_jobs || []).map(j => [j.job_id, j.machine_name || j.asset_name || j.asset, JOB_TYPE[j.type] || j.type, j.status, lagosDay(j.called_at || j.started_at || j.created_at)]) },
     { name: 'Labour by type', head: ['Type', 'Jobs', 'Hours'], rows: (pv.hours || []).map(t => [JOB_TYPE[t.type] || t.type, t.jobs, +t.hours]) },
     { name: 'Overdue actions', head: ['Action', 'Equipment', 'Title', 'Owner', 'Due'], rows: (fu.overdue_actions || []).map(a => [a.action_no, a.asset_name || a.asset, a.title, a.owner_name, a.due_date]) },
-  ]);
+  ].filter(sh => ACTIONS_ON || sh.name !== 'Overdue actions'));
 }
 
 /* ============================================================
