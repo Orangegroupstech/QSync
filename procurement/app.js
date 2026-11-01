@@ -388,7 +388,7 @@ function statusBadgeClass(status){
 }
 function matchesItemQuery(it, q){
   if (!q) return true;
-  const haystack = [it.item_id, it.requestor, it.material_name, it.material_type, it.department, it.purpose].map(v => String(v||'').toLowerCase()).join(' ');
+  const haystack = [it.item_id, it.requestor, it.material_name, it.item_detail, it.material_type, it.department, it.purpose].map(v => String(v||'').toLowerCase()).join(' ');
   return haystack.includes(q);
 }
 function inDateRange(dateStr, from, to){
@@ -518,7 +518,7 @@ function viewItems(){
     <div class="row filter-bar" style="margin-bottom:14px;flex-wrap:wrap;row-gap:10px">
       <div class="search filter-search">
         <span class="ic">${I.search}</span>
-        <input class="inp" id="itemSearch" placeholder="Search item ID, requestor, material, purpose..." value="${esc(itemQuery)}">
+        <input class="inp" id="itemSearch" placeholder="Search item ID, requestor, material, item detail, purpose..." value="${esc(itemQuery)}">
       </div>
       <select class="inp filter-sel-status" id="itemDeptFilter">
         <option value="">All departments</option>
@@ -535,7 +535,7 @@ function viewItems(){
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr>
-          <th>Request Date</th><th>Item ID</th><th>Requestor</th><th>Material</th>
+          <th>Request Date</th><th>Item ID</th><th>Requestor</th><th>Material</th><th>Item Detail</th>
           <th>Material Type</th><th>Qty &amp; Unit</th><th>Status</th>
         </tr></thead>
         <tbody>${rows.length ? rows.map(it => `
@@ -544,10 +544,11 @@ function viewItems(){
             <td class="mono" data-label="Item ID">${esc(it.item_id||'--')}</td>
             <td data-label="Requestor"><div class="person">${avatarEl(it.requestor)}<div class="person-txt"><span class="strong" title="${esc(it.requestor)}">${esc(it.requestor)}</span></div></div></td>
             <td data-label="Material">${esc(it.material_name||'--')}</td>
+            <td data-label="Item Detail" style="max-width:280px;white-space:normal" title="${esc(it.item_detail||'')}">${esc(it.item_detail||'--')}</td>
             <td data-label="Material Type">${esc(it.material_type||'--')}</td>
             <td data-label="Qty & Unit">${esc(formatQty(it))}</td>
             <td data-label="Status">${it.request_status ? `<span class="badge ${statusBadgeClass(it.request_status)}">${esc(it.request_status)}</span>` : '--'}</td>
-          </tr>`).join('') : `<tr><td colspan="7">${emptyState('box','No items match', 'Try a different search or filter.')}</td></tr>`}
+          </tr>`).join('') : `<tr><td colspan="8">${emptyState('box','No items match', 'Try a different search or filter.')}</td></tr>`}
         </tbody>
       </table></div>
     </div>`,

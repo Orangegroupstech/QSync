@@ -1714,7 +1714,7 @@ function viewJobs(){
   const sum = tab === 'calls' ? `<div class="small" style="margin-bottom:10px"><span class="badge ${open.length ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${(b.calls || []).length} open call${(b.calls || []).length === 1 ? '' : 's'} · ${open.length} not accepted yet${(b.calls || []).length > list.length ? ' · ' + ((b.calls || []).length - list.length) + ' yours, under My jobs' : ''}</span>
     <span class="muted"> updated ${hm(b.now)}</span></div>` : '';
   const empty = { calls: 'No open calls for you to take. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.',
-                  reports: 'Nothing to report. Issues from the daily packaging report (products the floor app does not cover) appear here for you to fill in.' }[tab];
+                  reports: 'Nothing to report. Machine stops of 30 minutes or more from the OKL daily packaging report e-mail (all products but Zaiki and Mintacid) appear here for you to fill in, for 7 days; older ones are in History.' }[tab];
   return {
     title:'Calls and jobs', crumb:'Maintenance', keepScroll: true,
     html: head + jbPushBanner() + notStaff + jbTabs(tab) + sum
@@ -2088,11 +2088,13 @@ route('/pm/backfill', viewBackfill);
    month's file can be uploaded again every day. POST /webhook/engineering/api/jobs/report {report: {dry, close, lines, days}}
    days = the report days read (026): PM effectiveness waits for them on machines judged from the report. */
 const RP_LIVE = /zaiki|mintacid/i;     // products the floor app covers: their stops come from the floor
-let RP = { rows: null, days: [], newDays: [], reportTo: '', file: '', from: '', close: false, error: '', busy: false, one: { date: '', asset: '', product: '', text: '', minutes: '', action: '' } };
+let RP = { rows: null, days: [], newDays: [], reportTo: '', file: '', from: '', close: false, error: '', busy: false, one: { date: '', asset: '', product: '', text: '', minutes: '', action: '' },
+           waiting: null, waitPick: {} };     // waiting: issues from the e-mailed report whose machine name is unknown (028)
+async function rpWaitingLoad(){ try { RP.waiting = (await api('/webhook/engineering/api/jobs/report/waiting')).waiting || []; } catch (e) { RP.waiting = []; } render(); }
 const rpNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const RP_RULES = [[/^kun(g)?lon(g)?(\d)$/, m => 'KUNLONG_' + m[3]], [/^jcmc[o0](\d)$/, m => 'JCMCO_' + m[1]], [/^wifa(machine)?$/, () => 'WIFA'], [/^ima(pg)?$/, () => 'IMA_PG'],
   [/^hoonga$/, () => 'HOONGA'], [/^chi(e)?mei(\d)$/, m => 'CHIMEI_' + m[2]], [/^(xiaolun|coating(machine)?)$/, () => 'COATING_XIAOLUN'], [/^wraptech$/, () => 'WRAPTECH'],
-  [/^siebler(\d)$/, m => 'SIEBLER_' + m[1]], [/^duankwei(\d)$/, m => 'DUANKWEI_' + m[1]], [/^(dynafold|folding(machine)?)$/, () => 'FOLDING_DYNAFOLD']];
+  [/^siebler(\d)$/, m => 'SIEBLER_' + m[1]], [/^duankwei(\d)$/, m => 'DUANKWEI_' + m[1]], [/^(dynafold|folding(machine)?)$/, () => 'FOLDING_DYNAFOLD'], [/^coretamp$/, () => 'CANNON_PM_SACHET']];
 // the register code for a machine name in the report ('' when unsure); the manager's earlier picks are remembered on this browser
 function rpMachine(name){
   const n = rpNorm(name); if (!n) return '';
@@ -2187,6 +2189,7 @@ function rpDaysToMark(){
 }
 function viewReport(){
   if (!EQ.list && !EQ.loading) eqLoad();
+  if (RP.waiting === null && levelOf('engineering.jobs') === 'edit') { RP.waiting = []; rpWaitingLoad(); }
   const back = `<a class="btn btn-ghost btn-sm" href="#/jobs?tab=reports">${I.chevL} Calls and jobs</a>`;
   if (levelOf('engineering.jobs') !== 'edit') return { title:'Daily report issues', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager adds issues from the daily report', '')}</div></div>` };
   const rows = rpShown(), toAdd = rows.filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error' && x.status !== 'added');
@@ -2196,8 +2199,18 @@ function viewReport(){
   const st = x => x.status === 'exists' ? `<span class="badge b-slate">Added before${x.job_id ? ' · ' + esc(x.job_id) : ''}</span>` : x.status === 'added' ? `<span class="badge b-ok">Added · ${esc(x.job_id)}</span>`
     : !x.asset ? '<span class="badge b-warn">Choose the machine</span>' : x.status === 'error' ? `<span class="badge b-danger">${esc(x.error)}</span>` : '<span class="badge b-info">New</span>';
   const o = RP.one;
+  // issues from the e-mail that wait for a machine: one row per machine name as the report writes it
+  const groups = [];
+  for (const w of RP.waiting || []) { const k = rpNorm(w.machine); let g = groups.find(x => x.key === k); if (!g) groups.push(g = { key: k, name: w.machine || '', items: [] }); g.items.push(w); }
+  const waitCard = groups.length ? `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>From the e-mail: choose the machine</h3>
+      <div class="sub">The OKL report names a machine the register does not know. Choose it once: the name is remembered and its issues are added.</div></div></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name in the report</th><th>Issues</th><th>Machine</th><th></th></tr></thead><tbody>${groups.map((g, i) => `<tr>
+      <td data-label="Name in the report"><b>"${esc(g.name || '(none)')}"</b></td>
+      <td data-label="Issues" class="small">${g.items.slice(0, 4).map(x => `${esc(String(x.day).slice(0, 10))} · ${esc(x.product)} · ${esc(x.text)} (${x.minutes} min)`).join('<br>')}${g.items.length > 4 ? `<br><span class="muted">and ${g.items.length - 4} more</span>` : ''}</td>
+      <td data-label="Machine"><select class="inp" data-rp-wait="${i}" style="min-width:190px">${opts(RP.waitPick[g.key] || '')}</select></td>
+      <td><button class="btn btn-primary btn-sm" data-rp-wait-save="${i}" ${RP.waitPick[g.key] ? '' : 'disabled'}>Save</button><span class="err-msg hide" data-err="rpWait${i}"></span></td></tr>`).join('')}</tbody></table></div></div>` : '';
   return { title:'Daily report issues', crumb:'Maintenance', keepScroll: true,
-    html: back + pageHead('Issues from the daily packaging report', 'For products the floor app does not cover yet (all but Zaiki and Mintacid). Each issue becomes a breakdown that technicians fill in: what failed and what was done. Upload the month\'s file as often as you like: issues already added are skipped.') + `
+    html: back + pageHead('Issues from the daily packaging report', 'For products the floor app does not cover yet (all but Zaiki and Mintacid). The OKL report e-mail adds its machine stops of 30 minutes or more by itself (the last report day for technicians to fill in, earlier days as history). A missed e-mail: upload the files on the home page, Daily production (the file below is the older way, OKL only).') + waitCard + `
     <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>From the Excel file</h3><div class="sub">"OKL PERSONNEL PACKAGING - &lt;MONTH&gt;.xlsx", first sheet (Daily downtime tracker).</div></div></div>
       <div class="card-b"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><input type="file" id="rpFile" accept=".xlsx,.xls" class="inp" style="width:auto">
         ${RP.busy ? '<span class="small muted">Reading...</span>' : ''}${RP.file && !RP.busy ? `<span class="small muted">${esc(RP.file)}</span>` : ''}</div>
@@ -2229,6 +2242,18 @@ function viewReport(){
       <div class="field" style="grid-column:span 2"><label for="rp1Action">Action taken, if known (optional)</label><input class="inp" id="rp1Action" maxlength="500" value="${esc(o.action)}"></div></div>
       <div class="row" style="gap:10px"><span class="err-msg hide" data-err="rp1"></span><span style="flex:1"></span><button class="btn btn-primary" id="rp1Add">${I.plus} Add the issue</button></div></div></div>`,
     bind(){
+      $$('[data-rp-wait]').forEach(sel => sel.onchange = () => { RP.waitPick[groups[+sel.dataset.rpWait].key] = sel.value; render(); });
+      $$('[data-rp-wait-save]').forEach(b => b.onclick = async () => {
+        const i = +b.dataset.rpWaitSave, g = groups[i], code = RP.waitPick[g.key];
+        if (!code) return;
+        clearErrors(document); b.disabled = true;
+        try {
+          const r = await api('/webhook/engineering/api/jobs/report/machine', { method:'POST', body:{ name: g.name, code } });
+          const s = r.sync || {}, n = (s.added || 0) + (s.history || 0);
+          toast('"' + g.name + '" is ' + ((eqByCode(code) || {}).name || code), n ? n + ' issue' + (n === 1 ? '' : 's') + ' added' + (s.added ? ', ' + s.added + ' for technicians to fill in' : ' as history') + '.' : 'Remembered.', 'ok', 6000);
+          delete RP.waitPick[g.key]; JB.board = null; PM.data = null; await rpWaitingLoad();
+        } catch (e) { setErr('rpWait' + i, e.message); b.disabled = false; }
+      });
       const f = $('#rpFile'); if (f) f.onchange = () => { if (f.files && f.files[0]) rpFile(f.files[0]); };
       const fr = $('#rpFrom'); if (fr) fr.onchange = e => { RP.from = e.target.value; render(); };
       const cl = $('#rpClose'); if (cl) cl.onchange = e => { RP.close = e.target.checked; };
