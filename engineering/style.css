@@ -200,6 +200,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .b-ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
 .b-warn{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
 .b-danger{background:var(--danger-bg);color:var(--danger);border-color:var(--danger-line)}
+.tbl tr.row-fail td:first-child{box-shadow:inset 3px 0 0 var(--danger)}
 .b-info{background:var(--info-bg);color:var(--info);border-color:var(--info-line)}
 .b-slate{background:var(--slate-bg);color:var(--slate);border-color:var(--slate-line)}
 .b-brand{background:var(--brand-50);color:var(--brand-700);border-color:var(--brand-100)}

@@ -692,9 +692,11 @@ function eqDownload(){
     rows: eqFiltered().map(a => [a.code, a.name, a.type, a.area, a.parent_name || a.parent, a.eq_no, a.floor_code, a.pm_interval_days, a.status, a.notes]) }]);
 }
 
-/* ---- one piece of equipment: its PM, KPIs (last 90 days), jobs, failures, floor stops, actions, parts and readings.
-   GET /webhook/engineering/api/equipment/one?code= (migration 023) */
-let AP = {};
+/* ---- one piece of equipment: its PM, KPIs (last 90 days), history (jobs and floor stops, failures flagged), actions, parts and readings.
+   GET /webhook/engineering/api/equipment/one?code= (migration 023; history 030) */
+let AP = {}, APF = 'all';
+function apFilter(v){ APF = v; render(); }
+const SRC_TEXT = { call: 'Floor call', stop: 'Floor stop', console: 'Started here', report: 'Daily report', import: 'Old records' };
 async function apLoad(code){
   try { AP[code] = await api('/webhook/engineering/api/equipment/one?code=' + encodeURIComponent(code)); }
   catch (err) { AP[code] = { error: err.message }; }
@@ -710,26 +712,28 @@ function viewAsset(params){
   const back = `<a class="btn btn-ghost btn-sm" href="#/equipment">${I.chevL} Equipment</a>`;
   if (!d || !EQ.list) return { title:'Equipment', crumb:'Setup', html: back + `<div class="card" style="margin-top:12px"><div class="card-b small muted">Loading...</div></div>` };
   if (d.error || d.ok === false || !a) return { title:'Equipment', crumb:'Setup', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Could not open it', esc(d.error || 'No such equipment.'))}</div></div>` };
-  const tab = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || 'jobs';
+  const tab = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || 'history';
   const canJob = ['submit', 'edit'].includes(levelOf('engineering.jobs')), k = d.kpis || {}, pm = d.pm;
-  const tabs = [['jobs', 'Jobs', (d.jobs || []).length], ['failures', 'Failures', (d.failures || []).length]]
-    .concat(a.floor_code ? [['stops', 'Floor stops', (d.stops || []).length]] : [])
+  const hist = d.history || [], shown = APF === 'fail' ? hist.filter(h => h.failure) : hist;
+  const tabs = [['history', 'History', hist.length]]
     .concat(ACTIONS_ON ? [['actions', 'Actions', (d.actions || []).length]] : []).concat([['parts', 'Parts used', (d.parts || []).length]])
     .concat(a.type === 'Outdoor unit' ? [['readings', 'Monthly readings', (d.outdoor || []).length]] : [])
     .concat([['checklist', 'PM checklist', (d.checklist || []).length], ['pmparts', 'PM parts', (d.pm_parts || []).length]]);
-  const cur = tabs.some(t => t[0] === tab) ? tab : 'jobs';
+  const cur = tabs.some(t => t[0] === tab) ? tab : 'history';
   const planEdit = levelOf('engineering.pm') === 'edit';
   const empty = (n, msg) => `<tr><td colspan="${n}" class="muted" style="padding:16px">${msg}</td></tr>`;
   const body = {
-    jobs: () => `<thead><tr><th>Job</th><th>Type</th><th>What failed / what was done</th><th>Technicians</th><th>Time</th><th>Status</th></tr></thead><tbody>${(d.jobs || []).map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')">
-        <td class="mono small" data-label="Job">${esc(j.job_id)}<div class="tiny muted">${esc(dayHm(j.finished_at || j.created_at))}</div></td><td data-label="Type">${esc(JOB_TYPE[j.type] || j.type)}</td>
-        <td data-label="Work" class="small">${j.failure_category ? `<b>${esc(j.failure_category)}</b>: ` : ''}${esc(j.work_done || j.cancel_reason || '')}</td>
-        <td data-label="Technicians" class="small">${esc((j.technicians || []).map(t => t.name).join(', '))}</td><td data-label="Time" class="mono small">${j.labour_minutes != null ? dur(j.labour_minutes) : ''}</td><td data-label="Status">${jbBadge(j)}</td></tr>`).join('') || empty(6, 'No jobs in the last year.')}</tbody>`,
-    failures: () => `<thead><tr><th>When</th><th>What</th><th style="text-align:right">Down for</th></tr></thead><tbody>${(d.failures || []).slice().reverse().map(f => `<tr>
-        <td data-label="When" class="small">${esc(dayHm(f.at))}</td><td data-label="What">${f.kind === 'job' ? `<a href="#/jobs/${esc(f.ref)}">${esc(f.ref)}</a> breakdown` : esc(f.ref)}</td>
-        <td data-label="Down for" style="text-align:right" class="mono">${dur(f.minutes)}</td></tr>`).join('') || empty(3, 'No failures in the last year.')}</tbody>`,
-    stops: () => `<thead><tr><th>Stopped</th><th>Reason</th><th style="text-align:right">Length</th></tr></thead><tbody>${(d.stops || []).map(s => `<tr>
-        <td data-label="Stopped" class="small">${esc(dayHm(s.started_at))}</td><td data-label="Reason">${esc(s.reason)}</td><td data-label="Length" style="text-align:right" class="mono">${dur(s.minutes)}</td></tr>`).join('') || empty(3, 'No machine stops on the floor in the last 90 days.')}</tbody>`,
+    history: () => `<thead><tr><th>When</th><th>What happened</th><th>What was done</th><th>Technicians</th><th style="text-align:right">Down for</th><th>Status</th></tr></thead><tbody>${shown.map(h => h.kind === 'stop'
+        ? `<tr class="${h.failure ? 'row-fail' : ''}"><td data-label="When" class="small">${esc(dayHm(h.at))}<div class="tiny muted">Floor stop</div></td>
+          <td data-label="What happened">${h.failure ? '<span class="badge b-danger">Failure</span> ' : ''}${esc(h.reason || '')}</td>
+          <td data-label="What was done" class="small muted">No job recorded</td><td data-label="Technicians"></td>
+          <td data-label="Down for" style="text-align:right" class="mono">${h.still_down ? 'still down' : dur(h.minutes)}</td><td data-label="Status"></td></tr>`
+        : `<tr class="clickable ${h.failure ? 'row-fail' : ''}" onclick="go('/jobs/${esc(h.job_id)}')"><td data-label="When" class="small">${esc(whenText(h.at, h.no_time))}<div class="tiny muted">${esc(SRC_TEXT[h.source] || h.source)} · <span class="mono">${esc(h.job_id)}</span></div></td>
+          <td data-label="What happened">${h.failure ? '<span class="badge b-danger">Failure</span> ' : ''}${esc(JOB_TYPE[h.type] || h.type)}${h.report_text || h.stop_reason ? ': <span class="small">' + esc(h.source === 'report' ? String(h.call_note || h.report_text || '') : h.stop_reason) + '</span>' : ''}</td>
+          <td data-label="What was done" class="small">${h.failure_category ? `<b>${esc(h.failure_category)}</b>: ` : ''}${esc(h.work_done === 'Recorded from the daily report.' ? '' : (h.work_done || ''))}</td>
+          <td data-label="Technicians" class="small">${esc((h.technicians || []).map(t => t.name).join(', '))}</td>
+          <td data-label="Down for" style="text-align:right" class="mono">${h.minutes != null ? dur(h.minutes) : ''}</td><td data-label="Status">${jbBadge(h)}</td></tr>`).join('')
+        || empty(6, APF === 'fail' ? 'No failures in the last year.' : 'Nothing in the last year.')}</tbody>`,
     actions: () => `<thead><tr><th>Action</th><th>Title</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody>${(d.actions || []).map(x => `<tr class="clickable" onclick="go('/actions/${esc(x.action_no)}')">
         <td class="mono small" data-label="Action">${esc(x.action_no)}</td><td data-label="Title">${esc(x.title)}</td><td data-label="Owner" class="small">${esc(x.owner_name || '')}</td>
         <td data-label="Due" class="small">${esc(x.due_date || '')}</td><td data-label="Status">${acBadge(x)}</td></tr>`).join('') || empty(5, 'No corrective or preventive actions.')}</tbody>`,
@@ -765,6 +769,8 @@ function viewAsset(params){
       <div class="stat"><div class="lbl">MTTR</div><div class="val">${dur(k.mttr_min)}</div><div class="meta">mean time to repair</div></div>
       <div class="stat"><div class="lbl">MTBF</div><div class="val">${k.mtbf_days == null ? '--' : num(k.mtbf_days) + ' d'}</div><div class="meta">mean time between failures</div></div></div>
     <div class="tabs" style="margin-bottom:14px">${tabs.map(([t, l, n]) => `<a class="tab ${t === cur ? 'on' : ''}" href="#/equipment/${esc(code)}?tab=${t}">${esc(l)} <span class="badge" style="padding:1px 7px">${n}</span></a>`).join('')}</div>
+    ${cur === 'history' ? `<div class="row between" style="margin-bottom:10px;gap:8px;flex-wrap:wrap"><div class="small muted">The last year, newest first: jobs from every source${a.floor_code ? ' and floor stops with no job' : ''}. Every breakdown and floor stop is a failure, however short.</div>
+      <div class="seg"><button class="${APF === 'all' ? 'on' : ''}" onclick="apFilter('all')">All ${hist.length}</button><button class="${APF === 'fail' ? 'on' : ''}" onclick="apFilter('fail')">Failures ${hist.filter(h => h.failure).length}</button></div></div>` : ''}
     <div class="card"><div class="tbl-wrap"><table class="tbl">${body}</table></div></div>` };
 }
 route('/equipment/parts', () => viewPmParts());
@@ -773,10 +779,10 @@ route('/equipment/:code', viewAsset);
 function apDownload(code){
   const d = AP[code] || {}, a = eqByCode(code) || { name: code };
   downloadXlsx(a.name, [
-    { name: 'Jobs', head: ['Job', 'Type', 'Status', 'Started', 'Finished', 'What failed', 'Cause', 'What was done', 'Technicians', 'Minutes'],
-      rows: (d.jobs || []).map(j => [j.job_id, JOB_TYPE[j.type] || j.type, j.status, lagosDay(j.started_at || j.created_at), lagosDay(j.finished_at), j.failure_category, j.cause, j.work_done, (j.technicians || []).map(t => t.name).join(', '), j.labour_minutes]) },
-    { name: 'Failures', head: ['When', 'What', 'Minutes down'], rows: (d.failures || []).map(f => [lagosDay(f.at), f.kind === 'job' ? f.ref + ' breakdown' : f.ref, f.minutes]) },
-    { name: 'Floor stops', head: ['Stopped', 'Reason', 'Minutes'], rows: (d.stops || []).map(s => [lagosDay(s.started_at), s.reason, s.minutes]) },
+    { name: 'History', head: ['When', 'Source', 'Job', 'Type', 'What happened', 'Failure', 'Minutes down', 'What failed', 'Cause', 'What was done', 'Technicians', 'Status'],
+      rows: (d.history || []).map(h => h.kind === 'stop' ? [lagosDay(h.at), 'Floor stop', '', '', h.reason, h.failure ? 'yes' : '', h.minutes, '', '', '', '', h.still_down ? 'still down' : '']
+        : [h.no_time ? lagosDay(h.at).slice(0, 10) : lagosDay(h.at), SRC_TEXT[h.source] || h.source, h.job_id, JOB_TYPE[h.type] || h.type, h.source === 'report' ? (h.call_note || h.report_text) : h.stop_reason,
+           h.failure ? 'yes' : '', h.minutes, h.failure_category, h.cause, h.work_done, (h.technicians || []).map(t => t.name).join(', '), h.status]) },
     { name: 'Actions', head: ['Action', 'Type', 'Title', 'Root cause', 'Action to take', 'Owner', 'Due', 'Status'], rows: (d.actions || []).map(x => [x.action_no, x.kind, x.title, x.root_cause, x.action_to_take, x.owner_name, x.due_date, (AC_STATUS[x.status] || [x.status])[0]]) },
     { name: 'Parts used', head: ['Date', 'Entry', 'SKU', 'Part', 'Qty', 'Unit', 'Job', 'Collected by', 'Status'], rows: (d.parts || []).map(m => [m.date, m.entry, m.sku, m.description, +m.qty, m.unit, m.job, m.collected_by_name, m.status]) },
   ].concat(a.type === 'Outdoor unit' ? [{ name: 'Readings', head: ['Month', 'Running', 'Amps', 'Low psi', 'High psi', 'Superheat', 'Subcooling', 'Checked on', 'Checked by', 'Status'],
@@ -1617,6 +1623,10 @@ let JB = { board: null, error: '', loading: false, tab: 'calls', one: {}, histor
            timer: null, draft: null, push: { state: '', key: '' } };
 const hm = iso => iso ? new Date(iso).toLocaleTimeString('en-GB', { timeZone:'Africa/Lagos', hour:'2-digit', minute:'2-digit' }) : '';
 const dayHm = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : '';
+const dayOnly = iso => iso ? new Date(iso).toLocaleDateString('en-GB', { timeZone:'Africa/Lagos', day:'numeric', month:'short' }) : '';
+// issues from the daily report have a day, no clock time (030): show the day only, never a made-up 08:00
+const whenText = (iso, noTime) => iso ? (noTime ? dayOnly(iso) + ', no time' : dayHm(iso)) : '';
+const jbWhen = j => j.source === 'report' ? whenText(j.stopped_since || j.started_at, true) : dayHm(j.finished_at || j.created_at);
 const minsBetween = (a, b) => (a ? Math.max(0, Math.round(((b ? new Date(b) : new Date()) - new Date(a)) / 60000)) : null);
 function dur(m){ if (m == null) return '--'; if (m < 60) return m + ' min'; const h = Math.floor(m / 60); return h + ' h ' + String(m % 60).padStart(2, '0') + ' min'; }
 function jbMe(){ return (JB.board && JB.board.me) || {}; }
@@ -1714,7 +1724,7 @@ function viewJobs(){
   const sum = tab === 'calls' ? `<div class="small" style="margin-bottom:10px"><span class="badge ${open.length ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${(b.calls || []).length} open call${(b.calls || []).length === 1 ? '' : 's'} · ${open.length} not accepted yet${(b.calls || []).length > list.length ? ' · ' + ((b.calls || []).length - list.length) + ' yours, under My jobs' : ''}</span>
     <span class="muted"> updated ${hm(b.now)}</span></div>` : '';
   const empty = { calls: 'No open calls for you to take. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.',
-                  reports: 'Nothing to report. Machine stops of 30 minutes or more from the OKL daily packaging report e-mail (all products but Zaiki and Mintacid) appear here for you to fill in, for 7 days; older ones are in History.' }[tab];
+                  reports: 'Nothing to report. Machine stops from the OKL daily packaging report e-mail (all products but Zaiki and Mintacid) appear here for you to fill in, for 7 days; older ones are in History.' }[tab];
   return {
     title:'Calls and jobs', crumb:'Maintenance', keepScroll: true,
     html: head + jbPushBanner() + notStaff + jbTabs(tab) + sum
@@ -1764,16 +1774,18 @@ function viewJob(params, ctx){
   const isCall = j.source === 'call';
   const waited = isCall ? minsBetween(j.called_at, j.arrived_at) : null;
   const repair = minsBetween(j.started_at || j.arrived_at, j.finished_at);
-  const tl = [];
-  if (j.stopped_since) tl.push(['Machine stopped', dayHm(j.stopped_since)]);
+  const tl = [], fromRep = j.source === 'report';
+  if (fromRep) { tl.push(['Report day', whenText(j.stopped_since || j.started_at, true)]); tl.push(['Machine down', dur(j.downtime_minutes)]); }
+  else if (j.stopped_since) tl.push(['Machine stopped', dayHm(j.stopped_since)]);
   if (j.called_at) tl.push([`Called${j.called_by_name ? ' by ' + j.called_by_name : ''}`, hm(j.called_at)]);
   if (j.accepted_at) tl.push([`Accepted by ${j.accepted_by === me.enroll_id ? 'you' : (j.accepted_by_name || '')}`, hm(j.accepted_at)]);
   if (j.arrived_at) tl.push([`Arrived, ${j.arrival_by === 'operator' ? 'confirmed by the operator' : 'reported by the technician'}`, hm(j.arrived_at)]);
-  if (!isCall && j.started_at) tl.push(['Started', dayHm(j.started_at)]);
+  if (!isCall && !fromRep && j.started_at) tl.push(['Started', dayHm(j.started_at)]);
   if (j.waiting_since) tl.push([`Waiting for part${j.waiting_note ? ': ' + j.waiting_note : ''}`, hm(j.waiting_since)]);
   if (j.resumed_at) tl.push(['Machine running again (floor)', dayHm(j.resumed_at)]);
   if (j.call_cancelled_at) tl.push(['Call cancelled on the floor', hm(j.call_cancelled_at)]);
-  if (j.finished_at) tl.push([`Closed${j.closed_by ? ' by ' + j.closed_by : ''}`, dayHm(j.finished_at)]);
+  if (j.finished_at && !fromRep) tl.push([`Closed${j.closed_by ? ' by ' + j.closed_by : ''}`, dayHm(j.finished_at)]);
+  else if (fromRep && j.status === 'done') tl.push(['Closed', j.closed_by ? 'by ' + j.closed_by : 'as history']);
   const dis = canWrite && j.status !== 'called' && j.status !== 'accepted' ? '' : 'disabled';
   const pmParts = (j.pm_parts || []).filter(p => p.sku && !(j.parts || []).some(m => m.sku === p.sku && m.status !== 'cancelled'));
   const parts = (j.parts || []).filter(p => p.status !== 'cancelled');
@@ -1801,7 +1813,8 @@ function viewJob(params, ctx){
     </div></div>
     <div class="grid g2" style="margin-bottom:14px">
       ${isCall ? `<div class="stat"><div class="lbl">${j.arrived_at ? 'Waited for a technician' : 'Waiting for a technician'}</div><div class="val mono">${dur(waited)}</div></div>` : ''}
-      <div class="stat"><div class="lbl">${j.finished_at ? 'Repair time' : 'Repair so far'}</div><div class="val mono">${j.started_at || j.arrived_at ? dur(repair) : '--'}</div></div>
+      ${fromRep ? `<div class="stat"><div class="lbl">Machine down (from the report)</div><div class="val mono">${dur(j.downtime_minutes)}</div></div>`
+        : `<div class="stat"><div class="lbl">${j.finished_at ? 'Repair time' : 'Repair so far'}</div><div class="val mono">${j.started_at || j.arrived_at ? dur(repair) : '--'}</div></div>`}
     </div>
     <div class="card" style="margin-bottom:14px"><div class="card-b">${tl.map(([a, b]) => `<div class="row between small" style="padding:4px 0;border-bottom:1px solid var(--line-2)"><span>${esc(a)}</span><span class="mono strong">${esc(b)}</span></div>`).join('') || '<span class="small muted">Nothing yet.</span>'}
       ${(j.technicians || []).length ? `<div class="small" style="margin-top:8px"><b>On the job:</b> ${j.technicians.map(t => esc(t.name)).join(', ')}</div>` : ''}</div></div>
@@ -2210,7 +2223,7 @@ function viewReport(){
       <td data-label="Machine"><select class="inp" data-rp-wait="${i}" style="min-width:190px">${opts(RP.waitPick[g.key] || '')}</select></td>
       <td><button class="btn btn-primary btn-sm" data-rp-wait-save="${i}" ${RP.waitPick[g.key] ? '' : 'disabled'}>Save</button><span class="err-msg hide" data-err="rpWait${i}"></span></td></tr>`).join('')}</tbody></table></div></div>` : '';
   return { title:'Daily report issues', crumb:'Maintenance', keepScroll: true,
-    html: back + pageHead('Issues from the daily packaging report', 'For products the floor app does not cover yet (all but Zaiki and Mintacid). The OKL report e-mail adds its machine stops of 30 minutes or more by itself (the last report day for technicians to fill in, earlier days as history). A missed e-mail: upload the files on the home page, Daily production (the file below is the older way, OKL only).') + waitCard + `
+    html: back + pageHead('Issues from the daily packaging report', 'For products the floor app does not cover yet (all but Zaiki and Mintacid). The OKL report e-mail adds its machine stops by itself (every stop; a shortest length can be set in Settings) (the last report day for technicians to fill in, earlier days as history). A missed e-mail: upload the files on the home page, Daily production (the file below is the older way, OKL only).') + waitCard + `
     <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>From the Excel file</h3><div class="sub">"OKL PERSONNEL PACKAGING - &lt;MONTH&gt;.xlsx", first sheet (Daily downtime tracker).</div></div></div>
       <div class="card-b"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><input type="file" id="rpFile" accept=".xlsx,.xls" class="inp" style="width:auto">
         ${RP.busy ? '<span class="small muted">Reading...</span>' : ''}${RP.file && !RP.busy ? `<span class="small muted">${esc(RP.file)}</span>` : ''}</div>
@@ -2320,7 +2333,7 @@ function viewJobsHistory(){
   return { title:'Calls and jobs', crumb:'Maintenance', keepScroll: true, bind,
     html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Job</th><th>Equipment</th><th>Type</th><th>What failed / what was done</th><th>Technicians</th><th>Time</th><th>Status</th></tr></thead>
-      <tbody>${jbHistShown().map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}<div class="tiny muted">${esc(dayHm(j.finished_at || j.created_at))}</div></td>
+      <tbody>${jbHistShown().map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}<div class="tiny muted">${esc(jbWhen(j))}</div></td>
         <td data-label="Equipment"><div class="strong">${esc(j.machine_name || '')}</div><div class="tiny muted">${esc(j.stop_reason || '')}</div></td><td data-label="Type">${esc(JOB_TYPE[j.type] || j.type)}</td>
         <td data-label="Work" class="small">${j.failure_category ? `<b>${esc(j.failure_category)}</b>: ` : ''}${esc(j.work_done || j.cancel_reason || '')}</td>
         <td data-label="Technicians" class="small">${esc((j.technicians || []).map(t => t.name).join(', '))}</td><td data-label="Time" class="mono small">${j.labour_minutes != null ? dur(j.labour_minutes) : ''}</td>
@@ -2713,10 +2726,12 @@ function viewOverview(tab){
   const html = { reliability: ovReliability, response: ovResponse, preventive: ovPreventive, followup: ovFollowup }[tab](d);
   return { title:'Overview', crumb:'Maintenance', keepScroll: true, html: head + warn + html, bind };
 }
+// is this machine's last failure an issue from the daily report (a day, no clock time)?
+function ovNoTime(x, m){ const t = new Date(m.last_failure).getTime(), f = (x.failure_list || []).find(f => f.asset === m.asset && new Date(f.at).getTime() === t); return !!(f && f.no_time); }
 function ovReliability(d){
   const x = d.reliability || {};
   return `<div class="grid g4" style="margin-bottom:14px">
-      ${ovStat('Failures', num(x.failures) || 0, 'breakdowns, and machine stops of ' + num(d.failure_minutes) + ' min or more')}
+      ${ovStat('Failures', num(x.failures) || 0, 'every breakdown and machine stop, however short')}
       ${ovStat('MTTR', dur(x.mttr_min), 'mean time to repair: failure to running again')}
       ${ovStat('MTBF', x.mtbf_days == null ? '--' : num(x.mtbf_days) + ' days', 'mean time between failures on the same equipment')}
       ${ovStat('Machine downtime', dur(x.downtime_min), 'floor ' + dur(x.floor_downtime_min) + ' (' + num(x.stops) + ' stops), daily report ' + dur(x.report_downtime_min) + ' (' + num(x.report_issues) + ' issues)', STOPS_ON ? '/stops' : '')}</div>
@@ -2725,7 +2740,7 @@ function ovReliability(d){
       <tbody>${(x.equipment || []).map(m => `<tr class="clickable" onclick="go('/equipment/${esc(m.asset)}')"><td data-label="Equipment"><div class="strong">${esc(m.name)}</div><div class="tiny muted">${esc(m.type || '')}</div></td>
         <td data-label="Failures" style="text-align:right">${m.failures}</td><td data-label="Downtime" style="text-align:right">${dur(m.downtime_min)}</td><td data-label="Stops / issues" style="text-align:right">${m.stops + (m.report_issues || 0)}</td>
         <td data-label="MTTR" style="text-align:right">${dur(m.mttr_min)}</td><td data-label="MTBF" style="text-align:right">${m.mtbf_days == null ? '--' : num(m.mtbf_days) + ' d'}</td>
-        <td data-label="Last failure" class="small">${esc(dayHm(m.last_failure))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted" style="padding:16px">No failures or machine stops in this period.</td></tr>'}</tbody></table></div></div>`;
+        <td data-label="Last failure" class="small">${esc(whenText(m.last_failure, ovNoTime(x, m)))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted" style="padding:16px">No failures or machine stops in this period.</td></tr>'}</tbody></table></div></div>`;
 }
 function ovResponse(d){
   const x = d.response || {};

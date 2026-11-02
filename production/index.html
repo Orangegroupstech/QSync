@@ -152,7 +152,7 @@
     // Ik's list (OKL machine stops)
     if (rd < e.starts) row('wait', 'Ik\'s list', 'Engineering takes the report from ' + esc(day(e.starts)) + '.');
     else if (!okl.in) row('wait', 'Ik\'s list', 'Waits for the OKL file.');
-    else if (!e.jobs && !e.waiting) row('ok', 'Ik\'s list', 'No OKL machine stops of ' + (e.min_minutes || 30) + ' minutes or more.');
+    else if (!e.jobs && !e.waiting) row('ok', 'Ik\'s list', 'No OKL machine stops' + (Number(e.min_minutes) > 1 ? ' of ' + e.min_minutes + ' minutes or more' : '') + '.');
     else row(e.open || e.waiting ? 'warn' : 'ok', 'Ik\'s list', e.jobs + ' stop' + (e.jobs === 1 ? '' : 's') + ' sent to Engineering, ' + (e.open ? e.open + ' still to fill in.' : 'all filled in.')
              + (e.waiting ? '<small>' + e.waiting + ' wait for Ik to choose the machine.</small>' : '') + '<small>What they write becomes the action in your draft.</small>');
     // actions for the write-up
