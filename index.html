@@ -113,8 +113,8 @@
       <a class="tile hidden" id="usersTile" href="users/">
         <h3>Users</h3>
       </a>
-      <a class="tile" href="https://orange-group-okl-production-system.vercel.app" target="_blank" rel="noopener">
-        <h3>Live production system</h3>
+      <a class="tile" data-module="floor" id="floorTile" href="https://orange-group-okl-production-system.vercel.app" target="_blank" rel="noopener">
+        <h3>Shop floor</h3>
       </a>
       <a class="tile" data-module="production" href="production/">
         <h3>Daily production</h3>
@@ -215,6 +215,20 @@
     catch(e){ $('pwErr').textContent = e.message; if (e.status === 401) { setToken(''); showLogin('Your session has expired. Please sign in again.'); } }
     finally { btn.disabled = false; }
   });
+  // the shop floor system (another team's app) signs the person in with a one-time code (60 seconds) in the link
+  var FLOOR = 'https://orange-group-okl-production-system.vercel.app/';
+  $('floorTile').onclick = async function(ev){
+    ev.preventDefault(); notice('');
+    var w = window.open('', '_blank');               // opened now, inside the click, so the browser does not block it
+    try {
+      var r = await call('floor-handoff', 'POST');
+      if (!w) { location.href = FLOOR + '?okl_code=' + encodeURIComponent(r.code); return; }
+      w.opener = null; w.location.href = FLOOR + '?okl_code=' + encodeURIComponent(r.code);
+    } catch(e){
+      if (w) w.close();
+      if (e.status === 401) { setToken(''); showLogin('Your session has expired. Please sign in again.'); } else notice(e.message);
+    }
+  };
   $('changePw').onclick = function(){ showPassword(false); };
   $('pwCancel').onclick = function(){ showHome(); };
   $('pwSignOut').onclick = function(){ signOut(); };
