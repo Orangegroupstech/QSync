@@ -139,7 +139,7 @@ function viewLabInbox(){
         <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
         <td data-label="Tests">${testsCell(r)}</td>
         <td data-label="OOS">${r.open_oos ? `<span class="badge b-danger">${r.open_oos} open</span>` : '<span class="muted small">--</span>'}</td>
-        <td data-label="Status">${labStatusBadge(r.status)}</td>
+        <td data-label="Status">${labStatusBadge(r.status)}${r.qc_approved_at ? `<div class="tiny" style="margin-top:4px;color:var(--ok, #16794C)">${I.check || ''} Approved ${relTime(r.qc_approved_at)}</div>` : ''}</td>
         <td style="text-align:right;white-space:nowrap">${isSup && inboxTab === 'waiting'
           ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();labReceive(${r.id})">Receive</button>`
           : isSup && inboxTab === 'check'
@@ -218,6 +218,9 @@ function labNextSteps(r){
   const step = (text, btn) => out.push(`<div class="next-step">${I.info}<span>${text}</span>${btn || ''}</div>`);
   const btn = (label, href) => `<a class="btn btn-primary btn-sm" href="#${href}">${esc(label)}</a>`;
   if (['pending_qc_notify', 'sent_to_qc'].includes(st)) step('Next: the <b>QC Supervisor</b> receives the sample and assigns the tests.');
+  if (['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
+    step('The <b>QC Supervisor</b> approves the batch for production when the results are good (any time now, before or after the tests). It clears the batch on the shop floor and tells the supervisors on WhatsApp.',
+      hasLabRole('qc_supervisor') ? `<button class="btn btn-primary btn-sm" onclick="labApprove(${r.id})">Approve</button>` : '');
   if (st === 'qc_received'){
     const live = r.assignments.filter(a => !a.cancelled), seen = new Set();
     live.forEach(a => {
@@ -252,6 +255,10 @@ function viewLabRequest(id){
       .forEach(w => acts.push(`<a class="btn btn-primary" href="#/lab/worksheet/${w}">Check worksheet #${w}</a>`));
     if (!NO_TEST_STAGES.includes(r.stage)) acts.push(`<button class="btn btn-ghost" onclick="labChangeTests(${r.id})">${I.edit} Change tests</button>`);
   }
+  if (hasLabRole('qc_supervisor') && ['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
+    acts.push(`<button class="btn btn-primary" onclick="labApprove(${r.id})">${I.check || ''} Approve</button>`);
+  if (hasLabRole('qc_supervisor') && r.qc_approved_at && ['not_found', 'error'].includes(r.floor_status))
+    acts.push(`<button class="btn btn-ghost" onclick="labApproveFloor(${r.id})">Send to the shop floor again</button>`);
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
 
@@ -264,6 +271,9 @@ function viewLabRequest(id){
         <div class="kv-item"><div class="k">Status</div><div class="v">${labStatusBadge(st)}</div></div>
         <div class="kv-item"><div class="k">Received by</div><div class="v">${esc(r.qc_received_by || '--')}</div><div class="tiny muted">${r.qc_received_at ? fmtDateTime(r.qc_received_at) : ''}</div></div>
         <div class="kv-item"><div class="k">Quantity</div><div class="v">${r.qc_received_qty != null ? esc(r.qc_received_qty) + ' ' + esc(r.qc_received_qty_unit || '') : '--'}</div></div>
+        <div class="kv-item"><div class="k">QC approval (production)</div><div class="v">${r.qc_approved_at ? 'Approved - ' + esc(r.qc_approved_by) : '--'}</div>
+          <div class="tiny muted">${r.qc_approved_at ? fmtDateTime(r.qc_approved_at) : ''}${r.qc_approval_comments ? ' - ' + esc(r.qc_approval_comments) : ''}</div>
+          ${r.floor_note ? `<div class="tiny" style="margin-top:2px;color:${['ok', 'already_passed'].includes(r.floor_status) ? 'var(--ok, #16794C)' : r.floor_status === 'no_floor_stage' ? 'inherit' : 'var(--danger)'}">${esc(r.floor_note)}</div>` : ''}</div>
         <div class="kv-item"><div class="k">QC Manager</div><div class="v">${r.qc_decision ? (r.qc_decision === 'released' ? 'Released' : 'Not released') + ' - ' + esc(r.qc_manager) : '--'}</div>
           <div class="tiny muted">${r.qc_manager_signed_at ? fmtDateTime(r.qc_manager_signed_at) : ''}${r.qc_comments ? ' - ' + esc(r.qc_comments) : ''}</div></div>
         <div class="kv-item"><div class="k">QA Manager</div><div class="v">${esc(r.qa_manager || '--')}</div>
@@ -288,7 +298,7 @@ function viewLabRequest(id){
       </div>
       ${d.ipqa && d.ipqa.length ? `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>IPQA (Phase 1)</h3></div><div class="tbl-wrap"><table class="tbl" style="min-width:0">
         <thead><tr><th>Parameter</th><th>Observed</th><th>Specification</th><th>Status</th></tr></thead><tbody>
-        ${d.ipqa.map(p => `<tr><td>${esc(p.parameter)}</td><td>${esc(p.value)} ${esc(p.unit || '')}</td><td class="small">${esc(ipqaSpec(p))}</td><td>${esc(String(p.status || '').toUpperCase())}</td></tr>`).join('')}
+        ${d.ipqa.map(p => `<tr><td>${esc(p.parameter)}</td><td>${p.readings && p.readings.length && p.average != null && !/weights/.test(p.value || '') ? esc(p.average) + ' ' + esc(p.unit || '') + `<div class="tiny muted">average of ${p.readings.length}: ${esc(p.readings.join(', '))}</div>` : esc(p.value) + ' ' + esc(p.unit || '')}</td><td class="small">${esc(ipqaSpec(p))}</td><td>${esc(String(p.status || '').toUpperCase())}</td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
       <div class="card"><div class="card-h"><h3>History</h3><div class="sub">Every change, who made it, when and why (written by the database)</div></div>
         <div class="card-b">${d.audit.length ? `<div class="timeline">${d.audit.slice().reverse().map(e => `<div class="tl-item ${e.action === 'insert' ? 'done' : ''}">
@@ -349,6 +359,34 @@ function labDecide(id){
       toast('Decision signed', `${r.request_no}: ${dec === 'released' ? 'released' : 'not released'}.`, 'ok'); labRefresh();
     }
   });
+}
+
+// QC Supervisor: approve the batch for production (clears it on the shop floor, tells the supervisors' WhatsApp group)
+function labApprove(id){
+  const r = (labCache['/request?id=' + id] || {}).request; if (!r) return;
+  const fails = (r.results || []).filter(x => x.pass === false).length, open = (r.assignments || []).filter(a => !a.cancelled && a.analysis_status !== 'checked').length;
+  const floor = { Granulation: 'Granulation', Compression: 'Compression', Mixing: 'Mixing' }[r.stage];
+  signDialog({
+    title: 'Approve for production', sub: `${r.request_no} - ${r.product_name} batch ${r.batch_no} (${r.stage})`, ok: 'Sign approval',
+    reason: 'Comment (optional)', meaning: 'You sign as QC Supervisor that this batch is approved for production. The QC Manager\'s Released / Not released stays as it is.',
+    body: `<div class="small" style="margin-bottom:12px">${(r.results || []).length} result(s) so far${fails ? `, <b style="color:var(--danger)">${fails} out of specification</b>` : ''}${open ? `; ${open} test(s) not finished yet` : ''}.</div>
+      <div class="notice" style="margin-bottom:12px">${I.info} ${floor ? `The batch is marked <b>Quality Passed</b> at ${floor} on the shop floor (cleared for the next stage), and` : 'The'} supervisors' WhatsApp group gets "QC approved", with Daniel tagged.</div>`,
+    submit: async ({ password, reason }) => {
+      const res = await labPost('/approve', { request_id: id, password, comments: reason });
+      const f = res.floor || {};
+      toast('Approved', f.status === 'ok' || f.status === 'already_passed' || f.status === 'no_floor_stage' ? `${r.request_no}: approved.`
+        : `${r.request_no}: approved, but the shop floor was not updated: ${f.message || 'unknown reason'}`, f.status === 'not_found' || f.status === 'error' ? 'warn' : 'ok');
+      labRefresh();
+    }
+  });
+}
+async function labApproveFloor(id){
+  try {
+    const res = await labPost('/approve/floor', { request_id: id });
+    const f = res.floor || {};
+    toast(f.status === 'ok' || f.status === 'already_passed' ? 'Shop floor updated' : 'Shop floor not updated', f.message || (res.request || {}).floor_note || '', f.status === 'ok' || f.status === 'already_passed' ? 'ok' : 'warn');
+    labRefresh();
+  } catch (e){ toast('Could not send it', e.message, 'err'); }
 }
 
 function labQaAck(id){

@@ -95,6 +95,7 @@ const STATUS = {
   pending_qa_review: { label:'Pending QA Review',  badge:'b-info' },
   sent_to_qc:        { label:'With QC',            badge:'b-ok' },
   rejected:          { label:'Rejected',           badge:'b-danger' },
+  returned_to_ipqa:  { label:'Returned to IPQA',   badge:'b-danger' },
   // QC laboratory (Phase 2, lab.js)
   qc_received:       { label:'In the QC lab',      badge:'b-warn' },
   qc_released:       { label:'Released by QC',     badge:'b-ok' },
@@ -114,10 +115,12 @@ const PRODUCTS_META = {
 };
 const UNIT_OPTIONS = { OSD: ['kg', 'tablets'], OLD: ['litres'] };
 const STAGE_OPTIONS = {
-  OSD: ['Granulation', 'Compression', 'Finished Product'],   // primary packaging is not raised any more (QC, 29 Oct 2026); old requests keep their stage
+  OSD: ['Granulation', 'Finished Product'],   // primary packaging is not raised any more (QC, 29 Oct 2026); Compression is raised by IPQA (2 Nov 2026)
   OLD: ['Mixing', 'Finished Product']   // filling/sacheting is skipped like primary packaging (QC, 30 Oct 2026)
 };
-const ALL_STAGES = Array.from(new Set([...STAGE_OPTIONS.OSD, 'Sacheting/Blistering/Stripping', 'Filling/Sacheting', ...STAGE_OPTIONS.OLD]));
+// IPQA raises Compression requests on its own sheet (migration 036)
+const IPQA_COMPRESSION_URL = 'https://orangegroupsai.online/webhook/test-request/ipqa?new=compression';
+const ALL_STAGES = Array.from(new Set([...STAGE_OPTIONS.OSD, 'Compression', 'Sacheting/Blistering/Stripping', 'Filling/Sacheting', ...STAGE_OPTIONS.OLD]));
 function yearsFromDates(items, field){
   const years = new Set();
   items.forEach(it => { const v = it[field]; if (v){ const w = watParts(v); if (w) years.add(w.y); } });
@@ -561,6 +564,7 @@ function viewNewRequest(){
             <label for="rqStage">Stage of manufacture<span class="req">*</span></label>
             <select class="inp" id="rqStage" disabled><option value="">-- Select a product first --</option></select>
             <div class="err-msg hide" data-err="rqStage"></div>
+            <div class="hint">${I.info}<span>Compression requests are raised by IPQA on the <a href="${IPQA_COMPRESSION_URL}" target="_blank" rel="noopener">IPQA compression sheet</a>.</span></div>
           </div>
         </div>
         <div class="card-f row end sticky-actions">
