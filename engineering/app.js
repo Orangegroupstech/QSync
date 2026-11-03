@@ -1763,7 +1763,7 @@ function viewJobs(){
   JB.draft = null; jbAutoRefresh(true); pushCheck();
   const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs')), mgr = levelOf('engineering.jobs') === 'edit';
   const head = pageHead('Calls and jobs', 'Maintenance calls from the floor and the jobs Engineering is working on. This page refreshes by itself.',
-    (mgr ? `<button class="btn btn-ghost" onclick="go('/jobs/report')">${I.download} Daily report issues</button>` : '')
+    (mgr ? `<button class="btn btn-ghost" onclick="go('/jobs/report')">${I.download} Report machine names</button>` : '')
     + (canStart ? `<button class="btn btn-ghost" onclick="go('/jobs/record')">${I.check} Record finished work</button><button class="btn btn-primary" onclick="go('/jobs/new')">${I.plus} Start a job</button>` : ''));
   if (JB.error) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the jobs', esc(JB.error), `<button class="btn btn-primary" onclick="jbLoad(true)">Try again</button>`)}</div></div>` };
   if (!JB.board) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
@@ -2134,124 +2134,20 @@ function viewBackfill(){
 }
 route('/pm/backfill', viewBackfill);
 
-/* ---- issues from the daily packaging report (round 3; temporary, until the floor app covers every product).
-   /jobs/report (Engineering Manager): upload "OKL PERSONNEL PACKAGING - <MONTH>.xlsx" (first sheet, DAILY DOWNTIME TRACKER)
-   or type one issue in. Each issue becomes a breakdown "to report" that technicians fill in (Calls and jobs, From the daily
-   report). Products the floor app already covers are left out. The same date + machine + issue is only added once, so the
-   month's file can be uploaded again every day. POST /webhook/engineering/api/jobs/report {report: {dry, close, lines, days}}
-   days = the report days read (026): PM effectiveness waits for them on machines judged from the report. */
-const RP_LIVE = /zaiki|mintacid/i;     // products the floor app covers: their stops come from the floor
-let RP = { rows: null, days: [], newDays: [], reportTo: '', file: '', from: '', close: false, error: '', busy: false, one: { date: '', asset: '', product: '', text: '', minutes: '', action: '' },
-           waiting: null, waitPick: {} };     // waiting: issues from the e-mailed report whose machine name is unknown (028)
+/* ---- machine names from the daily packaging report (round 3; the upload and the hand entry were taken out 3 Nov 2026: the
+   e-mail listener and Home > Daily production read the files). The report e-mail adds its machine stops by itself; a stop
+   whose machine name the register does not know waits here until the manager chooses the machine once (remembered on the machine).
+   GET /webhook/engineering/api/jobs/report/waiting, POST /jobs/report/machine {name, code}. */
+let RP = { waiting: null, waitPick: {} };     // waiting: issues from the e-mailed report whose machine name is unknown (028)
 async function rpWaitingLoad(){ try { RP.waiting = (await api('/webhook/engineering/api/jobs/report/waiting')).waiting || []; } catch (e) { RP.waiting = []; } render(); }
 const rpNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-const RP_RULES = [[/^kun(g)?lon(g)?(\d)$/, m => 'KUNLONG_' + m[3]], [/^jcmc[o0](\d)$/, m => 'JCMCO_' + m[1]], [/^wifa(machine)?$/, () => 'WIFA'], [/^ima(pg)?$/, () => 'IMA_PG'],
-  [/^hoonga$/, () => 'HOONGA'], [/^chi(e)?mei(\d)$/, m => 'CHIMEI_' + m[2]], [/^(xiaolun|coating(machine)?)$/, () => 'COATING_XIAOLUN'], [/^wraptech$/, () => 'WRAPTECH'],
-  [/^siebler(\d)$/, m => 'SIEBLER_' + m[1]], [/^duankwei(\d)$/, m => 'DUANKWEI_' + m[1]], [/^(dynafold|folding(machine)?)$/, () => 'FOLDING_DYNAFOLD'], [/^coretamp$/, () => 'CANNON_PM_SACHET']];
-// the register code for a machine name in the report ('' when unsure); the manager's earlier picks are remembered on this browser
-function rpMachine(name){
-  const n = rpNorm(name); if (!n) return '';
-  let saved = {}; try { saved = JSON.parse(localStorage.getItem('okl.eng.rpMachines') || '{}'); } catch (e) { saved = {}; }
-  if (saved[n] && eqByCode(saved[n])) return saved[n];
-  for (const [re, f] of RP_RULES) { const m = re.exec(n); if (m && eqByCode(f(m))) return f(m); }
-  const hit = (EQ.list || []).filter(a => a.status === 'Active' && (rpNorm(a.name) === n || rpNorm(a.code) === n));
-  return hit.length === 1 ? hit[0].code : '';
-}
-function rpRemember(name, code){ try { const k = 'okl.eng.rpMachines', m = JSON.parse(localStorage.getItem(k) || '{}'); m[rpNorm(name)] = code; localStorage.setItem(k, JSON.stringify(m)); } catch (e) { /* this browser keeps nothing */ } }
-const RP_MINS = /\(?\s*(\d{1,4})\s*min(?:ute)?s?\s*\)?(?:\s*\(\s*cumulatively\s*\))?/i;
-// one cell: blocks of "Machine" then "issue (N mins)" lines -> [{ machine, text, minutes, raw }]
-function rpParseCell(cell){
-  const out = []; let machine = '';
-  for (const raw of String(cell || '').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) { machine = ''; continue; }
-    const m = RP_MINS.exec(line);
-    if (!m) {
-      const last = out[out.length - 1];
-      if (machine && last && last.machine === machine) last.text += ' ' + line.replace(/^[,.;\s]+/, '');
-      else machine = line;
-      continue;
-    }
-    let text = line.replace(RP_MINS, ' ').replace(/\s+/g, ' ').replace(/^[,.;\s]+|[,.;\s]+$/g, '').trim(), mach = machine;
-    if (!mach) {      // "Wraptech videojet nozzle washing (31mins)": the machine starts the line
-      const w = text.split(' ');
-      for (const k of [2, 1]) { const nm = w.slice(0, k).join(' '); if (w.length > k && (rpMachine(nm) || RP_RULES.some(([re]) => re.test(rpNorm(nm))))) { mach = w.slice(0, k).join(' '); text = w.slice(k).join(' '); break; } }
-    }
-    if (text.length >= 3) out.push({ machine: mach, text, minutes: +m[1], raw: (mach ? mach + ': ' : '') + line });
-  }
-  return out;
-}
-const rpDay = v => {
-  if (typeof v === 'number' && v > 30000 && v < 80000) return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000).toISOString().slice(0, 10);
-  if (v instanceof Date) return new Date(Date.UTC(v.getFullYear(), v.getMonth(), v.getDate())).toISOString().slice(0, 10);
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v || '')); return m ? m[0] : '';
-};
-// the first sheet -> one row per issue: { date, product, machine (as written), asset (guess), text, minutes, action, raw }
-function rpParseSheet(aoa){
-  const issueRow = aoa.findIndex(r => (r || []).some(c => /^issues?$/i.test(String(c).trim())));
-  if (issueRow < 1) throw new Error('This does not look like the daily packaging report: no "Issue" row on the first sheet.');
-  const heads = aoa[issueRow - 1] || [], cols = [];
-  for (let c = 1; c < heads.length; c++) {
-    const h = String(heads[c] || '').trim();
-    if (!h) continue;
-    if (/\(ctns\)/i.test(h) || /machine output/i.test(h)) break;
-    cols.push({ c, product: h.replace(/\s*\(.*$/, '').trim() || h });
-  }
-  const out = [], days = new Set();
-  for (let r = issueRow + 1; r < aoa.length; r++) {
-    const row = aoa[r] || [], date = rpDay(row[0]);
-    if (!date) continue;
-    days.add(date);                // a row for the day = that day was reported, issues or not
-    for (const { c, product } of cols) {
-      if (RP_LIVE.test(product)) continue;
-      const action = String(row[c + 1] || '').trim();
-      rpParseCell(row[c]).forEach(x => out.push({ date, product, machine: x.machine, asset: rpMachine(x.machine), text: x.text, minutes: x.minutes,
-        action: /^issues?$|^action$/i.test(action) ? '' : action, raw: x.raw, pick: true, status: '' }));
-    }
-  }
-  out.days = Array.from(days).sort();
-  return out;
-}
-async function rpFile(file){
-  RP.error = ''; RP.rows = null; RP.days = []; RP.newDays = []; RP.file = file ? file.name : ''; RP.busy = true; render();
-  try {
-    const XLSX = await loadSheetJS();
-    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
-    RP.rows = rpParseSheet(aoa); RP.days = RP.rows.days;
-    if (!RP.days.length) throw new Error('No days found on the first sheet.');
-    await rpCheck();
-  } catch (e) { RP.error = e.message; RP.rows = RP.rows && RP.days.length ? RP.rows : null; }
-  finally { RP.busy = false; render(); }
-}
-const rpLine = x => ({ date: x.date, asset: x.asset, product: x.product, text: x.text, minutes: String(x.minutes), action: x.action, raw: x.raw });
-// ask the server which lines are new and which were added before, and which report days were not read before (nothing is stored)
-async function rpCheck(){
-  const ready = RP.rows.filter(x => x.asset);
-  for (let i = 0; i === 0 || i < ready.length; i += 400) {
-    const part = ready.slice(i, i + 400), r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ dry: true, lines: part.map(rpLine), days: i ? [] : RP.days } } });
-    (r.lines || []).forEach(l => { const x = part[l.n - 1]; x.status = l.status; x.error = l.error || ''; x.job_id = l.job_id || ''; if (l.status === 'exists') x.pick = false; });
-    if (!i) { RP.newDays = r.new_days || []; RP.reportTo = r.report_to || ''; }
-  }
-}
-function rpShown(){ return (RP.rows || []).filter(x => !RP.from || x.date >= RP.from); }
-// the days to mark as read: shown, and with no issue still waiting for a machine or refused
-function rpDaysToMark(){
-  const open = new Set(rpShown().filter(x => x.pick && x.status !== 'exists' && x.status !== 'added' && (!x.asset || x.status === 'error')).map(x => x.date));
-  return RP.days.filter(d => (!RP.from || d >= RP.from) && !open.has(d));
-}
 function viewReport(){
   if (!EQ.list && !EQ.loading) eqLoad();
   if (RP.waiting === null && levelOf('engineering.jobs') === 'edit') { RP.waiting = []; rpWaitingLoad(); }
   const back = `<a class="btn btn-ghost btn-sm" href="#/jobs?tab=reports">${I.chevL} Calls and jobs</a>`;
-  if (levelOf('engineering.jobs') !== 'edit') return { title:'Daily report issues', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager adds issues from the daily report', '')}</div></div>` };
-  const rows = rpShown(), toAdd = rows.filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error' && x.status !== 'added');
-  const markDays = RP.rows ? rpDaysToMark() : [], newMark = markDays.filter(d => RP.newDays.includes(d)), held = RP.rows ? RP.days.filter(d => (!RP.from || d >= RP.from) && !markDays.includes(d)) : [];
+  if (levelOf('engineering.jobs') !== 'edit') return { title:'Daily report machine names', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager chooses machines for the daily report', '')}</div></div>` };
   const opts = cur => `<option value="">Choose the machine...</option>` + (EQ.list || []).filter(a => a.status === 'Active' && ['Machine', 'Line', 'Utility'].includes(a.type)).sort((a, b) => a.name.localeCompare(b.name))
     .map(a => `<option value="${esc(a.code)}" ${a.code === cur ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
-  const st = x => x.status === 'exists' ? `<span class="badge b-slate">Added before${x.job_id ? ' · ' + esc(x.job_id) : ''}</span>` : x.status === 'added' ? `<span class="badge b-ok">Added · ${esc(x.job_id)}</span>`
-    : !x.asset ? '<span class="badge b-warn">Choose the machine</span>' : x.status === 'error' ? `<span class="badge b-danger">${esc(x.error)}</span>` : '<span class="badge b-info">New</span>';
-  const o = RP.one;
   // issues from the e-mail that wait for a machine: one row per machine name as the report writes it
   const groups = [];
   for (const w of RP.waiting || []) { const k = rpNorm(w.machine); let g = groups.find(x => x.key === k); if (!g) groups.push(g = { key: k, name: w.machine || '', items: [] }); g.items.push(w); }
@@ -2262,38 +2158,9 @@ function viewReport(){
       <td data-label="Issues" class="small">${g.items.slice(0, 4).map(x => `${esc(String(x.day).slice(0, 10))} · ${esc(x.product)} · ${esc(x.text)} (${x.minutes} min)`).join('<br>')}${g.items.length > 4 ? `<br><span class="muted">and ${g.items.length - 4} more</span>` : ''}</td>
       <td data-label="Machine"><select class="inp" data-rp-wait="${i}" style="min-width:190px">${opts(RP.waitPick[g.key] || '')}</select></td>
       <td><button class="btn btn-primary btn-sm" data-rp-wait-save="${i}" ${RP.waitPick[g.key] ? '' : 'disabled'}>Save</button><span class="err-msg hide" data-err="rpWait${i}"></span></td></tr>`).join('')}</tbody></table></div></div>` : '';
-  return { title:'Daily report issues', crumb:'Maintenance', keepScroll: true,
-    html: back + pageHead('Issues from the daily packaging report', 'For products the floor app does not cover yet (all but Zaiki and Mintacid). The OKL report e-mail adds its machine stops by itself (every stop; a shortest length can be set in Settings) (the last report day for technicians to fill in, earlier days as history). A missed e-mail: upload the files on the home page, Daily production (the file below is the older way, OKL only).') + waitCard + `
-    <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>From the Excel file</h3><div class="sub">"OKL PERSONNEL PACKAGING - &lt;MONTH&gt;.xlsx", first sheet (Daily downtime tracker).</div></div></div>
-      <div class="card-b"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><input type="file" id="rpFile" accept=".xlsx,.xls" class="inp" style="width:auto">
-        ${RP.busy ? '<span class="small muted">Reading...</span>' : ''}${RP.file && !RP.busy ? `<span class="small muted">${esc(RP.file)}</span>` : ''}</div>
-        ${RP.error ? `<div class="notice warn" style="margin-top:10px">${I.alert}<div>${esc(RP.error)}</div></div>` : ''}</div>
-      ${RP.rows ? `<div class="card-b small" style="border-top:1px solid var(--line-2)">${RP.reportTo ? `Read so far up to <b>${esc(RP.reportTo)}</b>.` : 'No report day read yet.'}
-          The file has ${RP.days.length} day${RP.days.length === 1 ? '' : 's'} (${esc(RP.days[0] || '')} to ${esc(RP.days[RP.days.length - 1] || '')})${newMark.length ? `, <b>${newMark.length}</b> not read before` : ''}.
-          ${held.length ? `<span class="muted">${held.length} day${held.length === 1 ? '' : 's'} with issues still to sort out (machine or error) will be marked read once they are added.</span>` : ''}
-          <div class="tiny muted" style="margin-top:4px">PM effectiveness waits for these days on machines judged from the report, so read it in even when there are no new issues.</div></div>
-        <div class="card-b filter-bar row" style="gap:10px;flex-wrap:wrap;border-top:1px solid var(--line-2);align-items:center">
-          <label class="small">From <input class="inp" type="date" id="rpFrom" value="${esc(RP.from)}" style="width:auto"></label>
-          <label class="small row" style="gap:6px"><input type="checkbox" id="rpClose" ${RP.close ? 'checked' : ''}> Close them as they are (technicians do not fill them in)</label>
-          <span style="flex:1"></span><span class="small">${rows.length} issues in the file${RP.from ? ' from ' + esc(RP.from) : ''}, <b>${toAdd.length}</b> to add</span></div>
-        <div class="tbl-wrap"><table class="tbl"><thead><tr><th style="width:36px"></th><th>Date</th><th>Product</th><th>Machine</th><th>Issue</th><th style="text-align:right">Minutes</th><th>Status</th></tr></thead>
-          <tbody>${rows.map(x => { const i = RP.rows.indexOf(x); return `<tr><td><input type="checkbox" data-rp-pick="${i}" ${x.pick && x.status !== 'exists' && x.status !== 'added' ? 'checked' : ''} ${x.status === 'exists' || x.status === 'added' ? 'disabled' : ''} aria-label="Add this issue"></td>
-            <td data-label="Date" class="small mono">${esc(x.date)}</td><td data-label="Product" class="small">${esc(x.product)}</td>
-            <td data-label="Machine"><select class="inp" data-rp-asset="${i}" style="min-width:170px" ${x.status === 'exists' || x.status === 'added' ? 'disabled' : ''}>${opts(x.asset)}</select>${x.machine ? `<div class="tiny muted">"${esc(x.machine)}"</div>` : ''}</td>
-            <td data-label="Issue" class="small">${esc(x.text)}${x.action ? `<div class="tiny muted">Action: ${esc(x.action)}</div>` : ''}</td><td data-label="Minutes" style="text-align:right" class="mono">${x.minutes}</td><td data-label="Status">${st(x)}</td></tr>`; }).join('')
-            || '<tr><td colspan="7" class="muted" style="padding:16px">No issues in this period.</td></tr>'}</tbody></table></div>
-        <div class="card-b row between" style="border-top:1px solid var(--line-2);gap:10px;flex-wrap:wrap"><span class="err-msg hide" data-err="rpAdd"></span><span style="flex:1"></span>
-          <button class="btn btn-primary" id="rpAdd" ${toAdd.length || newMark.length ? '' : 'disabled'}>${I.plus} ${toAdd.length ? `Add ${toAdd.length} issue${toAdd.length === 1 ? '' : 's'}${newMark.length ? ` and mark ${newMark.length} day${newMark.length === 1 ? '' : 's'} read` : ''}`
-            : `Mark ${newMark.length} day${newMark.length === 1 ? '' : 's'} read (no new issues)`}</button></div>` : ''}
-    </div>
-    <div class="card"><div class="card-h"><div><h3>Add one issue by hand</h3><div class="sub">When the file is not to hand.</div></div></div><div class="card-b"><div class="grid g3">
-      <div class="field"><label for="rp1Date">Date</label><input class="inp" type="date" id="rp1Date" max="${todayIso()}" value="${esc(o.date || todayIso())}"></div>
-      <div class="field"><label for="rp1Asset">Machine</label><select class="inp" id="rp1Asset">${opts(o.asset)}</select></div>
-      <div class="field"><label for="rp1Product">Product (optional)</label><input class="inp" id="rp1Product" maxlength="60" value="${esc(o.product)}" placeholder="e.g. Procold"></div>
-      <div class="field" style="grid-column:1/-1"><label for="rp1Text">What happened?</label><input class="inp" id="rp1Text" maxlength="300" value="${esc(o.text)}" placeholder="e.g. Feeding track adjustment"></div>
-      <div class="field"><label for="rp1Min">Minutes lost</label><input class="inp" type="number" min="0" max="1440" step="1" id="rp1Min" value="${esc(o.minutes)}"></div>
-      <div class="field" style="grid-column:span 2"><label for="rp1Action">Action taken, if known (optional)</label><input class="inp" id="rp1Action" maxlength="500" value="${esc(o.action)}"></div></div>
-      <div class="row" style="gap:10px"><span class="err-msg hide" data-err="rp1"></span><span style="flex:1"></span><button class="btn btn-primary" id="rp1Add">${I.plus} Add the issue</button></div></div></div>`,
+  return { title:'Daily report machine names', crumb:'Maintenance', keepScroll: true,
+    html: back + pageHead('Machine names from the daily packaging report', 'The OKL report e-mail adds its machine stops to Calls and jobs by itself (every stop; a shortest length can be set in Settings): the last report day for technicians to fill in, earlier days as history. A machine name the register does not know waits here until you choose the machine once. A missed e-mail: upload the files on the home page, Daily production.')
+      + (waitCard || `<div class="card"><div class="card-b">${emptyState('check', 'No machine names waiting', 'Every machine in the report was recognised.')}</div></div>`),
     bind(){
       $$('[data-rp-wait]').forEach(sel => sel.onchange = () => { RP.waitPick[groups[+sel.dataset.rpWait].key] = sel.value; render(); });
       $$('[data-rp-wait-save]').forEach(b => b.onclick = async () => {
@@ -2307,46 +2174,6 @@ function viewReport(){
           delete RP.waitPick[g.key]; JB.board = null; PM.data = null; await rpWaitingLoad();
         } catch (e) { setErr('rpWait' + i, e.message); b.disabled = false; }
       });
-      const f = $('#rpFile'); if (f) f.onchange = () => { if (f.files && f.files[0]) rpFile(f.files[0]); };
-      const fr = $('#rpFrom'); if (fr) fr.onchange = e => { RP.from = e.target.value; render(); };
-      const cl = $('#rpClose'); if (cl) cl.onchange = e => { RP.close = e.target.checked; };
-      $$('[data-rp-pick]').forEach(c => c.onchange = () => { RP.rows[+c.dataset.rpPick].pick = c.checked; render(); });
-      $$('[data-rp-asset]').forEach(s => s.onchange = async () => { const x = RP.rows[+s.dataset.rpAsset]; x.asset = s.value; x.status = ''; if (x.machine && x.asset) rpRemember(x.machine, x.asset);
-        if (x.asset) { RP.rows.filter(y => !y.asset && rpNorm(y.machine) === rpNorm(x.machine) && x.machine).forEach(y => { y.asset = x.asset; }); try { await rpCheck(); } catch (e) { /* checked again on adding */ } } render(); });
-      const add = $('#rpAdd'); if (add) add.onclick = async () => {
-        clearErrors(document);
-        const lines = rpShown().filter(x => x.pick && x.asset && x.status !== 'exists' && x.status !== 'error' && x.status !== 'added');
-        if (!lines.length && !rpDaysToMark().some(d => RP.newDays.includes(d))) return;
-        if (lines.length && !await confirmDialog('Add the issues', `Add <b>${lines.length}</b> issue${lines.length === 1 ? '' : 's'} as breakdowns${RP.close ? ', closed as they are' : ' for technicians to fill in'}?`, 'Add')) return;
-        add.disabled = true;
-        try {
-          let added = 0;
-          for (let i = 0; i === 0 || i < lines.length; i += 400) {    // the days go with the last part, once every issue is in
-            const part = lines.slice(i, i + 400), last = i + 400 >= lines.length;
-            const r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ close: RP.close, lines: part.map(rpLine), days: last ? rpDaysToMark() : [] } } });
-            (r.lines || []).forEach(l => { const x = part[l.n - 1]; x.status = l.status; x.job_id = l.job_id || ''; });
-            added += r.added || 0;
-            if (last) { RP.reportTo = r.report_to || RP.reportTo; RP.newDays = RP.newDays.filter(d => !rpDaysToMark().includes(d)); }
-          }
-          toast(added + ' issue' + (added === 1 ? '' : 's') + ' added', (RP.reportTo ? 'Report read up to ' + RP.reportTo + '. ' : '') + (RP.close || !added ? '' : 'Technicians see them under Calls and jobs > From the daily report.'), 'ok', 6000);
-          JB.board = null; PM.data = null; render();
-        } catch (e) { setErr('rpAdd', e.message); add.disabled = false; }
-      };
-      const keep = () => Object.assign(RP.one, { date: $('#rp1Date').value, asset: $('#rp1Asset').value, product: $('#rp1Product').value, text: $('#rp1Text').value, minutes: $('#rp1Min').value, action: $('#rp1Action').value });
-      ['#rp1Date', '#rp1Asset', '#rp1Product', '#rp1Text', '#rp1Min', '#rp1Action'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', keep); if (el) el.addEventListener('change', keep); });
-      $('#rp1Add').onclick = async () => {
-        keep(); clearErrors(document);
-        const x = RP.one;
-        if (!x.date || !x.asset) return setErr('rp1', 'Give the date and the machine.');
-        if (x.text.trim().length < 3) return setErr('rp1', 'Say what happened.');
-        if (!/^\d{1,4}$/.test(String(x.minutes).trim()) || +x.minutes > 1440) return setErr('rp1', 'Give the minutes lost (0 to 1440).');
-        $('#rp1Add').disabled = true;
-        try { const r = await api('/webhook/engineering/api/jobs/report', { method:'POST', body:{ report:{ lines: [{ date: x.date, asset: x.asset, product: x.product.trim(), text: x.text.trim(), minutes: String(x.minutes).trim(), action: x.action.trim() }] } } });
-              if (r.added) { toast('Issue added', (r.lines[0] || {}).job_id || '', 'ok'); RP.one = { date: x.date, asset: '', product: x.product, text: '', minutes: '', action: '' }; JB.board = null; }
-              else toast('Already added', 'The same issue is there already for that day and machine.', 'ok');
-              render(); }
-        catch (e) { setErr('rp1', e.message); $('#rp1Add').disabled = false; }
-      };
     } };
 }
 
@@ -2491,7 +2318,7 @@ function viewPm(tab){
     const effBadge = s => s === 'Failed early' ? '<span class="badge b-danger">Failed early</span>' : s === 'Running' ? '<span class="badge b-info">Running</span>'
       : s === 'Waiting for the daily report' ? '<span class="badge b-warn">Waiting for the daily report</span>' : '<span class="badge b-ok">Held to the next PM</span>';
     const waiting = eff.filter(x => x.status === 'Waiting for the daily report').length, repTo = (eff.find(x => x.report_to) || {}).report_to;
-    const fromReport = eff.some(x => x.failure_source === 'report'), canReport = levelOf('engineering.jobs') === 'edit';
+    const fromReport = eff.some(x => x.failure_source === 'report');
     return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
       html: head + `<div class="grid g4" style="margin-bottom:14px">
         <div class="stat"><div class="lbl">PM effectiveness</div><div class="val">${avg == null ? '--' : avg + '%'}</div><div class="meta">${scored.length} finished PM runs</div></div>
@@ -2500,8 +2327,7 @@ function viewPm(tab){
         <div class="stat"><div class="lbl">Still running</div><div class="val">${eff.filter(x => x.status === 'Running').length}</div>${waiting ? `<div class="meta">${waiting} waiting for the daily report</div>` : ''}</div></div>
       ${fromReport ? `<div class="notice ${waiting ? 'warn' : 'info'}" style="margin-bottom:12px">${I.info}<div>Machines the floor app does not cover are judged from the daily packaging report and breakdown jobs.
         ${repTo ? `The report has been read up to <b>${esc(repTo)}</b>.` : '<b>No daily report has been read yet.</b>'}
-        ${waiting ? ` ${waiting} PM${waiting === 1 ? '' : 's'} wait${waiting === 1 ? 's' : ''} for it: without it, "no failure" cannot be trusted.` : ''}
-        ${canReport ? ` <a href="#/jobs/report">Upload the daily report</a>` : ''}</div></div>` : ''}
+        ${waiting ? ` ${waiting} PM${waiting === 1 ? '' : 's'} wait${waiting === 1 ? 's' : ''} for it: without it, "no failure" cannot be trusted.` : ''}</div></div>` : ''}
       <div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="pmFrom" value="${esc(PM.from)}" style="width:auto"></label>
         <label class="small">to <input class="inp" type="date" id="pmTo" value="${esc(PM.to)}" style="width:auto"></label>${fltHtml(PM.f, 'pe')}<span class="small muted">Default: the last 6 months.</span></div>
       <div class="card"><div class="card-h"><div><div class="sub">Target = days to the next PM date. Achieved = days until the first breakdown job, floor stop or daily report issue of ${num(d.failure_minutes)} min or more. Where failures come from is set on each machine (Equipment and parts).</div></div></div>
