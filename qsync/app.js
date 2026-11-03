@@ -342,6 +342,7 @@ function navModel(){
       { path:'/lab/my', label:'My analyses', icon:'doc' },
       { path:'/lab/oos', label:'OOS log', icon:'alert' },
       { path:'/lab/master', label:'Lab master data', icon:'settings' },
+      { path:'/lab/relievers', label:'Relievers', icon:'users' },
     ]}] : []),
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
