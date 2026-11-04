@@ -123,6 +123,7 @@ async function api(path, opts){
   let json = {};
   try { json = await res.json(); } catch (e) { /* empty body */ }
   if (!res.ok){ const err = new Error(json.error || 'Something went wrong.'); err.status = res.status; throw err; }
+  if ((opts.method || 'GET') !== 'GET' && window.oklFormKeep) oklFormKeep.sent(opts.body);   // saved: formkeep.js
   return json;
 }
 
@@ -385,9 +386,11 @@ function render(){
           `<button class="btn btn-primary" onclick="go('/')">Back to console home</button>`)}</div></div>` };
     }
     const keep = window.scrollY;
+    const typed = window.oklFormKeep ? oklFormKeep.take(app, path) : null;   // what is being typed survives the draw (formkeep.js)
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
+    if (typed) oklFormKeep.put(typed, app, path);
     window.scrollTo({ top: out.keepScroll ? keep : 0 });
   } catch (err) {
     console.error(err);
@@ -1770,7 +1773,8 @@ async function jbLoad(force){
 // the board refreshes itself while it is on screen (new calls appear without a reload)
 function jbAutoRefresh(on){
   clearInterval(JB.timer); JB.timer = null;
-  if (on) JB.timer = setInterval(() => { if (/^\/jobs(\/|$)/.test(currentPath()) && !document.querySelector('#layers .overlay') && !JB.draft) jbLoad(true); else if (!/^\/jobs/.test(currentPath())) jbAutoRefresh(false); }, 30000);
+  // only the board itself (/jobs, /jobs?tab=...): a job's own page has boxes to type in and the board's data does not change it (4 Nov 2026)
+  if (on) JB.timer = setInterval(() => { if (currentPath().split('?')[0] === '/jobs' && !document.querySelector('#layers .overlay') && !JB.draft) jbLoad(true); else if (!/^\/jobs/.test(currentPath())) jbAutoRefresh(false); }, 30000);
 }
 function jbTabs(cur){
   const n = k => jbList(k).length, open = jbList('calls').filter(j => j.status === 'called').length;
@@ -1815,7 +1819,7 @@ function viewJobs(){
   const tab = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || 'calls';
   if (tab === 'history') return viewJobsHistory();
   if (!JB.board && !JB.error) jbLoad();
-  JB.draft = null; jbAutoRefresh(true); pushCheck();
+  JB.draft = null; JB.cat = null; jbAutoRefresh(true); pushCheck();
   const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs')), mgr = levelOf('engineering.jobs') === 'edit';
   const head = pageHead('Calls and jobs', 'Maintenance calls from the floor and the jobs Engineering is working on. This page refreshes by itself.',
     (mgr ? `<button class="btn btn-ghost" onclick="go('/jobs/report')">${I.download} Report machine names</button>` : '')
@@ -1926,7 +1930,7 @@ function viewJob(params, ctx){
     ${j.status === 'cancelled' ? `<div class="notice" style="margin-bottom:14px">${I.info}<div>Cancelled: ${esc(j.cancel_reason || '')}</div></div>` : ''}
     <form id="jbForm" novalidate>
       ${!j.asset || (mgr && closed) ? `<div class="field"><label for="jbAsset">Machine or equipment</label><input class="inp" id="jbAsset" list="jbAssets" value="${esc(j.asset ? (j.asset_name + ' (' + j.asset + ')') : '')}" ${dis} placeholder="Type to search the register"><datalist id="jbAssets">${spAssetOptions()}</datalist></div>` : ''}
-      ${j.type === 'breakdown' ? `<div class="field"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${String(j.failure_category || '').toLowerCase() === c.toLowerCase() ? 'on' : ''}" data-cat="${esc(c)}" ${dis}>${esc(c)}</button>`).join('')}</div></div>` : ''}
+      ${j.type === 'breakdown' ? `<div class="field"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${String((JB.cat && JB.cat.id === id && JB.cat.at === j.updated_at ? JB.cat.c : j.failure_category) || '').toLowerCase() === c.toLowerCase() ? 'on' : ''}" data-cat="${esc(c)}" ${dis}>${esc(c)}</button>`).join('')}</div></div>` : ''}
       ${checks.length ? `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>PM checklist</h3><div class="sub">Tick each item, or mark it not done and say why (for example, the material is not available).</div></div></div>
         <div class="card-b" id="jbChk">${chkHtml(checks, JB.chk.S, dis)}</div></div>` : ''}
       <div class="field"><label for="jbDone">${checks.length ? 'Anything else done? (optional)' : 'What was done?'}</label><textarea class="inp" id="jbDone" rows="3" maxlength="2000" ${dis} placeholder="${checks.length ? 'e.g. Also changed the belt' : 'e.g. Replaced the seal kit and tested ten cycles'}">${esc(j.work_done === 'PM checklist completed.' ? '' : (j.work_done || ''))}</textarea></div>
@@ -1948,7 +1952,8 @@ function viewJob(params, ctx){
       ${can && !closed && (onIt || mgr || j.status === 'called') && !(isCall && j.status !== 'called' && !mgr) ? `<button class="btn btn-ghost" style="margin-left:auto" onclick="jbCancel('${esc(id)}')">Cancel job</button>` : ''}
     </div>`,
     bind(){
-      $$('[data-cat]').forEach(b => b.onclick = () => { if (b.disabled) return; $$('[data-cat]').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+      // the pick is kept until the job is saved (a redraw must not drop it)
+      $$('[data-cat]').forEach(b => b.onclick = () => { if (b.disabled) return; JB.cat = { id, at: j.updated_at, c: b.dataset.cat }; $$('[data-cat]').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
       chkBind($('#jbChk'), checks, JB.chk.S, dis);
     },
   };

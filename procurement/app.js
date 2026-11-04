@@ -107,6 +107,7 @@ async function api(path, opts){
   let json = {};
   try { json = await res.json(); } catch (e) { /* empty body */ }
   if (!res.ok){ const err = new Error(json.error || 'Something went wrong.'); err.status = res.status; throw err; }
+  if ((opts.method || 'GET') !== 'GET' && window.oklFormKeep) oklFormKeep.sent(opts.body);   // saved: formkeep.js
   return json;
 }
 
@@ -323,9 +324,11 @@ function render(){
         ${emptyState('alert','Something went wrong on this screen', esc(err.message),
           `<button class="btn btn-primary" onclick="go('/')">Back to console home</button>`)}</div></div>` };
     }
+    const typed = window.oklFormKeep ? oklFormKeep.take(app, path) : null;   // what is being typed survives the draw (formkeep.js)
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
+    if (typed) oklFormKeep.put(typed, app, path);
     window.scrollTo({ top:0 });
   } catch (err) {
     console.error(err);

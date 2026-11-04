@@ -202,6 +202,7 @@ async function api(path, opts){
   let json = {};
   try { json = await res.json(); } catch (e) { /* empty body */ }
   if (!res.ok) throw new Error(json.error || 'Something went wrong.');
+  if ((opts.method || 'GET') !== 'GET' && window.oklFormKeep) oklFormKeep.sent(opts.body);   // saved: formkeep.js
   return json;
 }
 
@@ -476,9 +477,11 @@ function render(){
           `<button class="btn btn-primary" onclick="go('/requests')">Back to requests</button>`)}</div></div>` };
     }
     const samePage = path === renderedPath, keepY = window.scrollY;
+    const typed = window.oklFormKeep ? oklFormKeep.take(app, path) : null;   // what is being typed survives the draw (formkeep.js)
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
+    if (typed) oklFormKeep.put(typed, app, path);
     window.scrollTo({ top: samePage ? keepY : 0 });
     renderedPath = path;
   } catch (err) {
