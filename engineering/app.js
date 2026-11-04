@@ -1086,6 +1086,7 @@ function viewSettings(){
           ${x.updated_by ? `<div class="tiny muted">Changed by ${esc(x.updated_by)}, ${esc(when(x.updated_at))}</div>` : ''}`;
   // number settings in the table; list settings (one entry per line) each get their own block below it, so no row grows tall
   const isList = x => x.unit === 'list' || x.unit === 'emails';
+  const listMin = x => x.key === 'store_locations' ? 1 : 2;   // one store is enough (041)
   const off = x => /^recent_stops_/.test(x.key);   // they only drive the removed Machine stops page
   const nums = ES.list.filter(x => !isList(x) && !off(x)), lists = ES.list.filter(isList);
   return {
@@ -1099,7 +1100,7 @@ function viewSettings(){
       </tr>`).join('')}</tbody></table></div>
       ${lists.map(x => `<div class="card-b" style="border-top:1px solid var(--line-2)">${about(x)}
         <textarea class="inp" data-list="${esc(x.key)}" rows="${Math.max(2, Math.min(10, (x.list || []).length + 1))}" style="width:100%;max-width:460px;margin-top:8px" ${dis}>${esc((x.list || []).join('\n'))}</textarea>
-        <div class="tiny muted" style="margin-top:4px">${x.unit === 'emails' ? 'One e-mail address per line, up to 10.' : 'One per line, 2 to 20.'}</div></div>`).join('')}
+        <div class="tiny muted" style="margin-top:4px">${x.unit === 'emails' ? 'One e-mail address per line, up to 10.' : 'One per line, ' + listMin(x) + ' to 20.'}</div></div>`).join('')}
       ${canEdit ? `<div class="card-b row" style="gap:10px;border-top:1px solid var(--line-2)"><button class="btn btn-primary" id="esSave">${I.check} Save changes</button><span class="err-msg hide" data-err="esSave"></span></div>` : ''}
     </div>`,
     bind(){
@@ -1116,7 +1117,7 @@ function viewSettings(){
           const x = ES.list.find(s => s.key === el.dataset.list), items = el.value.split('\n').map(s => s.trim()).filter(Boolean);
           if (x.unit === 'emails') {
             if (items.length > 10 || items.some(e => !/^[^@\s|,;]+@[^@\s|,;]+\.[^@\s|,;]+$/.test(e))) { setErr('esSave', x.label + ': one e-mail address per line, up to 10.'); el.focus(); return; }
-          } else if (items.length < 2 || items.length > 20) { setErr('esSave', x.label + ': give 2 to 20 entries, one per line.'); el.focus(); return; }
+          } else if (items.length < listMin(x) || items.length > 20) { setErr('esSave', x.label + ': give ' + listMin(x) + ' to 20 entries, one per line.'); el.focus(); return; }
           if (items.join('|') !== (x.list || []).join('|')) values[x.key] = items;
         }
         if (!Object.keys(values).length) { toast('Nothing changed', '', 'ok'); return; }
@@ -1145,7 +1146,7 @@ const todayIso = () => new Date(Date.now() + 60 * 60 * 1000).toISOString().slice
 async function spLoad(force){
   if (SP.loading || (SP.list && !force)) return;
   SP.loading = true; SP.error = '';
-  try { const r = await api('/webhook/engineering/api/spares'); SP.list = r.spares || []; SP.people = r.people || []; }
+  try { const r = await api('/webhook/engineering/api/spares'); SP.list = r.spares || []; SP.people = r.people || []; SP.locations = r.locations || []; }
   catch (err) { SP.error = err.message; }
   finally { SP.loading = false; render(); }
   if (!EQ.list && !EQ.loading) eqLoad();
@@ -1212,7 +1213,7 @@ function viewSpares(){
       <div class="stat"><div class="lbl">Parts</div><div class="val">${all.length}</div><div class="meta">in the catalogue</div></div>
       <div class="stat"><div class="lbl">Stock value</div><div class="val">&#8358;${money(Math.round(value))}</div><div class="meta">where a price is known</div></div>
       <div class="stat"><div class="lbl">Out of stock / reorder</div><div class="val">${out} / ${reo}</div><div class="meta">at or below the reorder level</div></div>
-      <div class="stat"><div class="lbl">Up to standard</div><div class="val">${all.filter(x => x.up_to_standard).length} of ${all.length}</div><div class="meta">machines and shelf known · ${never} never counted</div></div>
+      <div class="stat"><div class="lbl">Up to standard</div><div class="val">${all.filter(x => x.up_to_standard).length} of ${all.length}</div><div class="meta">machines and location known · ${never} never counted</div></div>
     </div>
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
@@ -1267,18 +1268,38 @@ function spDownload(what){
 
 function spAssetOptions(){ return (EQ.list || []).filter(a => a.status === 'Active').sort((a, b) => a.name.localeCompare(b.name)).map(a => `<option value="${esc(a.name + ' (' + a.code + ')')}">`).join(''); }
 const spAssetFrom = v => { const m = /\(([A-Z0-9_.-]+)\)\s*$/.exec(String(v || '')); return m ? m[1] : String(v || '').trim().toUpperCase(); };
-const spSkuFrom = v => { const m = /^\s*([A-Z]{2} \d{3,4})/.exec(String(v || '').toUpperCase()); return m ? m[1] : ''; };
-function spSkuOptions(){ return (SP.list || []).filter(x => x.active).map(x => `<option value="${esc(spLabel(x))}">`).join(''); }
+// "MP 113 - ...", "mp113" or "MP 113" all give MP 113
+const spSkuFrom = v => { const m = /^\s*([A-Z]{2}) ?(\d{3,4})\b/.exec(String(v || '').toUpperCase()); return m ? m[1] + ' ' + m[2] : ''; };
+// each option says what the part is, so a code is never picked blind: part number, brand, stock
+const spOptLabel = x => [x.part_number && 'PN ' + x.part_number, x.brand, num(x.stock) + ' ' + x.unit + ' in stock'].filter(Boolean).join(' · ');
+function spSkuOptions(){ return (SP.list || []).filter(x => x.active).map(x => `<option value="${esc(spLabel(x))}" label="${esc(spOptLabel(x))}">`).join(''); }
+// what a picked part is, under the box: the name in full, part number, brand, stock, location and what it is used on
+function spDetail(it, typed){
+  if (!it) return String(typed || '').trim() ? '<span style="color:var(--danger)">Not in the list: pick the part from the list.</span>' : '';
+  const used = it.common_use ? 'Common use' : (it.used_on_names || []).join(', ');
+  return `<b>${esc(it.description)}</b>${it.part_number ? ' · PN ' + esc(it.part_number) : ''}${it.brand ? ' · ' + esc(it.brand) : ''}`
+    + `<br>${esc('In stock: ' + num(it.stock) + ' ' + it.unit + (it.location ? ' · ' + it.location : '') + (used ? ' · used on ' + used : ''))}`;
+}
+// the picked part written out in full ("MP 113 - Sealing Roller shaft") once a bare SKU is typed
+const spFullText = (el, it) => { if (it && el.value.trim() !== spLabel(it)) el.value = spLabel(it); };
+// locations come from Settings (store_locations, 041); the part's own one stays selected
+const spLocations = () => (SP.locations && SP.locations.length ? SP.locations : ['Engineering store']);
+function spLocSelect(id, cur, dis){
+  const L = spLocations(), sel = L.find(l => l.toLowerCase() === String(cur || '').toLowerCase()) || (L.length === 1 ? L[0] : '');
+  return `<select class="inp" id="${id}" ${dis || ''}>${sel ? '' : '<option value="">Choose...</option>'}${L.map(l => `<option ${l === sel ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+}
+// letters in a text, as the server counts them (041): a brand or supplier of only "6" has none
+const letters = v => String(v || '').replace(/[^A-Za-zÀ-ɏ]/g, '').length;
 
 /* ---- several parts at once: one line per part (part, quantity, and the unit price on a receipt). Used by Receive,
    Issue, parts on a job and Start a job. The server saves all the lines or none (migration 023).
    L = [{ text, sku, qty, price }]; opt = { id, price: bool, stock: bool (stop above the stock) } */
 const plNew = sku => { const it = sku ? spBySku(sku) : null; return { text: it ? spLabel(it) : '', sku: it ? it.sku : '', qty: '', price: it && it.unit_price ? num(it.unit_price) : '' }; };
-const plStock = l => { const it = spBySku(l.sku); return it ? 'In stock: ' + num(it.stock) + ' ' + it.unit + (it.location ? ' - ' + it.location : '') : ''; };
+const plStock = l => spDetail(spBySku(l.sku), l.text);
 function plRows(L, opt){
   return L.map((l, i) => `<div class="pl-row">
     <div class="pl-part"><input class="inp" data-pl-sku="${i}" list="${opt.id}Skus" value="${esc(l.text)}" placeholder="Type the SKU or the part name" aria-label="Part ${i + 1}">
-      <div class="tiny muted" data-pl-stock="${i}">${esc(plStock(l))}</div></div>
+      <div class="tiny muted" data-pl-stock="${i}">${plStock(l)}</div></div>
     <input class="inp pl-qty" type="number" min="0" step="any" data-pl-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
     ${opt.price ? `<input class="inp pl-price" type="number" min="0" step="any" data-pl-price="${i}" value="${esc(l.price)}" placeholder="Unit price" aria-label="Unit price ${i + 1}">` : ''}
     <button type="button" class="btn btn-ghost btn-sm" data-pl-rm="${i}" ${L.length === 1 ? 'disabled' : ''} aria-label="Remove line ${i + 1}">${I.x}</button></div>`).join('');
@@ -1294,10 +1315,12 @@ function plBind(root, L, opt){
   const box = $('#' + opt.id, root); if (!box) return;
   const rows = $('[data-pl-rows]', box);
   const wire = () => {
-    $$('[data-pl-sku]', box).forEach(el => { el.oninput = el.onchange = () => { const l = L[+el.dataset.plSku]; l.text = el.value; l.sku = spSkuFrom(el.value);
+    $$('[data-pl-sku]', box).forEach(el => { el.oninput = el.onchange = e => { const l = L[+el.dataset.plSku]; l.sku = spSkuFrom(el.value);
       const it = spBySku(l.sku), pr = $(`[data-pl-price="${el.dataset.plSku}"]`, box);
+      if (e && e.type === 'change') spFullText(el, it);
+      l.text = el.value;
       if (it && pr && !pr.value && it.unit_price) { pr.value = num(it.unit_price); l.price = pr.value; }
-      $(`[data-pl-stock="${el.dataset.plSku}"]`, box).textContent = plStock(l); }; });
+      $(`[data-pl-stock="${el.dataset.plSku}"]`, box).innerHTML = plStock(l); }; });
     $$('[data-pl-qty]', box).forEach(el => { el.oninput = () => { L[+el.dataset.plQty].qty = el.value; }; });
     $$('[data-pl-price]', box).forEach(el => { el.oninput = () => { L[+el.dataset.plPrice].price = el.value; }; });
     $$('[data-pl-rm]', box).forEach(el => { el.onclick = () => { L.splice(+el.dataset.plRm, 1); rows.innerHTML = plRows(L, opt); wire(); }; });
@@ -1340,7 +1363,7 @@ function spOpen(sku){
         <div class="field"><label for="spBrand">Brand</label><input class="inp" id="spBrand" maxlength="80" value="${esc(v.brand || '')}" ${dis}></div>
         <div class="field"><label for="spSup">Supplier</label><input class="inp" id="spSup" maxlength="80" value="${esc(v.supplier || '')}" ${dis}></div>
         <div class="field"><label for="spUnit">Unit</label><select class="inp" id="spUnit" ${dis}>${SP_UNITS.map(u => `<option ${u === v.unit ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
-        <div class="field"><label for="spLoc">Location</label><input class="inp" id="spLoc" maxlength="40" value="${esc(v.location || '')}" ${dis} placeholder="shelf / rack / bin"></div>
+        <div class="field"><label for="spLoc">Location</label>${spLocSelect('spLoc', v.location, dis)}</div>
         <div class="field"><label for="spReo">Reorder level</label><input class="inp" id="spReo" type="number" min="0" step="1" value="${num(v.reorder_level)}" ${dis}></div>
       </div>
       <div class="field"><label>Used on</label>
@@ -1369,8 +1392,12 @@ function spOpen(sku){
           brand: $('#spBrand', w).value.trim(), supplier: $('#spSup', w).value.trim(), unit: $('#spUnit', w).value, location: $('#spLoc', w).value.trim(),
           reorder_level: $('#spReo', w).value.trim() || '0', common_use: $('#spCommon', w).checked, used_on: $$('[data-used]', w).map(e => e.dataset.used),
           active: isNew ? true : $('#spActive', w).checked, notes: $('#spNotes', w).value.trim() };
-        if (spare.description.length < 2) return setErr('spDesc', 'Describe the part.', w);
-        if (isNew && !spare.location) return setErr('spDesc', 'Say where it is kept (location).', w);
+        if (spare.description.length < 2 || letters(spare.description) < 2) return setErr('spDesc', 'Describe the part in words, not only a number.', w);
+        if (spare.part_number && !/[A-Za-z0-9]/.test(spare.part_number)) return setErr('spDesc', 'The part number needs letters or digits (leave it empty if there is none).', w);
+        if (spare.brand && letters(spare.brand) < 1) return setErr('spDesc', 'The brand needs letters, not only a number (leave it empty if not known).', w);
+        if (spare.supplier && letters(spare.supplier) < 2) return setErr('spDesc', 'The supplier needs a name, not only a number (leave it empty if not known).', w);
+        if (!spare.location) return setErr('spDesc', 'Choose the location.', w);
+        if (!/^\d+(\.\d{1,2})?$/.test(spare.reorder_level) || +spare.reorder_level > 10000) return setErr('spDesc', 'The reorder level must be a number from 0 to 10 000.', w);
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/save', { method:'POST', body:{ spare } }); close(); toast(isNew ? 'Added ' + r.sku : 'Saved', spare.description, 'ok'); await spLoad(true); }
         catch (err) { setErr('spDesc', err.message, w); sv.disabled = false; }
@@ -1406,6 +1433,12 @@ function spReceive(sku){
         const receipt = { invoice_no: $('#rcInv', w).value.trim(), supplier: $('#rcSup', w).value.trim(), date: $('#rcDate', w).value, received_by: $('#rcBy', w).value,
           note: $('#rcNote', w).value.trim(), lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty, unit_price: l.unit_price })) };
         if (!receipt.invoice_no || !receipt.supplier) return setErr('rcInv', 'The invoice number and the supplier are needed.', w);
+        if (receipt.invoice_no.length < 2 || !/[A-Za-z0-9]/.test(receipt.invoice_no)) return setErr('rcInv', 'Give the invoice number as on the invoice.', w);
+        if (letters(receipt.supplier) < 2) return setErr('rcInv', 'Give the supplier\'s name.', w);
+        // a slipped zero: 5 times the last price or more, or a fifth of it or less
+        const odd = receipt.lines.map(l => { const it = spBySku(l.sku); return it && +it.unit_price > 0 && (+l.unit_price >= 5 * it.unit_price || +l.unit_price <= it.unit_price / 5)
+          ? it.sku + ' ' + it.description + ': NGN ' + money(l.unit_price) + ' (last time NGN ' + money(it.unit_price) + ')' : ''; }).filter(Boolean);
+        if (odd.length && !(await confirmDialog('Check the price', 'Far from the last price:<br>' + odd.map(esc).join('<br>') + '<br>Is it right?', 'Yes, it is right'))) return;
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/receipt', { method:'POST', body:{ receipt } }); close();
               toast('Received ' + receipt.lines.length + ' part' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', '), 'ok'); await spRefresh(); }
@@ -1420,7 +1453,10 @@ function spIssue(sku){
   openModal({
     title:'Issue parts', size:'wide', sub:'Parts leaving the store for one piece of equipment: one line per part.',
     body: `<form novalidate><div class="grid g2">
-      <div class="field" style="grid-column:1/-1"><label for="isAsset">For which equipment</label><input class="inp" id="isAsset" list="isAssets" placeholder="Type a machine, AHU, utility..."><datalist id="isAssets">${spAssetOptions()}</datalist></div>
+      <div class="field" style="grid-column:1/-1"><label for="isAsset">For which equipment</label><input class="inp" id="isAsset" list="isAssets" placeholder="Type a machine, AHU, utility..."><datalist id="isAssets">${spAssetOptions()}</datalist>
+        <label class="row small" style="gap:6px;margin-top:6px"><input type="checkbox" id="isOther"> Other: not in the list (an office AC, a fan...)</label>
+        <div id="isOtherRow" class="hide" style="margin-top:6px"><input class="inp" id="isOtherName" maxlength="80" placeholder="Name it, e.g. Office AC, QA room">
+          <div class="tiny muted" style="margin-top:4px">Kept as equipment of type "Other": next time it is in the list.</div></div></div>
       <div class="field"><label for="isWho">Collected by</label><select class="inp" id="isWho"><option value="">Choose...</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
       <div class="field"><label for="isDate">Date</label><input class="inp" id="isDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
     </div>
@@ -1430,18 +1466,31 @@ function spIssue(sku){
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Issue</button>`,
     onMount: (w, close) => {
       plBind(w, L, opt);
+      const other = $('#isOther', w);
+      other.onchange = () => { $('#isOtherRow', w).classList.toggle('hide', !other.checked); $('#isAsset', w).disabled = other.checked; if (other.checked) $('#isOtherName', w).focus(); };
       const sv = $('[data-save]', w);
       sv.onclick = async () => {
         clearErrors(w);
         const chk = plCheck(L, opt);
         if (chk.error) return setErr('isAsset', chk.error, w);
-        const issue = { asset: spAssetFrom($('#isAsset', w).value), collected_by: $('#isWho', w).value, date: $('#isDate', w).value, note: $('#isNote', w).value.trim(),
+        const issue = { collected_by: $('#isWho', w).value, date: $('#isDate', w).value, note: $('#isNote', w).value.trim(),
           lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty })) };
-        if (!(EQ.list || []).some(a => a.code === issue.asset)) return setErr('isAsset', 'Pick the equipment from the list.', w);
+        if (other.checked) {
+          const nm = $('#isOtherName', w).value.trim().replace(/\s+/g, ' ');
+          if (nm.length < 2 || letters(nm) < 2) return setErr('isAsset', 'Name the equipment, e.g. "Office AC, QA room".', w);
+          const same = (EQ.list || []).find(a => a.status === 'Active' && a.name.toLowerCase() === nm.toLowerCase());
+          if (same) issue.asset = same.code; else issue.asset_other = nm;
+        } else {
+          issue.asset = spAssetFrom($('#isAsset', w).value);
+          if (!(EQ.list || []).some(a => a.code === issue.asset)) return setErr('isAsset', 'Pick the equipment from the list, or tick "Other" and name it.', w);
+        }
         if (!issue.collected_by) return setErr('isAsset', 'Choose who collected the parts.', w);
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/issue', { method:'POST', body:{ issue } }); close();
-              toast('Issued ' + issue.lines.length + ' part' + (issue.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', '), 'ok'); await spRefresh(); }
+              toast('Issued ' + issue.lines.length + ' part' + (issue.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', ')
+                + (r.asset_created ? ' · ' + issue.asset_other + ' added to the equipment list' : ''), 'ok');
+              if (r.asset_created) eqLoad(true);
+              await spRefresh(); }
         catch (err) { setErr('isAsset', err.message, w); sv.disabled = false; }
       };
     },
@@ -1531,18 +1580,22 @@ function spHandover(id, action){
   if (action === 'confirm') { confirmDialog('Confirm the hand-over', `${esc(m.collected_by_name)} took <b>${num(m.qty)} ${esc(m.unit)} of ${esc(m.sku)}</b> (${esc(m.description)}) for ${esc(m.asset_name)}. The stock goes down now.`, 'Confirm').then(ok => ok && send({})); return; }
   openModal({
     title: (action === 'correct' ? 'Correct ' : 'Cancel ') + m.entry, size:'narrow', sub: m.sku + ' x ' + num(m.qty) + ' ' + m.unit + ' recorded on ' + (m.job || 'a job'),
-    body: `${action === 'correct' ? `<div class="field"><label for="hoSku">Part actually taken</label><input class="inp" id="hoSku" list="hoSkus" value="${esc(spLabel(spBySku(m.sku) || { sku: m.sku, description: m.description }))}"><datalist id="hoSkus">${spSkuOptions()}</datalist></div>
+    body: `${action === 'correct' ? `<div class="field"><label for="hoSku">Part actually taken</label><input class="inp" id="hoSku" list="hoSkus" value="${esc(spLabel(spBySku(m.sku) || { sku: m.sku, description: m.description }))}"><datalist id="hoSkus">${spSkuOptions()}</datalist>
+        <div class="tiny muted" id="hoDetail" style="margin-top:4px">${spDetail(spBySku(m.sku))}</div></div>
       <div class="field"><label for="hoQty">Quantity actually taken</label><input class="inp" id="hoQty" type="number" min="0" step="any" value="${num(m.qty)}"></div>` : '<div class="small" style="margin-bottom:8px">Nothing leaves the stock.</div>'}
       <div class="field"><label for="hoWhy">Why?</label><input class="inp" id="hoWhy" maxlength="300"></div><div class="err-msg hide" data-err="hoWhy"></div>`,
     footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn ${action === 'cancel' ? 'btn-danger' : 'btn-primary'}" data-save>${action === 'correct' ? 'Save the correction' : 'Cancel the hand-over'}</button>`,
-    onMount: (w, close) => { $('[data-save]', w).onclick = () => {
+    onMount: (w, close) => {
+      const hs = $('#hoSku', w);
+      if (hs) hs.oninput = hs.onchange = e => { const it = spBySku(spSkuFrom(hs.value)); if (e && e.type === 'change') spFullText(hs, it); $('#hoDetail', w).innerHTML = spDetail(it, hs.value); };
+      $('[data-save]', w).onclick = () => {
       clearErrors(w); const reason = $('#hoWhy', w).value.trim(); if (reason.length < 5) return setErr('hoWhy', 'Say why.', w);
       const body = { reason }; if (action === 'correct') { body.sku = spSkuFrom($('#hoSku', w).value); body.qty = $('#hoQty', w).value; if (!spBySku(body.sku)) return setErr('hoWhy', 'Pick the part from the list.', w); }
       send(body, w, close); }; },
   });
 }
 
-/* ---- Weekly count: 15 parts a week, 3 a working day (033). Counting a part also checks it: the machines it is used on and its shelf. */
+/* ---- Weekly count: 15 parts a week, 3 a working day (033). Counting a part also checks it: the machines it is used on and its location. */
 const spDayName = iso => iso ? new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday:'short', timeZone:'UTC' }) : '';
 function viewCounts(){
   if (!SP.list) { spLoad(); return spWait('/spares/counts'); }
@@ -1564,11 +1617,11 @@ function viewCounts(){
   const used = i => i.common_use ? 'Common use' : (i.used_on_names || []).length ? esc(i.used_on_names.map(a => a.name).join(', '))
     : (i.suggested || []).length || i.suggest_common ? `<span class="muted">suggested: ${esc(i.suggest_common ? 'Common use' : i.suggested.map(a => a.name).join(', '))}</span>` : '<span class="muted">not set</span>';
   return { title:'Spares', crumb:'Store', keepScroll: true,
-    html: spHead('Each working day a few parts to count. For each one, also confirm the machines it is used on and its shelf. What you count becomes the stock.', dlButton("spDownload('counts')") + spActions()) + spTabs('/spares/counts') + `
+    html: spHead('Each working day a few parts to count. For each one, also confirm the machines it is used on and its location. What you count becomes the stock.', dlButton("spDownload('counts')") + spActions()) + spTabs('/spares/counts') + `
     <div class="grid g3" style="margin-bottom:14px">
       <div class="stat"><div class="lbl">${thisWeek ? 'To count today' : 'Week'}</div><div class="val">${thisWeek ? dueNow : esc(c.week)}</div><div class="meta">${thisWeek ? 'today\'s parts and any left from earlier days' : 'from ' + esc(c.week_start)}</div></div>
       <div class="stat"><div class="lbl">This week</div><div class="val">${done} of ${items.length}</div><div class="meta">counted. Count ahead if you have time.</div></div>
-      <div class="stat"><div class="lbl">Parts up to standard</div><div class="val">${num(std.done) || 0} of ${num(std.parts) || 0}</div><div class="meta">machines and shelf known</div></div>
+      <div class="stat"><div class="lbl">Parts up to standard</div><div class="val">${num(std.done) || 0} of ${num(std.parts) || 0}</div><div class="meta">machines and location known</div></div>
     </div>
     <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" onclick="spWeek('${shift(-7)}')">${I.chevL} Previous week</button>
@@ -1577,11 +1630,11 @@ function viewCounts(){
       <div class="small">A difference over ${num(c.threshold)} needs the Engineering Manager's approval.</div>
     </div>
     <div class="card"><div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Day</th><th>Part</th><th>Shelf</th><th>Used on</th><th style="text-align:right">Counted</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Day</th><th>Part</th><th>Location</th><th>Used on</th><th style="text-align:right">Counted</th><th>Status</th><th></th></tr></thead>
       <tbody>${items.map(i => `<tr class="${i.status === 'planned' && thisWeek && i.due_on && i.due_on <= today ? 'row-today' : ''}">
         <td data-label="Day">${day(i)}</td>
         <td><div class="strong">${esc(i.sku)}</div><div class="tiny muted">${esc(i.description)}</div>${+i.waiting_handovers ? `<div class="tiny" style="color:var(--warn)">${num(i.waiting_handovers)} ${esc(i.unit)} waiting hand-over: confirm those first</div>` : ''}</td>
-        <td data-label="Shelf" class="small">${esc(i.location || '') || '<span class="muted">not set</span>'}</td>
+        <td data-label="Location" class="small">${esc(i.location || '') || '<span class="muted">not set</span>'}</td>
         <td data-label="Used on" class="small">${used(i)}</td>
         <td data-label="Counted" style="text-align:right">${i.counted_qty == null ? '--' : num(i.counted_qty) + ' ' + esc(i.unit)}${i.difference != null && +i.difference !== 0 ? `<div class="tiny muted">system ${num(i.system_qty)}, ${+i.difference > 0 ? '+' : ''}${num(i.difference)}</div>` : ''}
           ${i.reason ? `<div class="tiny muted">${esc(i.reason)}</div>` : ''}${i.decision_note ? `<div class="tiny muted">${esc(i.decided_by)}: ${esc(i.decision_note)}</div>` : ''}</td>
@@ -1597,20 +1650,20 @@ function viewCounts(){
 }
 route('/spares/counts', viewCounts);
 function spWeek(w){ SP.week = w; SP.counts = null; render(); }
-// count and check one part: the number on the shelf, the shelf, the machines (filled in from what is known, or suggested from the old workbook)
+// count and check one part: the number on the shelf, the location, the machines (filled in from what is known, or suggested from the old workbook)
 function spCount(id){
   const i = ((SP.counts || {}).items || []).find(x => x.id === id); if (!i) return;
   const known = (i.used_on_names || []).length, start = known ? i.used_on_names : (i.suggested || []);
   const common = i.common_use || (!known && !!i.suggest_common);
   const chip = a => `<span class="chip" data-used="${esc(a.code)}">${esc(a.name)} <b style="cursor:pointer" data-rm aria-label="Remove">&times;</b></span>`;
   openModal({
-    title: 'Count ' + i.sku, size:'narrow', sub: i.description + (i.location ? ' · shelf ' + i.location : ''),
+    title: 'Count ' + i.sku, size:'narrow', sub: i.description + ((spBySku(i.sku) || {}).part_number ? ' · PN ' + spBySku(i.sku).part_number : '') + (i.location ? ' · ' + i.location : ''),
     body: `<form novalidate>
       <div class="field"><label for="cnQty">How many are on the shelf?</label>
         <div class="row" style="gap:8px"><input class="inp" id="cnQty" type="number" min="0" step="any" inputmode="decimal" style="max-width:140px"><span class="small muted">${esc(i.unit)}</span></div></div>
       ${+i.waiting_handovers ? `<div class="hint" style="margin-bottom:10px">${I.info}<span>${num(i.waiting_handovers)} ${esc(i.unit)} recorded on a job are waiting for you to confirm the hand-over. Confirm those first.</span></div>` : ''}
       <div class="field"><label for="cnWhy">If it differs from the system, why? <span class="muted">(only if asked)</span></label><input class="inp" id="cnWhy" maxlength="300"></div>
-      <div class="field"><label for="cnLoc">Shelf</label><input class="inp" id="cnLoc" maxlength="40" value="${esc(i.location || '')}" placeholder="rack / shelf / bin, e.g. B3"></div>
+      <div class="field"><label for="cnLoc">Location</label>${spLocSelect('cnLoc', i.location)}</div>
       <div class="field"><label>Used on</label>
         <label class="row small" style="gap:6px;margin-bottom:6px"><input type="checkbox" id="cnCommon" ${common ? 'checked' : ''}> Common use (fits anything: bolts, cable ties ...)</label>
         <div id="cnUsed" class="row" style="gap:6px;flex-wrap:wrap${common ? ';display:none' : ''}">${common ? '' : start.map(chip).join('')}</div>
@@ -1634,12 +1687,14 @@ function spCount(id){
         clearErrors(w);
         const body = { id, counted: $('#cnQty', w).value.trim(), reason: $('#cnWhy', w).value.trim(), location: $('#cnLoc', w).value.trim(),
           common_use: cb.checked, used_on: cb.checked ? [] : $$('[data-used]', w).map(e => e.dataset.used) };
-        if (body.counted === '' || !(+body.counted >= 0)) return setErr('cnQty', 'Enter the number on the shelf.', w);
-        if (!body.location) return setErr('cnQty', 'Say which shelf it is on.', w);
+        if (!/^\d+(\.\d{1,2})?$/.test(body.counted)) return setErr('cnQty', 'Enter the number on the shelf (0 or more).', w);
+        if (+body.counted > 100000) return setErr('cnQty', 'That count is too big. Check the number.', w);
+        if (!['m', 'L', 'kg'].includes(i.unit) && +body.counted !== Math.floor(+body.counted)) return setErr('cnQty', 'Whole ' + i.unit + ' only.', w);
+        if (!body.location) return setErr('cnQty', 'Choose the location.', w);
         if (!body.common_use && !body.used_on.length) return setErr('cnQty', 'Add the machines it is used on, or tick "Common use".', w);
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/count', { method:'POST', body }); close();
-          toast(r.status === 'matches' ? 'Matches the system' : r.status === 'adjusted' ? 'Stock adjusted' : 'Sent for approval', i.sku + ' checked: machines and shelf saved', 'ok'); await spRefresh(); }
+          toast(r.status === 'matches' ? 'Matches the system' : r.status === 'adjusted' ? 'Stock adjusted' : 'Sent for approval', i.sku + ' checked: machines and location saved', 'ok'); await spRefresh(); }
         catch (err) { setErr('cnQty', err.message, w); sv.disabled = false; if (/why/i.test(err.message)) $('#cnWhy', w).focus(); }
       };
       setTimeout(() => { const q = $('#cnQty', w); q && q.focus(); }, 30);
