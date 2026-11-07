@@ -201,3 +201,51 @@ async function otSubmit(){
 
 route('/dept/procurement', () => viewDeptProcurement());
 route('/dept/overtime', () => viewDeptOvertime());
+
+/* ============================================================
+   How to use (#/help): the short version of each task, for the people doing it. Update it with every feature people
+   will notice (rule of 7 Nov 2026). One card per task, steps in the order they are done, plain words.
+   ============================================================ */
+const QSYNC_HELP = [
+  ['inbox', 'What waits for you', [
+    'An orange number on the menu (QC inbox, My analyses, OOS log, Lab master data) is how many things wait for <b>you</b>.',
+    'Open that page: the tab with the orange number is where they are.',
+    'The number goes down by itself when you have acted.']],
+  ['doc', 'IPQA: fill the in-process sheet', [
+    'Open the link from the WhatsApp or e-mail.',
+    'Enter the sample quantity, the tests QC must do, then each check.',
+    'A check marked <b>optional</b> (e.g. Mintacid pH while the probe is faulty) may be left blank: it is saved as "Not tested".',
+    'Pick your name, enter your password, <b>Submit</b>. The QA Supervisor is told.']],
+  ['check', 'QA Supervisor: review an IPQA sheet', [
+    'The e-mail now shows every check: the specification, what IPQA recorded (each reading too) and PASS / FAIL.',
+    'Tap <b>Review and Approve</b>, look at the same table, then <b>Approve</b>, or <b>Reject</b> with a comment to send it back to IPQA.']],
+  ['inbox', 'QC inbox: samples and tests', [
+    'QC inbox is for samples only. <b>Waiting for receipt</b>: the QC Supervisor taps <b>Receive</b> and assigns the tests to analysts.',
+    'Analysts work in <b>My analyses</b>; the QC Supervisor checks the worksheets; the QC Manager decides; the QA Manager acknowledges.']],
+  ['box', 'Change a product\'s IPQA checks', [
+    'Lab master data > <b>Products and specs</b> (first tab). Tap the product.',
+    'Change limits or make a check optional: <b>Request change</b> on that check. Remove it: <b>Remove</b>. New check: <b>Add a check</b>.',
+    'Say why, enter your password. A QC Supervisor or QA Supervisor starts it.',
+    'The QC Manager reviews, then the QA Manager approves (Lab master data > <b>Changes</b>). The IPQA sheet changes only after that.']],
+  ['settings', 'Method templates and working standards', [
+    'Lab master data > <b>Method templates</b>: a QC or QA Supervisor drafts (one template per API), then <b>Send for approval</b>.',
+    'The QC Manager approves it or returns it with a reason. Working standards: same, on their tab.']],
+  ['users', 'Relievers (someone away)', [
+    'Administration > <b>Relievers</b>: the QC Manager, QA Manager or an admin sets who signs for whom, and the dates.',
+    'The reliever gets the role on the first day and loses it after the last.']],
+  ['box', 'Procurement request (QC / QA)', [
+    'Department requests > <b>Procurement request</b>. Choose your department first.',
+    'Pick the requester, the date it is needed by, then each item: name, detail, category, purpose, quantity, unit. <b>Add another item</b> for more.',
+    '<b>Send for approval</b>: your manager, then the plant manager approve, by e-mail as before. The status shows in the list below.']],
+  ['clock', 'Overtime (QC / QA)', [
+    'Department requests > <b>Overtime</b>. Choose your department.',
+    'Pick the date (within the last 31 days), tick public holiday if it was one.',
+    'Set the start and end time, tick the people. Different times? <b>Another group</b>.',
+    '<b>Submit overtime</b>: it goes into HR\'s overtime records. Anyone already recorded for that day is listed as not saved.']],
+];
+function viewQsyncHelp(){
+  return { title: 'How to use', crumb: 'Help', html: pageHead('How to use', 'The short version of each task. Ask the QC or QA Supervisor if something is not clear.')
+    + `<div class="grid g2">${QSYNC_HELP.map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
+        <div class="card-b"><ol class="small" style="margin:0;padding-left:18px;line-height:1.55">${steps.map(x => `<li style="margin-bottom:4px">${x}</li>`).join('')}</ol></div></div>`).join('')}</div>` };
+}
+route('/help', viewQsyncHelp);

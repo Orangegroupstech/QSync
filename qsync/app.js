@@ -171,7 +171,7 @@ function pageOf(path){
   const hit = PAGES.find(([pre]) => p === pre || p.startsWith(pre + '/'));
   return hit ? hit[1] : 'qsync';
 }
-function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canOpen(path){ return /^\/help(\?|$)/.test(String(path == null ? currentPath() : path)) ? true : !!levelOf(pageOf(path)); }   // How to use: everyone
 function canRaiseRequest(){ return ['submit', 'edit'].includes(levelOf('qsync.requests')); }
 function noAccess(){
   try { sessionStorage.setItem('okl.notice', 'You do not have access to QSync. Ask an admin if you need it.'); } catch(e) { /* ignore */ }
@@ -367,6 +367,7 @@ function navModel(){
       ...(S.lab ? [{ path:'/lab/relievers', label:'Relievers', icon:'users' }] : []),
       { path:'/audit', label:'Audit Trail', icon:'activity' },
     ]},
+    { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ];
 }
 // only the pages the person may open (their roles and page access; migration 022)
