@@ -163,7 +163,7 @@ function meFromAuth(auth, scope){
 }
 // Access per page (migration 022): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
-const PAGES = [['/lab/oos', 'qsync.oos'], ['/lab/master', 'qsync.master'], ['/lab', 'qsync.lab'],
+const PAGES = [['/lab/oos', 'qsync.oos'], ['/lab/master', 'qsync.master'], ['/lab', 'qsync.lab'], ['/dept', 'qsync.dept'],
   ['/reports', 'qsync.reports'], ['/products', 'qsync.master'],
   ['/new', 'qsync.requests'], ['/requests', 'qsync.requests'], ['/sheet', 'qsync.requests'], ['/audit', 'qsync.requests']];   // route prefix -> page, first match wins
 function pageOf(path){
@@ -273,10 +273,21 @@ function resetIdleTimer(){
 
 /* ---------------- Background polling (read-only pages only, paused while a modal is open) ---------------- */
 const POLL_INTERVAL_MS = 60 * 1000;
-const POLL_ROUTES = ['/requests', '/reports', '/audit'];
+const POLL_ROUTES = ['/requests', '/reports', '/audit', '/lab/master'];
 let pollTimer = null;
+// what waits for this person (042): the numbers on the menu and the tabs
+async function refreshPending(){
+  const path = S && S.lab ? '/webhook/qsync/lab/api/my' : (S && canOpen('/lab/master') ? '/webhook/qsync/lab/api/masterdata' : null);
+  if (!path) return;
+  try { const d = await api(path); const before = JSON.stringify(S.pending || {}); S.pending = d.pending;
+        if (JSON.stringify(S.pending || {}) !== before && !(document.getElementById('layers') || {}).children?.length) render(); } catch (e) { /* next tick */ }
+}
+function pendingCount(path){ return Number(((S && S.pending && S.pending.menu) || {})[path] || 0); }
+function pendingBadge(path){ const n = pendingCount(path);
+  return n ? `<span class="nav-count" title="${n} waiting for you" style="margin-left:auto;min-width:20px;padding:1px 7px;border-radius:10px;background:var(--brand);color:#fff;font-size:11px;font-weight:700;text-align:center">${n > 99 ? '99+' : n}</span>` : ''; }
 async function pollTick(){
   if (!S) return;
+  refreshPending();
   const layers = document.getElementById('layers');
   if (layers && layers.children.length) return; // a modal/form is open - don't disturb it
   const path = currentPath().split('?')[0];
@@ -285,7 +296,7 @@ async function pollTick(){
     if (path.startsWith('/reports')) {
       reportsCache = await api('/webhook/admin/api/reports');
     } else {
-      const keep = { me: S.me, lab: S.lab, signRoles: S.signRoles };
+      const keep = { me: S.me, lab: S.lab, signRoles: S.signRoles, pending: S.pending };
       S = Object.assign(await api('/webhook/admin/api/bootstrap'), keep);
     }
     render();
@@ -343,12 +354,15 @@ function navModel(){
       { path:'/lab/my', label:'My analyses', icon:'doc' },
       { path:'/lab/oos', label:'OOS log', icon:'alert' },
     ]}] : []),
+    { title:'Department requests', items:[
+      { path:'/dept/procurement', label:'Procurement request', icon:'box' },
+      { path:'/dept/overtime', label:'Overtime', icon:'clock' },
+    ]},
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
       { path:'/reports', label:'Reports and Trends', icon:'chart' },
     ]},
     { title:'Administration', items:[
-      { path:'/products', label:'Products and Specs', icon:'box' },
       { path:'/lab/master', label:'Lab master data', icon:'settings' },
       ...(S.lab ? [{ path:'/lab/relievers', label:'Relievers', icon:'users' }] : []),
       { path:'/audit', label:'Audit Trail', icon:'activity' },
@@ -369,7 +383,7 @@ function renderShell(inner, meta){
     ${g.items.map(it => {
       const active = path.startsWith(it.path);
       return `<a class="nav-item ${active?'active':''}" href="#${it.path}">
-        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span></a>`;
+        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span>${pendingBadge(it.path)}</a>`;
     }).join('')}`).join('');
 
   return `
@@ -437,7 +451,8 @@ async function bootstrap(){
   S.me = meFromAuth(auth, 'qsync');
   try { const lab = await api('/webhook/qsync/lab/api/my'); S.lab = { roles: lab.roles || [] }; } catch (e) { S.lab = null; }
   // sign-off roles for people without the QC lab pages (e.g. a QC / QA Manager who only has Lab master data): the buttons there need them
-  if (!S.lab && canOpen('/lab/master')) { try { const md = await api('/webhook/qsync/lab/api/masterdata'); S.signRoles = md.roles || []; } catch (e) { S.signRoles = []; } }
+  if (!S.lab && canOpen('/lab/master')) { try { const md = await api('/webhook/qsync/lab/api/masterdata'); S.signRoles = md.roles || []; S.pending = md.pending; } catch (e) { S.signRoles = []; } }
+  else if (S.lab) refreshPending();
   resetIdleTimer();
   startPolling();
 }
@@ -1207,8 +1222,9 @@ route('/new', () => viewNewRequest());
 route('/requests', () => viewRequests());
 route('/sheet/:id', p => viewSheet(p.id));
 route('/reports', () => viewReports());
-route('/products', () => viewProducts());
-route('/products/:id', p => viewProductDetail(p.id));
+// Products and Specs is the first tab of Lab master data (042); old links still land there
+route('/products', () => { mdTab = 'products'; mdProduct = null; go('/lab/master'); return labWait('Lab master data', 'Administration'); });
+route('/products/:id', p => { mdTab = 'products'; mdProduct = Number(p.id); go('/lab/master'); return labWait('Lab master data', 'Administration'); });
 route('/audit', () => viewAudit());
 
 

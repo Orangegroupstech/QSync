@@ -39,12 +39,16 @@ function labGet(path){
   if (labCache[path]) return labCache[path];
   if (!labLoading[path]){
     labLoading[path] = true;
-    api(LAB + path).then(d => { labCache[path] = d; }).catch(e => { labCache[path] = { error: e.message }; })
+    api(LAB + path).then(d => { labCache[path] = d; if (d && d.pending) S.pending = d.pending; }).catch(e => { labCache[path] = { error: e.message }; })
       .finally(() => { delete labLoading[path]; render(); });
   }
   return null;
 }
-function labRefresh(){ labCache = {}; render(); }
+function labRefresh(){ labCache = {}; if (typeof refreshPending === 'function') refreshPending();
+  if (currentPath().startsWith('/lab/master')) api('/webhook/admin/api/bootstrap').then(b => { S.products = b.products || S.products; render(); }).catch(() => {});
+  render(); }
+// a tab's number: brand colour when something there waits for this person (042)
+function tabCount(n, mine){ return `<span class="badge ${mine ? 'b-brand' : 'b-slate'}" style="margin-left:6px" ${mine ? `title="${mine} waiting for you"` : ''}>${mine ? mine : n}</span>`; }
 async function labPost(path, body){ return api(LAB + path, { method:'POST', body }); }
 function labWait(title, crumb){
   return { title, crumb, html: `${pageHead(title, '')}<div class="card"><div class="card-b">${emptyState('clock', 'Loading...', '')}</div></div>` };
@@ -161,16 +165,13 @@ function viewLabInbox(){
           : I.chevR}</td>
       </tr>`).join('')}</tbody></table></div>`
     : `<div class="card-b">${emptyState('inbox', 'Nothing here', 'No requests in this list.')}</div>`;
-  const other = d.qcm_other || {};
-  const qcmNote = inboxTab === 'qcm' && (other.templates || other.changes)
-    ? `<div class="notice" style="margin:14px 18px 0">${I.info} <span>Also waiting for the QC Manager: ${[other.templates ? other.templates + ' method template(s)' : '', other.changes ? other.changes + ' change request(s)' : ''].filter(Boolean).join(' and ')}.
-        <a href="#/lab/master" onclick="mdTab='${other.templates ? 'templates' : 'changes'}'">Open Lab master data</a></span></div>` : '';
+  const qcmNote = '';   // method templates and changes are counted on Lab master data (042): the inbox is samples only
   return {
     title:'QC inbox', crumb:'QC Laboratory',
     html: `${pageHead('QC inbox', 'Batches QA approved for QC: receive the sample, assign the tests, follow them to release.',
               `<button class="btn btn-ghost" onclick="labRefresh()">${I.play} Refresh</button>`)}
-      <div class="tabs">${INBOX_TABS.map(t => `<div class="tab ${t[0] === inboxTab ? 'active' : ''}" onclick="inboxTab='${t[0]}';render()">${esc(t[1])}
-        <span class="badge b-slate" style="margin-left:6px">${d.requests.filter(t[2]).length}</span></div>`).join('')}</div>
+      <div class="tabs">${INBOX_TABS.map(t => { const all = d.requests.filter(t[2]).length, mine = Number((((S.pending || {}).inbox) || {})[t[0]] || 0);
+        return `<div class="tab ${t[0] === inboxTab ? 'active' : ''}" onclick="inboxTab='${t[0]}';render()">${esc(t[1])}${tabCount(all, mine)}</div>`; }).join('')}</div>
       <div class="card">
         <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row">
           <div class="search filter-search"><span class="ic">${I.search}</span>
@@ -996,7 +997,7 @@ function labOosClose(id){
 }
 
 /* ============================================================ Lab master data ============================================================ */
-let mdTab = 'standards';
+let mdTab = 'products', mdProduct = null;
 const TPL_STAGE = { draft: 'Draft', returned: 'Returned', in_review: 'With QC Manager', reviewed: 'With QA Manager (old route)', approved: 'Approved', retired: 'Retired' };
 const CHG_STATUS = { submitted: [c => (c.kind === 'standard' ? 'With QC Manager' : 'With QC Manager (review)'), 'b-warn'], reviewed: [() => 'With QA Manager', 'b-warn'],
                      approved: [() => 'Approved', 'b-ok'], returned: [() => 'Returned', 'b-danger'] };
@@ -1008,9 +1009,13 @@ function viewLabMaster(){
   const ed = canEdit(), qcs = isStarter(), qcm = hasLabRole('qc_manager'), qam = hasLabRole('qa_manager');
   const waiting = (d.changes || []).filter(c => ['submitted', 'reviewed', 'returned'].includes(c.status)).length
     + (d.templates || []).filter(t => ['in_review', 'reviewed', 'returned'].includes(t.stage_of_change)).length;
-  const tabs = [['standards', 'Working standards'], ['equipment', 'Equipment'], ['templates', 'Method templates'], ['changes', `Changes${waiting ? ` (${waiting})` : ''}`]];
+  const mine = ((S.pending || d.pending || {}).master) || {};
+  const tabs = [['products', 'Products and specs', 0], ['standards', 'Working standards', 0], ['equipment', 'Equipment', 0], ['templates', 'Method templates', mine.templates || 0],
+                ['changes', `Changes${waiting ? ` (${waiting} open)` : ''}`, mine.changes || 0]];
   let body = '';
-  if (mdTab === 'standards'){
+  if (mdTab === 'products'){
+    body = mdProductsBody(qcs);
+  } else if (mdTab === 'standards'){
     body = `<div class="card"><div class="card-h"><div><h3>Working-standard register</h3><div class="sub">A standard without an expiry date, or past it, cannot be picked on a worksheet. A new standard or a change is started by a QC or QA Supervisor and approved by the QC Manager.</div></div>
         ${qcs ? `<button class="btn btn-primary btn-sm" onclick="mdStandard()">${I.plus} Add standard</button>` : ''}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Number</th><th>Substance</th><th>Potency</th><th>Expiry</th><th>Usable today</th><th></th></tr></thead><tbody>
@@ -1054,10 +1059,80 @@ function viewLabMaster(){
   }
   return {
     title:'Lab master data', crumb:'Administration',
-    html: `${pageHead('Lab master data', 'Working standards, equipment and the locked method templates that replace the Excel sheets.')}
+    html: `${pageHead('Lab master data', 'Settings and system changes: products and their IPQA checks, working standards, equipment and the locked method templates. Every change is signed and approved.')}
       ${!qcs && !qcm && !qam ? `<div class="notice" style="margin-bottom:16px">${I.info} Changes are started by a QC or QA Supervisor, reviewed by the QC Manager and approved by the QA Manager (working standards: the QC Manager approves). You can read everything here.</div>` : ''}
-      <div class="tabs">${tabs.map(([k, l]) => `<div class="tab ${k === mdTab ? 'active' : ''}" onclick="mdTab='${k}';render()">${esc(l)}</div>`).join('')}</div>${body}`
+      <div class="tabs">${tabs.map(([k, l, n]) => `<div class="tab ${k === mdTab ? 'active' : ''}" onclick="mdTab='${k}';mdProduct=null;render()">${esc(l)}${n ? tabCount(0, n) : ''}</div>`).join('')}</div>${body}`
   };
+}
+// ---- Products and specs (042: the first tab of Lab master data; the IPQA sheet is built from these)
+function mdSpecText(s){
+  if (s.specText) return s.specText;
+  if (s.specMin != null && s.specMax != null) return (Number(s.specMin) === 0 ? 'NMT ' + s.specMax : `${s.specMin} - ${s.specMax}`) + (s.unit ? ' ' + s.unit : '');
+  if (s.specMin != null) return 'NLT ' + s.specMin + (s.unit ? ' ' + s.unit : '');
+  if (s.specMax != null) return 'NMT ' + s.specMax + (s.unit ? ' ' + s.unit : '');
+  return '--';
+}
+function mdProductsBody(qcs){
+  const products = (S.products || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const p = mdProduct != null ? products.find(x => Number(x.id) === Number(mdProduct)) : null;
+  if (!p) return `<div class="card"><div class="card-h"><div><h3>Products and specifications</h3><div class="sub">What IPQA checks at each stage. A new product or a change is started by a QC or QA Supervisor, reviewed by the QC Manager and approved by the QA Manager; the IPQA sheet uses it as soon as it is approved.</div></div>
+      ${qcs ? `<button class="btn btn-primary btn-sm" onclick="productDialog()">${I.plus} New product</button>` : ''}</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product</th><th>Type</th><th>Prefix</th><th>Shelf life</th><th>Stages checked by IPQA</th><th></th></tr></thead><tbody>
+    ${products.map(x => { const st = [...new Set((x.specs || []).map(y => y.stage))];
+      return `<tr class="clickable" onclick="mdProduct=${x.id};render()"><td class="strong">${esc(x.name)}</td><td><span class="badge b-brand">${esc(x.type)}</span></td><td class="mono">${esc(x.prefix)}</td>
+        <td>${esc(x.shelfLifeMonths)} months</td><td class="small">${esc(st.join(', ') || '--')}</td><td style="text-align:right">${I.chevR}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+  const stages = [...new Set((p.specs || []).map(y => y.stage))];
+  return `<div class="row" style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="mdProduct=null;render()">${I.chevL} All products</button></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(p.name)}</h3><div class="sub">${esc(p.type)} - prefix <b>${esc(p.prefix)}</b> - shelf life ${esc(p.shelfLifeMonths)} months</div></div>
+      <div class="row" style="gap:8px">${qcs ? `<button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Change shelf life</button>
+        <button class="btn btn-primary btn-sm" onclick="mdSpecAdd(${p.id})">${I.plus} Add a check</button>` : ''}</div></div></div>
+    ${stages.length ? stages.map(stage => `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(stage)}</h3><div class="sub">On the IPQA sheet at this stage</div></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Parameter</th><th>Acceptance criteria</th><th>Type</th><th>On the IPQA sheet</th><th></th></tr></thead><tbody>
+      ${(p.specs || []).filter(y => y.stage === stage).map(y => `<tr><td class="strong">${esc(y.parameterName)}</td><td class="small">${esc(mdSpecText(y))}</td>
+        <td><span class="chip">${y.specText ? 'Complies / Does not' : 'Numeric'}</span></td>
+        <td>${y.optional ? '<span class="badge b-warn">Optional</span>' : '<span class="small muted">Required</span>'}</td>
+        <td style="text-align:right;white-space:nowrap">${qcs ? `<button class="btn btn-ghost btn-sm" onclick='editSpec(${y.id})'>${I.edit} Request change</button>
+          <button class="btn btn-ghost btn-sm" onclick='mdSpecRemove(${y.id})'>${I.x} Remove</button>` : '<span class="tiny muted">View only</span>'}</td></tr>`).join('')}</tbody></table></div></div>`).join('')
+      : `<div class="card"><div class="card-b">${emptyState('box', 'No IPQA checks yet', 'Add a check to put it on the IPQA sheet.')}</div></div>`}`;
+}
+function mdSpecAdd(productId){
+  const p = (S.products || []).find(x => Number(x.id) === Number(productId)); if (!p) return;
+  const md = labCache['/masterdata'] || {};
+  const stages = ((md.type_stages || {})[p.type]) || (p.type === 'OLD' ? ['Mixing', 'Filling/Sacheting', 'Finished Product'] : ['Granulation', 'Compression', 'Sacheting/Blistering/Stripping', 'Finished Product']);
+  const params = (md.parameters || []).length ? md.parameters
+    : Array.from(new Map((S.products || []).flatMap(x => (x.specs || []).map(y => [y.parameterName, { name: y.parameterName, unit: y.unit, text: !!y.specText }]))).values());
+  signDialog({ title: `Add a check - ${p.name}`, sub: 'It goes on the IPQA sheet at that stage once the QC Manager has reviewed it and the QA Manager has approved it.', ok: 'Sign and send',
+    meaning: `You start this change as ${starterTitle()}. Nothing changes until the QA Manager approves.`,
+    body: `<div class="grid g2"><div class="field"><label for="saStage">Stage</label><select class="inp" id="saStage">${stages.map(x => `<option>${esc(x)}</option>`).join('')}</select></div>
+        <div class="field"><label for="saParam">Parameter</label><select class="inp" id="saParam"><option value="">Choose...</option>${params.map(q => `<option>${esc(q.name)}</option>`).join('')}</select></div></div>
+      <div class="grid g3"><div class="field"><label for="saMin">Lower limit</label><input class="inp" id="saMin" inputmode="decimal"></div>
+        <div class="field"><label for="saMax">Upper limit</label><input class="inp" id="saMax" inputmode="decimal"></div>
+        <div class="field"><label for="saUnit">Unit</label><input class="inp" id="saUnit"></div></div>
+      <div class="field"><label for="saText">Or a description to comply with (instead of limits)</label><input class="inp" id="saText" placeholder="e.g. A white coloured suspension"></div>
+      <div class="field"><label for="saOpt">On the IPQA sheet</label><select class="inp" id="saOpt"><option value="no">Required: IPQA must enter it</option><option value="yes">Optional: IPQA may leave it blank (saved as Not tested)</option></select></div>`,
+    onMount: w => { $('#saParam', w).onchange = e => { const q = params.find(z => z.name === e.target.value); if (q && !$('#saUnit', w).value) $('#saUnit', w).value = q.unit || ''; }; },
+    reason: 'Why is this needed?', reasonRequired: true,
+    submit: async ({ password, reason, wrap }) => {
+      const v = id => $(id, wrap).value.trim();
+      if (!v('#saParam')) throw new Error('Choose the parameter.');
+      if (!v('#saMin') && !v('#saMax') && !v('#saText')) throw new Error('Enter a lower or upper limit, or a description.');
+      const spec = { stage: v('#saStage'), parameter_name: v('#saParam'), spec_min: v('#saMin'), spec_max: v('#saMax'), spec_text: v('#saText'), unit: v('#saUnit'), optional: v('#saOpt') === 'yes' };
+      await labPost('/change/submit', { kind: 'product', action: 'edit', target_id: p.id, reason, password, payload: { specs: [spec] } });
+      toast('Sent to the QC Manager', esc(p.name) + ' - ' + esc(spec.parameter_name) + ' (' + esc(spec.stage) + ')', 'ok'); labRefresh();
+    } });
+}
+function mdSpecRemove(specId){
+  let p = null, y = null;
+  (S.products || []).forEach(x => (x.specs || []).forEach(z => { if (z.id === specId){ p = x; y = z; } }));
+  if (!y) return;
+  signDialog({ title: `Remove ${y.parameterName} - ${p.name}`, sub: `${y.stage}: ${mdSpecText(y)}. It comes off the IPQA sheet once the QC Manager has reviewed it and the QA Manager has approved it.`, ok: 'Sign and send',
+    meaning: `You start this change as ${starterTitle()}. The check stays on the sheet until the QA Manager approves. Results already recorded are kept.`,
+    reason: 'Why is it removed?', reasonRequired: true,
+    submit: async ({ password, reason }) => {
+      await labPost('/change/submit', { kind: 'product', action: 'edit', target_id: p.id, reason, password,
+        payload: { spec_removals: [specId], removed: [{ id: specId, stage: y.stage, parameter_name: y.parameterName, was: mdSpecText(y) }] } });
+      toast('Sent to the QC Manager', esc(p.name) + ' - remove ' + esc(y.parameterName), 'ok'); labRefresh();
+    } });
 }
 function mdSaveDialog(title, fields, kind, row){
   openModal({ title, size: 'narrow',
@@ -1139,13 +1214,14 @@ function chgText(c){
   const P = c.payload || {};
   if (c.kind === 'standard') return `<table class="tbl"><tbody>${[['Number', P.ws_no], ['Substance', P.substance], ['Potency', P.potency_pct + ' %'], ['Expiry', P.expiry_date ? fmtDate(P.expiry_date) : 'not entered'],
     ['Notes', P.notes || ''], ['Can be used', P.active === false ? 'No' : 'Yes']].map(r => `<tr><th>${r[0]}</th><td>${esc(r[1] || '')}</td></tr>`).join('')}</tbody></table>`;
-  const specs = (P.specs || []).map(x => `<tr><td>${esc(x.stage)}</td><td>${esc(x.parameter_name)}</td><td>${limitText(x)} ${esc(x.unit || '')}</td></tr>`).join('');
+  const specs = (P.specs || []).map(x => `<tr><td>${esc(x.stage)}</td><td>${esc(x.parameter_name)}${c.action === 'edit' ? ' (added)' : ''}</td><td>${limitText(x)} ${esc(x.unit || '')}${x.optional ? ' - optional on the IPQA sheet' : ''}</td></tr>`).join('');
   const optText = x => (x.optional === true ? ' - optional on the IPQA sheet' : x.optional === false ? ' - required on the IPQA sheet' : '');
+  const rem = (P.removed || []).map(x => `<tr><td>${esc(x.stage)}</td><td>${esc(x.parameter_name)} (removed)</td><td>was ${esc(x.was || '')}</td></tr>`).join('');
   const chg = (P.spec_changes || []).map(x => `<tr>${x.parameter_name ? `<td>${esc(x.stage || '')}</td><td>${esc(x.parameter_name)} (changed)</td>` : `<td colspan="2">Specification #${esc(x.id)} (changed)</td>`}
     <td>${x.spec_min != null || x.spec_max != null ? limitText(x) : 'limits unchanged'}${esc(optText(x))}</td></tr>`).join('');
   return `<table class="tbl"><tbody>${c.action === 'create' ? [['Name', P.name], ['Prefix', P.prefix], ['Type', P.type], ['Shelf life', P.shelf_life_months + ' months']].map(r => `<tr><th>${r[0]}</th><td colspan="2">${esc(r[1] || '')}</td></tr>`).join('')
     : P.shelf_life_months != null ? `<tr><th>Shelf life</th><td colspan="2">${esc(P.shelf_life_months)} months</td></tr>` : ''}</tbody></table>
-    ${specs || chg ? `<table class="tbl" style="margin-top:8px"><thead><tr><th>Stage</th><th>Parameter</th><th>Limit</th></tr></thead><tbody>${specs}${chg}</tbody></table>` : ''}`;
+    ${specs || chg || rem ? `<table class="tbl" style="margin-top:8px"><thead><tr><th>Stage</th><th>Parameter</th><th>Limit</th></tr></thead><tbody>${specs}${chg}${rem}</tbody></table>` : ''}`;
 }
 function chgView(id){
   const c = (labCache['/masterdata'].changes || []).find(x => x.id === id); if (!c) return;
