@@ -285,7 +285,7 @@ async function pollTick(){
     if (path.startsWith('/reports')) {
       reportsCache = await api('/webhook/admin/api/reports');
     } else {
-      const keep = { me: S.me, lab: S.lab };
+      const keep = { me: S.me, lab: S.lab, signRoles: S.signRoles };
       S = Object.assign(await api('/webhook/admin/api/bootstrap'), keep);
     }
     render();
@@ -342,8 +342,6 @@ function navModel(){
       { path:'/lab/inbox', label:'QC inbox', icon:'inbox' },
       { path:'/lab/my', label:'My analyses', icon:'doc' },
       { path:'/lab/oos', label:'OOS log', icon:'alert' },
-      { path:'/lab/master', label:'Lab master data', icon:'settings' },
-      { path:'/lab/relievers', label:'Relievers', icon:'users' },
     ]}] : []),
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
@@ -351,6 +349,8 @@ function navModel(){
     ]},
     { title:'Administration', items:[
       { path:'/products', label:'Products and Specs', icon:'box' },
+      { path:'/lab/master', label:'Lab master data', icon:'settings' },
+      ...(S.lab ? [{ path:'/lab/relievers', label:'Relievers', icon:'users' }] : []),
       { path:'/audit', label:'Audit Trail', icon:'activity' },
     ]},
   ];
@@ -436,6 +436,8 @@ async function bootstrap(){
   S = data;
   S.me = meFromAuth(auth, 'qsync');
   try { const lab = await api('/webhook/qsync/lab/api/my'); S.lab = { roles: lab.roles || [] }; } catch (e) { S.lab = null; }
+  // sign-off roles for people without the QC lab pages (e.g. a QC / QA Manager who only has Lab master data): the buttons there need them
+  if (!S.lab && canOpen('/lab/master')) { try { const md = await api('/webhook/qsync/lab/api/masterdata'); S.signRoles = md.roles || []; } catch (e) { S.signRoles = []; } }
   resetIdleTimer();
   startPolling();
 }
@@ -1013,8 +1015,8 @@ function viewProducts(){
     title:'Products and specifications', crumb:'Administration',
     html: `
     ${pageHead('Products and specifications',
-      'Acceptance criteria used to build the live IPQA testing form. A new product or a change is started by the QC Supervisor, reviewed by the QC Manager and approved by the QA Manager; it takes effect on the next IPQA form load once approved.',
-      hasLabRole('qc_supervisor') ? `<button class="btn btn-primary" onclick="productDialog()">${I.plus} New product</button>` : '')}
+      'Acceptance criteria used to build the live IPQA testing form. A new product or a change is started by a QC or QA Supervisor, reviewed by the QC Manager and approved by the QA Manager; it takes effect on the next IPQA form load once approved. An optional check may be left blank on the IPQA sheet (saved as Not tested).',
+      isStarter() ? `<button class="btn btn-primary" onclick="productDialog()">${I.plus} New product</button>` : '')}
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
         <div class="row" style="gap:10px">
@@ -1061,7 +1063,7 @@ function viewProductDetail(id){
           </div>
           <div class="row" style="margin-top:16px;align-items:center;gap:12px;padding-top:14px;border-top:1px solid var(--line-2)">
             <div class="kv-item" style="flex:1"><div class="k">Shelf life</div><div class="v">${p.shelfLifeMonths} months</div></div>
-            ${hasLabRole('qc_supervisor') ? `<button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Request change</button>` : ''}
+            ${isStarter() ? `<button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Request change</button>` : ''}
           </div>
         </div>
       </div>
@@ -1070,14 +1072,14 @@ function viewProductDetail(id){
         return `<div class="card">
           <div class="card-h"><div><h3>${esc(stage)}</h3><div class="sub">Applied automatically on the IPQA form</div></div></div>
           <div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th>Parameter</th><th>Acceptance criteria</th><th>Type</th><th></th></tr></thead>
+            <thead><tr><th>Parameter</th><th>Acceptance criteria</th><th>Type</th><th>On the IPQA sheet</th><th></th></tr></thead>
             <tbody>${specs.length ? specs.map(s => `<tr>
               <td data-label="Parameter"><div class="strong">${esc(s.parameterName)}</div></td>
               <td class="small" data-label="Acceptance criteria">${esc(s.specText || (s.specMin!=null && s.specMax!=null ? `${s.specMin} - ${s.specMax}${s.unit?' '+s.unit:''}` : '--'))}</td>
               <td data-label="Type"><span class="chip">${s.specText ? 'Complies / Does not' : 'Numeric'}</span></td>
-              <td style="text-align:right">${s.specText ? '<span class="tiny muted">Fixed</span>' :
-                (hasLabRole('qc_supervisor') ? `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Request change</button>` : '<span class="tiny muted">View only</span>')}</td>
-            </tr>`).join('') : `<tr><td colspan="4" class="muted" style="padding:16px">No parameters imported for this stage.</td></tr>`}</tbody>
+              <td data-label="On the IPQA sheet">${s.optional ? '<span class="badge b-warn">Optional</span>' : '<span class="small muted">Required</span>'}</td>
+              <td style="text-align:right">${isStarter() ? `<button class="btn btn-ghost btn-sm" onclick='editSpec(${s.id})'>${I.edit} Request change</button>` : '<span class="tiny muted">View only</span>'}</td>
+            </tr>`).join('') : `<tr><td colspan="5" class="muted" style="padding:16px">No parameters imported for this stage.</td></tr>`}</tbody>
           </table></div>
         </div>`;
       }).join('')}
@@ -1088,19 +1090,27 @@ function editSpec(specId){
   let found = null;
   for (const p of S.products){ const s = (p.specs||[]).find(x => x.id === specId); if (s){ found = { s, p }; break; } }
   if (!found) return;
-  const s = found.s, p = found.p;
+  const s = found.s, p = found.p, numeric = !s.specText;
   signDialog({
-    title:`Change limits - ${s.parameterName}`, sub:`${p.name} - ${s.stage}. The QC Manager reviews it, then the QA Manager approves it.`, ok:'Sign and send',
-    meaning:'You start this change as QC Supervisor. The limits stay as they are until the QA Manager approves.',
-    body:`<div class="grid g2">
+    title:`Change ${s.parameterName}`, sub:`${p.name} - ${s.stage}. The QC Manager reviews it, then the QA Manager approves it.`, ok:'Sign and send',
+    meaning:`You start this change as ${starterTitle()}. Nothing changes until the QA Manager approves.`,
+    body:`${numeric ? `<div class="grid g2">
         <div class="field"><label for="spMin">Lower limit</label><div class="inp-group"><input class="inp" id="spMin" value="${s.specMin ?? ''}" inputmode="decimal"><div class="addon">${esc(s.unit||'')}</div></div></div>
-        <div class="field"><label for="spMax">Upper limit</label><div class="inp-group"><input class="inp" id="spMax" value="${s.specMax ?? ''}" inputmode="decimal"><div class="addon">${esc(s.unit||'')}</div></div></div></div>`,
+        <div class="field"><label for="spMax">Upper limit</label><div class="inp-group"><input class="inp" id="spMax" value="${s.specMax ?? ''}" inputmode="decimal"><div class="addon">${esc(s.unit||'')}</div></div></div></div>`
+        : `<div class="field"><label>Specification</label><div class="small">${esc(s.specText)}</div></div>`}
+      <div class="field"><label for="spOpt">On the IPQA sheet</label><select class="inp" id="spOpt">
+        <option value="no" ${s.optional ? '' : 'selected'}>Required: IPQA must enter it</option>
+        <option value="yes" ${s.optional ? 'selected' : ''}>Optional: IPQA may leave it blank (saved as Not tested)</option></select></div>`,
     reason:'Why is this needed?', reasonRequired:true,
     submit: async ({ password, reason, wrap }) => {
-      const min = parseFloat($('#spMin',wrap).value), max = parseFloat($('#spMax',wrap).value);
-      if (isNaN(min) || isNaN(max)) throw new Error('Enter a number for both limits.');
-      if (max <= min) throw new Error('The upper limit must be greater than the lower limit.');
-      await labPost('/change/submit', { kind:'product', action:'edit', target_id:p.id, reason, password, payload:{ spec_changes:[{ id:specId, spec_min:min, spec_max:max }] } });
+      const ch = { id:specId, stage:s.stage, parameter_name:s.parameterName, optional: $('#spOpt',wrap).value === 'yes' };
+      if (numeric){
+        const min = parseFloat($('#spMin',wrap).value), max = parseFloat($('#spMax',wrap).value);
+        if (isNaN(min) || isNaN(max)) throw new Error('Enter a number for both limits.');
+        if (max <= min) throw new Error('The upper limit must be greater than the lower limit.');
+        ch.spec_min = min; ch.spec_max = max;
+      }
+      await labPost('/change/submit', { kind:'product', action:'edit', target_id:p.id, reason, password, payload:{ spec_changes:[ch] } });
       toast('Sent to the QC Manager', esc(p.name)+' - '+esc(s.parameterName), 'ok');
     }
   });
@@ -1110,7 +1120,7 @@ function editShelfLife(productId){
   if (!p) return;
   signDialog({
     title:`Change shelf life - ${p.name}`, sub:'Used to calculate Exp Date on new test requests. The QC Manager reviews it, then the QA Manager approves it.', ok:'Sign and send',
-    meaning:'You start this change as QC Supervisor. The shelf life stays as it is until the QA Manager approves.',
+    meaning:`You start this change as ${starterTitle()}. The shelf life stays as it is until the QA Manager approves.`,
     body:`<div class="field"><label for="slMonths">Shelf life (months)</label><input class="inp" id="slMonths" value="${p.shelfLifeMonths}" inputmode="numeric"></div>`,
     reason:'Why is this needed?', reasonRequired:true,
     submit: async ({ password, reason, wrap }) => {

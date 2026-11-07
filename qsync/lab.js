@@ -18,7 +18,10 @@ const WS_STATUS = { in_progress:['In progress','b-warn'], submitted:['Waiting fo
 const TEST_TYPES = { assay:'Assay', dissolution:'Dissolution', content_uniformity:'Content uniformity', identification:'Identification', microbiology:'Microbiology' };
 const CALCULATED_TESTS = Object.keys(TEST_TYPES);   // every test type has a calculation (engine 1.1)
 
-function labRoles(){ return (S && S.lab && S.lab.roles) || []; }
+function labRoles(){ return (S && S.lab && S.lab.roles) || (S && S.signRoles) || []; }
+// who may start a method template or a change (042): a QC Supervisor or a QA Supervisor
+function isStarter(){ return hasLabRole('qc_supervisor') || hasLabRole('qa_supervisor'); }
+function starterTitle(){ return hasLabRole('qc_supervisor') ? 'QC Supervisor' : 'QA Supervisor'; }
 function hasLabRole(r){ return labRoles().includes(r); }
 function labStatusBadge(s){ const x = LAB_STATUS[s] || { label:s, badge:'b-slate' }; return `<span class="badge ${x.badge}"><span class="dot"></span>${esc(x.label)}</span>`; }
 function wsBadge(s){ const x = WS_STATUS[s] || [s || 'Not started', 'b-slate']; return `<span class="badge ${x[1]}">${esc(x[0])}</span>`; }
@@ -999,15 +1002,16 @@ const CHG_STATUS = { submitted: [c => (c.kind === 'standard' ? 'With QC Manager'
                      approved: [() => 'Approved', 'b-ok'], returned: [() => 'Returned', 'b-danger'] };
 function viewLabMaster(){
   const d = labGet('/masterdata');
-  if (!d) return labWait('Lab master data', 'QC Laboratory');
-  if (d.error) return labFail('Lab master data', 'QC Laboratory', d.error);
-  const ed = canEdit(), qcs = hasLabRole('qc_supervisor'), qcm = hasLabRole('qc_manager'), qam = hasLabRole('qa_manager');
+  if (!d) return labWait('Lab master data', 'Administration');
+  if (d.error) return labFail('Lab master data', 'Administration', d.error);
+  if (d.roles && !S.lab) S.signRoles = d.roles;
+  const ed = canEdit(), qcs = isStarter(), qcm = hasLabRole('qc_manager'), qam = hasLabRole('qa_manager');
   const waiting = (d.changes || []).filter(c => ['submitted', 'reviewed', 'returned'].includes(c.status)).length
     + (d.templates || []).filter(t => ['in_review', 'reviewed', 'returned'].includes(t.stage_of_change)).length;
   const tabs = [['standards', 'Working standards'], ['equipment', 'Equipment'], ['templates', 'Method templates'], ['changes', `Changes${waiting ? ` (${waiting})` : ''}`]];
   let body = '';
   if (mdTab === 'standards'){
-    body = `<div class="card"><div class="card-h"><div><h3>Working-standard register</h3><div class="sub">A standard without an expiry date, or past it, cannot be picked on a worksheet. A new standard or a change is started by the QC Supervisor and approved by the QC Manager.</div></div>
+    body = `<div class="card"><div class="card-h"><div><h3>Working-standard register</h3><div class="sub">A standard without an expiry date, or past it, cannot be picked on a worksheet. A new standard or a change is started by a QC or QA Supervisor and approved by the QC Manager.</div></div>
         ${qcs ? `<button class="btn btn-primary btn-sm" onclick="mdStandard()">${I.plus} Add standard</button>` : ''}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Number</th><th>Substance</th><th>Potency</th><th>Expiry</th><th>Usable today</th><th></th></tr></thead><tbody>
       ${d.standards.map(w => `<tr><td class="mono strong">${esc(w.ws_no)}</td><td>${esc(w.substance)}${w.notes ? `<div class="tiny muted">${esc(w.notes)}</div>` : ''}</td><td class="tnum">${esc(w.potency_pct)}%</td>
@@ -1019,7 +1023,7 @@ function viewLabMaster(){
       ${d.equipment.map(q => `<tr><td class="mono strong">${esc(q.eq_no)}</td><td>${esc(q.eq_type || '')}</td><td class="small">${esc(q.description || '')}</td><td>${fmtDate(q.calibration_due)}</td>
         <td>${q.active ? 'Yes' : 'No'}</td><td style="text-align:right">${ed ? `<button class="btn btn-ghost btn-sm" onclick="mdEquipment(${q.id})">${I.edit} Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
   } else if (mdTab === 'templates'){
-    body = `<div class="card"><div class="card-h"><div><h3>Method templates</h3><div class="sub">The QC Supervisor drafts, the QC Manager approves; an approved version is locked and every worksheet records the version it used</div></div>
+    body = `<div class="card"><div class="card-h"><div><h3>Method templates</h3><div class="sub">A QC or QA Supervisor drafts, the QC Manager approves; an approved version is locked and every worksheet records the version it used</div></div>
         ${qcs ? `<button class="btn btn-primary btn-sm" onclick="mdTemplate()">${I.plus} New template</button>` : ''}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product / Stage</th><th>Test / API</th><th>Version</th><th>Status</th><th>Drafted</th><th>Approved</th><th></th></tr></thead><tbody>
       ${d.templates.map(t => `<tr><td>${esc(t.product_name)}<div class="tiny muted">${esc(t.stage)}</div></td><td>${esc(TEST_TYPES[t.test_type] || t.test_type)}<div class="tiny muted">${esc(t.api)}</div></td>
@@ -1033,7 +1037,7 @@ function viewLabMaster(){
           ${t.stage_of_change === 'reviewed' && qam && t.drafted_by_id !== d.me && t.reviewed_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="mdApprove(${t.id})">Approve</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
   } else {
     const rows = d.changes || [];
-    body = `<div class="card"><div class="card-h"><div><h3>Changes</h3><div class="sub">Working standards and products: the QC Supervisor starts, the QC Manager approves (products: reviews, then the QA Manager approves). Method templates are on their own tab.</div></div>
+    body = `<div class="card"><div class="card-h"><div><h3>Changes</h3><div class="sub">Working standards and products: a QC or QA Supervisor starts, the QC Manager approves (products: reviews, then the QA Manager approves). Method templates are on their own tab.</div></div>
         ${qcs ? `<button class="btn btn-primary btn-sm" onclick="productDialog()">${I.plus} New product</button>` : ''}</div>
       ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Change</th><th>Why</th><th>Started</th><th>Status</th><th></th></tr></thead><tbody>
       ${rows.map(c => `<tr><td><b>${esc(c.title)}</b></td><td class="small">${esc(c.reason || '')}</td>
@@ -1049,9 +1053,9 @@ function viewLabMaster(){
       </tbody></table></div>` : `<div class="card-b">${emptyState('checkCircle', 'No changes waiting', 'Nothing has been started in the last 90 days.')}</div>`}</div>`;
   }
   return {
-    title:'Lab master data', crumb:'QC Laboratory',
+    title:'Lab master data', crumb:'Administration',
     html: `${pageHead('Lab master data', 'Working standards, equipment and the locked method templates that replace the Excel sheets.')}
-      ${!qcs && !qcm && !qam ? `<div class="notice" style="margin-bottom:16px">${I.info} Changes are started by the QC Supervisor, reviewed by the QC Manager and approved by the QA Manager (working standards: the QC Manager approves). You can read everything here.</div>` : ''}
+      ${!qcs && !qcm && !qam ? `<div class="notice" style="margin-bottom:16px">${I.info} Changes are started by a QC or QA Supervisor, reviewed by the QC Manager and approved by the QA Manager (working standards: the QC Manager approves). You can read everything here.</div>` : ''}
       <div class="tabs">${tabs.map(([k, l]) => `<div class="tab ${k === mdTab ? 'active' : ''}" onclick="mdTab='${k}';render()">${esc(l)}</div>`).join('')}</div>${body}`
   };
 }
@@ -1077,7 +1081,7 @@ function mdStandard(id, again){
              ['expiry_date', 'Expiry / re-test date', 'date'], ['notes', 'Notes']];
   signDialog({ title: again ? 'Correct the change' : row ? 'Change a working standard' : 'Add a working standard',
     sub: 'The QC Manager approves it before it takes effect.', ok: 'Sign and send', size: 'narrow',
-    meaning: 'You start this change as QC Supervisor. Nothing changes until the QC Manager approves it.',
+    meaning: `You start this change as ${starterTitle()}. Nothing changes until the QC Manager approves it.`,
     body: f.map(x => `<div class="field"><label for="cs_${x[0]}">${esc(x[1])}</label><input class="inp" id="cs_${x[0]}" type="${x[2] || 'text'}" value="${esc(row && row[x[0]] != null ? row[x[0]] : '')}"></div>`).join('')
       + `<div class="field"><label class="small" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cs_active" ${!row || row.active !== false ? 'checked' : ''}> Can be used</label></div>`,
     reason: 'Why is this needed?', reasonRequired: true,
@@ -1114,7 +1118,7 @@ function decisionDialog(o){
 function mdTplSubmit(id){
   const t = (labCache['/masterdata'].templates || []).find(x => x.id === id); if (!t) return;
   signDialog({ title: 'Send for review', sub: `${t.product_name} - ${TEST_TYPES[t.test_type] || t.test_type} - ${t.api} v${t.version}`, ok: 'Sign and send',
-    meaning: 'You start this method as QC Supervisor. The QC Manager approves it. You cannot edit it while it is with the QC Manager.',
+    meaning: `You start this method as ${starterTitle()}. The QC Manager approves it. You cannot edit it while it is with the QC Manager.`,
     body: mdParamsHtml(t.parameters, t.test_type),
     submit: async ({ password }) => { await labPost('/template/submit', { id, password }); toast('Sent to the QC Manager', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
 }
@@ -1136,7 +1140,9 @@ function chgText(c){
   if (c.kind === 'standard') return `<table class="tbl"><tbody>${[['Number', P.ws_no], ['Substance', P.substance], ['Potency', P.potency_pct + ' %'], ['Expiry', P.expiry_date ? fmtDate(P.expiry_date) : 'not entered'],
     ['Notes', P.notes || ''], ['Can be used', P.active === false ? 'No' : 'Yes']].map(r => `<tr><th>${r[0]}</th><td>${esc(r[1] || '')}</td></tr>`).join('')}</tbody></table>`;
   const specs = (P.specs || []).map(x => `<tr><td>${esc(x.stage)}</td><td>${esc(x.parameter_name)}</td><td>${limitText(x)} ${esc(x.unit || '')}</td></tr>`).join('');
-  const chg = (P.spec_changes || []).map(x => `<tr><td colspan="2">Specification #${esc(x.id)} (changed)</td><td>${limitText(x)}</td></tr>`).join('');
+  const optText = x => (x.optional === true ? ' - optional on the IPQA sheet' : x.optional === false ? ' - required on the IPQA sheet' : '');
+  const chg = (P.spec_changes || []).map(x => `<tr>${x.parameter_name ? `<td>${esc(x.stage || '')}</td><td>${esc(x.parameter_name)} (changed)</td>` : `<td colspan="2">Specification #${esc(x.id)} (changed)</td>`}
+    <td>${x.spec_min != null || x.spec_max != null ? limitText(x) : 'limits unchanged'}${esc(optText(x))}</td></tr>`).join('');
   return `<table class="tbl"><tbody>${c.action === 'create' ? [['Name', P.name], ['Prefix', P.prefix], ['Type', P.type], ['Shelf life', P.shelf_life_months + ' months']].map(r => `<tr><th>${r[0]}</th><td colspan="2">${esc(r[1] || '')}</td></tr>`).join('')
     : P.shelf_life_months != null ? `<tr><th>Shelf life</th><td colspan="2">${esc(P.shelf_life_months)} months</td></tr>` : ''}</tbody></table>
     ${specs || chg ? `<table class="tbl" style="margin-top:8px"><thead><tr><th>Stage</th><th>Parameter</th><th>Limit</th></tr></thead><tbody>${specs}${chg}</tbody></table>` : ''}`;
@@ -1179,7 +1185,7 @@ function productDialog(again){
     <td><input class="inp" data-k="spec_max" type="number" step="any" value="${esc(x.spec_max ?? '')}" style="width:90px"></td><td><input class="inp" data-k="spec_text" value="${esc(x.spec_text || '')}" placeholder="or words, e.g. Complies"></td>
     <td><input class="inp" data-k="unit" value="${esc(x.unit || '')}" style="width:70px"></td><td><button class="btn btn-ghost btn-sm" type="button" data-rm>${I.x}</button></td></tr>`;
   signDialog({ title: again ? 'Correct the new product' : 'New product', sub: 'Everything the product needs is entered here: the QC Manager reviews it, then the QA Manager approves it.', size: 'wide', ok: 'Sign and send',
-    meaning: 'You start this as QC Supervisor. Nothing changes until the QC Manager has reviewed it and the QA Manager has approved it.',
+    meaning: `You start this as ${starterTitle()}. Nothing changes until the QC Manager has reviewed it and the QA Manager has approved it.`,
     body: `<div class="grid g4"><div class="field"><label for="np_name">Product name</label><input class="inp" id="np_name" value="${esc(P.name || '')}"></div>
       <div class="field"><label for="np_prefix">Batch prefix (one letter)</label><input class="inp" id="np_prefix" maxlength="1" style="text-transform:uppercase" value="${esc(P.prefix || '')}">
         <div class="hint" id="np_prefixHint"><span>In use: ${esc(taken.sort().join(', '))}</span></div></div>
@@ -1280,7 +1286,7 @@ function mdTemplate(id, mode){
         <div class="field"><label for="tp_product">Product</label><select class="inp" id="tp_product">${(md.products || []).map(p => `<option>${esc(p)}</option>`).join('')}</select></div>
         <div class="field"><label>Stage</label><div class="small" style="padding-top:8px">All stages (a method belongs to the product)</div></div>
         <div class="field"><label for="tp_test">Test</label><select class="inp" id="tp_test">${testOptions('assay')}</select></div>
-        <div class="field"><label for="tp_api">API</label><input class="inp" id="tp_api" placeholder="e.g. Paracetamol"></div></div>` : ''}
+        <div class="field"><label for="tp_api">API</label><input class="inp" id="tp_api" placeholder="e.g. Paracetamol (one template per API; microbiology: Microbiology)"></div></div>` : ''}
       <div id="tpParams"></div>
       <div class="grid g3">
         <div class="field"><label for="tp_mref">Method ref</label><input class="inp" id="tp_mref" type="text" placeholder="e.g. QC/MOA/FP/002" value="${esc(src ? src.method_ref || '' : '')}"></div>
@@ -1633,8 +1639,8 @@ const reliefRole = k => (RELIEF_ROLES.find(r => r[0] === k) || [k, k])[1];
 const RELIEF_STATE = { active: ['Active now', 'b-ok'], planned: ['Planned', 'b-warn'], ended: ['Ended', 'b-slate'], cancelled: ['Cancelled', 'b-slate'] };
 function viewLabRelievers(){
   const d = labGet('/relievers');
-  if (!d) return labWait('Relievers', 'QC Laboratory');
-  if (d.error) return labFail('Relievers', 'QC Laboratory', d.error);
+  if (!d) return labWait('Relievers', 'Administration');
+  if (d.error) return labFail('Relievers', 'Administration', d.error);
   const rows = d.relief || [];
   const body = rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Role</th><th>Away</th><th>Reliever</th><th>Days</th><th>Status</th><th></th></tr></thead><tbody>
       ${rows.map(x => `<tr><td class="strong">${esc(reliefRole(x.role))}</td><td>${esc(x.for)}</td><td>${esc(x.reliever)}</td>
@@ -1644,7 +1650,7 @@ function viewLabRelievers(){
       </tbody></table></div>`
     : `<div class="card-b">${emptyState('inbox', 'No relievers', 'No one is covering for anyone in the last 60 days or coming up.')}</div>`;
   return {
-    title: 'Relievers', crumb: 'QC Laboratory',
+    title: 'Relievers', crumb: 'Administration',
     html: `${pageHead('Relievers', 'When someone is away, another person signs in their role for the days set, so work does not stop.',
               d.can_manage ? `<button class="btn btn-primary" onclick="labReliefNew()">${I.plus} Set a reliever</button>` : '')}
       <div class="notice" style="margin-bottom:16px">${I.info} <span>The reliever uses their own login and password; their sign-offs show their own name, "as reliever for" the person away.
