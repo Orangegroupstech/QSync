@@ -477,7 +477,7 @@ function render(){
     if (!S){ rememberHere(); toLanding(); return; }
     const path = currentPath();
     if (!canOpen(path)){
-      const first = allowedNav()[0];
+      const first = (allowedNav().find(g => g.title !== 'Mine') || allowedNav()[0]);
       if (first && first.items[0].path !== path.split('?')[0]) { location.hash = '#' + first.items[0].path; return; }
       if (!first) { noAccess(); return; }
     }
@@ -517,7 +517,7 @@ window.addEventListener('hashchange', render);
     try { await bootstrap(); }
     catch (e) { if (!getToken()) return; rememberHere(); toLandingKeepToken(); return; }
     if (!location.hash){
-      const first = allowedNav()[0];
+      const first = (allowedNav().find(g => g.title !== 'Mine') || allowedNav()[0]);
       location.hash = '#' + (first ? first.items[0].path : '/requests');
     }
     render();
@@ -1053,7 +1053,7 @@ function exportAudit(){
    ============================================================ */
 route('/new', () => viewNewRequest());
 // the console's home: the first page this person may open (a link to "QSync" with no page, or to a page that is gone, lands here)
-route('/', () => { const first = allowedNav()[0]; location.replace('#' + (first ? first.items[0].path : '/requests')); return { title:'QSync', crumb:'', html:'' }; });
+route('/', () => { const first = (allowedNav().find(g => g.title !== 'Mine') || allowedNav()[0]); location.replace('#' + (first ? first.items[0].path : '/requests')); return { title:'QSync', crumb:'', html:'' }; });
 route('/requests', () => viewRequests());
 route('/sheet/:id', p => viewSheet(p.id));
 route('/reports', () => viewReports());

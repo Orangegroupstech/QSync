@@ -96,7 +96,7 @@ function homePath(){
   if ((levelOf('engineering.jobs') === 'edit' || levelOf('engineering.actions') === 'edit') && canOpen('/overview')) return '/overview';
   if (['submit', 'edit'].includes(levelOf('engineering.jobs'))) return '/jobs';
   if (levelOf('engineering.spares') === 'edit') return '/spares';
-  const first = allowedNav()[0];
+  const first = (allowedNav().find(g => g.title !== 'Mine') || allowedNav()[0]);
   return first ? first.items[0].path : '/ahu';
 }
 function canOpen(path){ const p = String(path == null ? currentPath() : path); return /^\/(help|requests\/approvals)(\?|$)/.test(p) ? true : /^\/requests(\/|\?|$)/.test(p) ? canRequest() : !!levelOf(pageOf(path)); }
@@ -394,7 +394,7 @@ function render(){
     if (!S){ toLanding(); return; }
     const path = currentPath();
     if (!canOpen(path)){
-      const first = allowedNav()[0];
+      const first = (allowedNav().find(g => g.title !== 'Mine') || allowedNav()[0]);
       if (first && first.items[0].path !== path.split('?')[0]) { location.hash = '#' + first.items[0].path; return; }
       if (!first) { noAccess(); return; }
     }

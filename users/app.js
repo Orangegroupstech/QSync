@@ -1024,8 +1024,10 @@ function aprFiltered(){
     (!q || (String(r.name) + ' ' + String(r.email) + ' ' + String(r.employee_name || '') + ' ' + String(r.enroll_id || '')).toLowerCase().includes(q)))
     .sort((x, y) => aprDept(x).localeCompare(aprDept(y)) || (aprRank[x.stage] - aprRank[y.stage]) || String(x.name).localeCompare(String(y.name)));
 }
+// requester rows are not shown here (unify round): the external department form still reads them
+const aprShown = () => (aprState.rows || []).filter(r => !(r.flow === 'dept' && r.stage === 'requester'));
 function aprPaintFilters(){
-  const rows = aprState.rows || [], f = $('#aprFilters'); if (!f) return;
+  const rows = aprShown(), f = $('#aprFilters'); if (!f) return;
   const depts = [...new Set(rows.map(aprDept))].sort(), roles = [...new Set(rows.map(r => r.label || r.stage))].sort();
   f.innerHTML = `<div class="field" style="margin:0"><label for="aprFDept">Department</label><select class="inp" id="aprFDept"><option value="">All departments</option>${depts.map(d => `<option ${aprFilter.dept === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select></div>
     <div class="field" style="margin:0"><label for="aprFRole">Role</label><select class="inp" id="aprFRole"><option value="">All roles</option>${roles.map(d => `<option ${aprFilter.role === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select></div>
@@ -1039,7 +1041,7 @@ function aprPaint(){
   if (!aprState.rows) { box.innerHTML = `<div class="small muted" style="padding:14px">Loading...</div>`; return; }
   if (!$('#aprFDept')) aprPaintFilters();
   else {      // rows arrived after the page was drawn: refresh the choices without touching the search box
-    const rr = aprState.rows, ds = [...new Set(rr.map(aprDept))].sort(), ro = [...new Set(rr.map(r => r.label || r.stage))].sort();
+    const rr = aprShown(), ds = [...new Set(rr.map(aprDept))].sort(), ro = [...new Set(rr.map(r => r.label || r.stage))].sort();
     $('#aprFDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option ${aprFilter.dept === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
     $('#aprFRole').innerHTML = '<option value="">All roles</option>' + ro.map(d => `<option ${aprFilter.role === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
   }

@@ -309,7 +309,7 @@ function render(){
     if (!S){ toLanding(); return; }
     const path = currentPath();
     if (!canOpen(path)){
-      const first = allowedNav()[0];
+      const first = (allowedNav().find(g => g.title !== 'Mine') || allowedNav()[0]);
       if (first && first.items[0].path !== path.split('?')[0]) { location.hash = '#' + first.items[0].path; return; }
       if (!first) { noAccess(); return; }
     }

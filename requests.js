@@ -304,6 +304,8 @@
        departments [names] and onDept(name) when the person may raise for more than one department (a picker shows first),
        lede (optional replacement text). Returns { title, lede, html, bind } for the console to put in its page frame. */
   function page(kind, cfg, recent) {
+    // only one department to choose from: it is that one (no picker, and the request must still carry it)
+    if (!cfg.department && (cfg.departments || []).length === 1) cfg = Object.assign({}, cfg, { department: cfg.departments[0] });
     const f = kind === 'overtime' ? overtime(cfg) : requisition(cfg);
     const many = (cfg.departments || []).length > 1;
     const picker = many ? `<div class="field" style="max-width:360px;margin-bottom:12px"><label for="rqDept">Department</label><select class="inp" id="rqDept"><option value="">Choose your department...</option>
