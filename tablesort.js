@@ -164,9 +164,29 @@
     (table.isConnected ? table : document).dispatchEvent(new CustomEvent('tablesort', { bubbles: true, detail: { key: table.dataset.sortKey || null, sort: next } }));
   }
 
+  /* ---------- steady columns ----------
+     A list the console cuts (data-sort-key: the first 300 of a longer list) is drawn again after each sort with other rows,
+     and the browser sized every column again from them: the columns jumped (Spares, 7 Nov 2026). Such a table keeps the
+     widths it had the first time it was drawn (as shares of the table, so a resized window still fits). Phones show cards. */
+  const WIDTHS = {};
+  function steady(table) {
+    const key = table.dataset.sortKey, head = headRow(table);
+    if (!key || !head || !window.matchMedia || !window.matchMedia('(min-width: 821px)').matches) return;
+    const ths = Array.from(head.cells);
+    let w = WIDTHS[key];
+    if (!w || w.length !== ths.length) {
+      const tw = table.getBoundingClientRect().width;
+      if (!tw) return;
+      w = WIDTHS[key] = ths.map(th => Math.max(3, Math.round(1000 * th.getBoundingClientRect().width / tw) / 10));
+    }
+    table.style.tableLayout = 'fixed';
+    ths.forEach((th, k) => { th.style.width = w[k] + '%'; });
+  }
+
   /* ---------- set up ---------- */
   function setup(table) {
     if (table.__ts || !table.isConnected || !eligible(table)) return;
+    steady(table);
     table.__ts = { state: null };
     const cols = columns(table);
     cols.forEach((c, k) => {
@@ -229,6 +249,7 @@ th.ts-col:hover::after{opacity:.7}
 th.ts-col[aria-sort=ascending]::after{content:'▲';opacity:1}
 th.ts-col[aria-sort=descending]::after{content:'▼';opacity:1}
 .ts-bar{display:none}
+table[data-sort-key][style*="fixed"] td{overflow-wrap:anywhere}
 @media (max-width:820px){
   .ts-bar{display:flex;justify-content:flex-end;padding:8px 2px}
   .ts-bar[hidden]{display:none}

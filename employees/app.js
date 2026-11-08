@@ -116,13 +116,13 @@ function meFromAuth(auth, scope){
 }
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
-const PAGES = [["/salary", "employees.salary"], ["/training", "employees.training"], ["/overtime", "employees.overtime"], ["/attendance", "employees.attendance"], ["/leave", "employees.leave"], ["/holidays", "employees.holidays"], ["/employees", "employees.people"], ["/dashboard", "employees.people"], ["/", "employees.people"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "employees.people"], ["/requests", "employees.people"], ["/salary", "employees.salary"], ["/training", "employees.training"], ["/overtime", "employees.overtime"], ["/attendance", "employees.attendance"], ["/leave", "employees.leave"], ["/holidays", "employees.holidays"], ["/employees", "employees.people"], ["/dashboard", "employees.people"], ["/", "employees.people"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
   return hit ? hit[1] : 'employees';
 }
-function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canOpen(path){ return /^\/(help|my-approvals)(\?|$)/.test(String(path == null ? currentPath() : path)) ? true : !!levelOf(pageOf(path)); }
 function canEditHere(){ return levelOf(pageOf()) === 'edit'; }
 
 const API_BASE = 'https://orangegroupsai.online';
@@ -258,17 +258,20 @@ function matchRoute(path){
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   return [
+    { title:'Mine', items:[ { path:'/my-approvals', label:'My approvals', icon:'check', count: () => oklWaiting.count('employees') } ] },
     { title:'Overview', items:[ { path:'/dashboard', label:'Dashboard', icon:'home' } ] },
     { title:'People', items:[
       { path:'/employees', label:'Employees', icon:'users' },
       { path:'/training', label:'Training & Competencies', icon:'award' },
     ] },
     { title:'Attendance', items:[
-      { path:'/overtime/submit', label:'Overtime Submission', icon:'plus' },
-      { path:'/overtime/records', label:'Overtime', icon:'layers' },
+      { path:'/overtime/submit', label:'Submit overtime', icon:'plus' },
+      { path:'/overtime/records', label:'Overtime', icon:'layers', count: () => oklWaiting.kindCount('employees', 'Overtime') },
       { path:'/attendance', label:'Attendance', icon:'activity' },
     ] },
     { title:'Leave', items:[ { path:'/leave', label:'Leave', icon:'calendar' }, { path:'/holidays', label:'Public holidays', icon:'calendar' } ] },
+    { title:'Requests', items:[ { path:'/requests', label:'Make a procurement request', icon:'box' } ] },
+    { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ].concat(S && S.me && S.me.is_admin ? [{ title:'Salary', items:[ { path:'/salary', label:'Salary', icon:'coins' } ] }] : []);   // Salary is for admins only for now
 }
 
@@ -283,7 +286,7 @@ function renderShell(inner, meta){
     ${g.items.map(it => {
       const active = path === it.path || path.startsWith(it.path + '/');
       return `<a class="nav-item ${active?'active':''}" href="#${it.path}">
-        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span></a>`;
+        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span>${it.count ? waitBadge(it.count()) : ''}</a>`;
     }).join('')}`).join('');
 
   return `
@@ -381,6 +384,8 @@ function render(){
     }
     const m = matchRoute(path);
     if (!m){
+      // a link to a page that does not exist (an old e-mail, a typo): open this console's home page and say so, not a dead end
+      if (path.split('?')[0] !== '/' && !window.__oklLost) { window.__oklLost = true; try { toast('That link is out of date', 'Opened the home page instead.', 'warn', 6000); } catch (e) { /* ignore */ } location.hash = '#/'; return; }
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
     }
@@ -945,32 +950,27 @@ const todayStr = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Afric
 const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
 const fmtHours = n => String(Math.round(Number(n || 0) * 100) / 100);
 const hhmm = t => t ? String(t).slice(0, 5) : '';
-const OVERTIME_FORM_URL = 'https://orangegroupsai.online/webhook/employees/overtime-form';
 
-/* ---- Overtime Submission: department tiles that open the hosted form ---- */
-function viewOvertimeSubmit(){
-  const departments = (S.departments || []);
-  const tile = (name) => `
-    <a class="card ot-dept-card" href="${esc(OVERTIME_FORM_URL + '?department=' + encodeURIComponent(name))}" target="_blank" rel="noopener"
-       style="display:block;text-decoration:none;color:inherit">
-      <div class="card-h"><h3>${esc(name)}</h3></div>
-      <div class="card-b">
-        <p class="small muted">Record overtime for ${esc(name)}.</p>
-        <div class="row" style="margin-top:14px;gap:6px;color:var(--brand-600);font-weight:600;font-size:13px">Open form ${I.externalLink}</div>
-      </div>
-    </a>`;
-  return {
-    title:'Overtime Submission', crumb:'Attendance',
-    html: `
-    <style>.ot-dept-card{transition:.16s ease}.ot-dept-card:hover{border-color:var(--brand);box-shadow:0 8px 24px rgba(16,25,20,.08);transform:translateY(-2px)}</style>
-    ${pageHead('Overtime Submission', 'Pick the department - each opens that department\'s hosted overtime form in a new tab. Supervisors can use the same link directly.')}
-    ${departments.length ? `<div class="grid g3">${departments.map(tile).join('')}</div>`
-      : `<div class="card"><div class="card-b">${emptyState('box', 'No departments yet', 'Departments appear here once they exist.')}</div></div>`}
-    <div class="card" style="margin-top:16px"><div class="card-b small muted">
-      <div class="strong" style="color:var(--text);margin-bottom:4px">Link for supervisors</div>
-      <div class="mono" style="word-break:break-all">${esc(OVERTIME_FORM_URL)}</div></div></div>`,
-  };
+/* ---- Submit overtime and Make a procurement request: the shared forms in ../requests.js (the same page in every console).
+   HR picks the department first; the people listed are that department's active staff. ---- */
+let HRQ = { dept: '' };
+function hrqCfg(department, extra){
+  return Object.assign({ api: 'https://orangegroupsai.online', department, flow: 'dept', requester: (S.me && S.me.name) || '', icons: I,
+    people: S.employees.filter(e => isActiveEmp(e) && e.department === department).map(e => ({ enroll_id: e.enroll_id, name: e.name })).sort((x, y) => x.name.localeCompare(y.name)),
+    toast, noRecent: true, onSent: () => render() }, extra || {});
 }
+function viewOvertimeSubmit(){
+  if (!window.oklRequests) return { title:'Submit overtime', crumb:'Attendance', html: `<div class="card"><div class="card-b">${emptyState('alert', 'The form did not load', 'Reload the page.')}</div></div>` };
+  const pg = oklRequests.page('overtime', hrqCfg(HRQ.dept, { departments: S.departments || [], onDept: v => { HRQ.dept = v; render(); },
+    lede: 'Record overtime for any department. Pick the department, the day, the hours and who worked. The HR Manager is told of the day\'s submissions at midday.' }));
+  return { title: pg.title, crumb:'Attendance', keepScroll: true, html: pageHead(pg.title, pg.lede) + pg.html, bind: pg.bind };
+}
+function viewHrRequest(){
+  if (!window.oklRequests) return { title:'Make a procurement request', crumb:'Requests', html: `<div class="card"><div class="card-b">${emptyState('alert', 'The form did not load', 'Reload the page.')}</div></div>` };
+  const pg = oklRequests.page('item', hrqCfg((S.setup && S.setup.hr_department) || 'Business Support/HR'));
+  return { title: pg.title, crumb:'Requests', keepScroll: true, html: pageHead(pg.title, pg.lede) + pg.html, bind: pg.bind };
+}
+route('/requests', () => viewHrRequest());
 route('/overtime/submit', () => viewOvertimeSubmit());
 
 /* ---- Overtime: the log ---- */
@@ -1209,13 +1209,53 @@ function openOtReport(){
       return sheets && { fileName:'okl_overtime_report_' + from + '_to_' + to + (type ? '_' + type : '') + '.xlsx', sheets };
     } });
 }
+/* ---- Overtime waiting to be confirmed by the HR Manager (migration 045): a tab with a number until she confirms ---- */
+const OTW = { data: null, loading: false, busy: false };
+function otWaitingN(){ return oklWaiting.kindCount('employees', 'Overtime'); }
+function otTabs(){
+  const n = otWaitingN();
+  return (n || levelOf('employees.overtime') === 'edit' ? [['waiting', 'Waiting to confirm' + (n ? ` <span class="nav-count" style="display:inline-block;margin-left:4px;min-width:18px;padding:0 6px;border-radius:9px;background:var(--brand);color:#fff;font-size:11px;font-weight:700;text-align:center">${n}</span>` : ''), '/overtime/waiting']] : [])
+    .concat([['overview', 'Overview', '/overtime/records'], ['daily', 'Daily', '/overtime/records/daily'], ['totals', 'By person', '/overtime/records/people'], ['entries', 'Entries', '/overtime/records/entries']]);
+}
+async function otwLoad(){
+  OTW.loading = true;
+  try { OTW.data = await api('/webhook/employees/api/overtime/waiting'); } catch (e) { OTW.data = { error: e.message }; }
+  OTW.loading = false; render();
+}
+async function otwConfirm(idsJson){
+  if (OTW.busy) return; OTW.busy = true;
+  try {
+    const r = await api('/webhook/employees/api/overtime/confirm', { method:'POST', body:{ ids: JSON.parse(idsJson) } });
+    toast('Overtime confirmed', (r.confirmed || 0) + ' entr' + (r.confirmed === 1 ? 'y' : 'ies'), 'ok');
+    OTW.data = null; oklWaiting.refresh('employees');
+  } catch (e) { toast('Not confirmed', e.message, 'err'); }
+  OTW.busy = false; render();
+}
+function viewOvertimeWaiting(){
+  if (!OTW.data && !OTW.loading) otwLoad();
+  const d = OTW.data, list = d && d.waiting || [];
+  const body = !d ? `<div class="card"><div class="card-b small muted">Loading...</div></div>`
+    : d.error ? `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>`
+    : !list.length ? `<div class="card"><div class="card-b">${emptyState('check', 'Nothing to confirm', 'Overtime submitted by the departments waits here until the HR Manager confirms it. You are also e-mailed at midday while anything waits.')}</div></div>`
+    : (d.can_confirm ? `<div class="row" style="margin-bottom:12px"><button class="btn btn-primary" onclick='otwConfirm(${esc(JSON.stringify(JSON.stringify(list.flatMap(g => g.ids))))})'>${I.check} Confirm all (${list.reduce((n, g) => n + g.people, 0)} entries)</button></div>` : '')
+      + list.map(g => `<div class="card" style="margin-bottom:12px"><div class="card-h"><div><h3>${esc(g.department || '')} · ${esc(String(g.work_date).slice(0, 10))}</h3>
+          <div class="sub">${esc(g.people)} ${g.people === 1 ? 'person' : 'people'} · ${esc(String(g.day_type || '').replace('_', ' '))} · submitted by ${esc(g.submitted_by || '')}</div></div>
+          ${d.can_confirm ? `<button class="btn btn-primary btn-sm" onclick='otwConfirm(${esc(JSON.stringify(JSON.stringify(g.ids)))})'>${I.check} Confirm</button>` : ''}</div>
+        <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Who</th><th>Time</th><th style="text-align:right">Hours</th><th>Work</th></tr></thead><tbody>${(g.rows || []).map(r => `<tr><td data-label="Who">${esc(r.name || '')}</td>
+          <td data-label="Time" class="mono small">${esc(r.start || '')} - ${esc(r.end || '')}</td><td data-label="Hours" style="text-align:right">${esc(r.hours)}</td><td data-label="Work" class="small">${esc(r.duty || '')}</td></tr>`).join('')}</tbody></table></div></div>`).join('');
+  return { title:'Overtime', crumb:'Attendance', keepScroll: true,
+    html: `${pageHead('Overtime', 'Hours submitted on the department forms: confirm what was submitted, then see the overview, day by day, totals by person and every entry.', `<button class="btn btn-ghost" onclick="OTW.data=null;oklWaiting.refresh('employees');render()">Refresh</button>`)}
+      ${hrTabs(otTabs(), 'waiting')}${body}` };
+}
+route('/overtime/waiting', () => viewOvertimeWaiting());
+
 function viewOvertimeList(mode){
   if (!otListState.to) { const r = presetRange(otListState.preset); otListState.from = r[0]; otListState.to = r[1]; }
   const s = otListState; s.mode = mode;
   return {
     title:'Overtime', crumb:'Attendance',
     html: `${pageHead('Overtime', 'Hours submitted on the department forms: overview, day by day, totals by person, and every entry.', (mode === 'overview' ? '' : `<button class="btn btn-ghost" id="olCsv">${I.download} Export CSV</button>`) + (mode === 'totals' ? `<button class="btn btn-primary" id="olReport">${I.download} Download report</button>` : ''))}
-      ${hrTabs([['overview', 'Overview', '/overtime/records'], ['daily', 'Daily', '/overtime/records/daily'], ['totals', 'By person', '/overtime/records/people'], ['entries', 'Entries', '/overtime/records/entries']], mode)}
+      ${hrTabs(otTabs(), mode)}
       ${hrFilterBar(s, 'ol', `<div class="field" style="margin:0"><label>Day type</label><div id="olDay"></div></div><label class="check" style="margin:0;align-self:flex-end;padding-bottom:10px"><input type="checkbox" id="olVoid" ${s.showVoid?'checked':''}> Show voided</label>`)}
       <div class="card"><div id="otListBody"></div></div>`,
     bind(){
@@ -2629,4 +2669,44 @@ function openAddEmployee(){
    Settings (change PIN, sign out)
    ============================================================ */
 
+// the orange number beside a menu item (the same look everywhere)
+function waitBadge(n){ return n ? `<span class="nav-count" title="${n} waiting for you" style="margin-left:auto;min-width:20px;padding:1px 7px;border-radius:10px;background:var(--brand);color:#fff;font-size:11px;font-weight:700;text-align:center">${n > 99 ? '99+' : n}</span>` : ''; }
 
+/* ---- My approvals: the same page in every console (../waiting.js), from the one server list (okl_waiting) ---- */
+function viewMyApprovals(){
+  const pg = oklWaiting.page('employees');
+  return { title:'My approvals', crumb:'Mine', keepScroll: true, html: pageHead('My approvals', 'What waits for you: requests to approve, work assigned to you, things that came back and overdue items in your area. The number on the menu is this list.') + pg.html };
+}
+route('/my-approvals', viewMyApprovals);
+
+/* ---- How to use (7 Nov 2026: every feature people notice has a short manual) ---- */
+const HELP = [
+  ['plus', 'Submit overtime', [
+    'Menu > Attendance > <b>Submit overtime</b>. Pick the department first: its active staff appear.',
+    'Pick the day (within the last 31 days); tick public holiday if it was one. Weekends are worked out by themselves.',
+    'Set the start and end time and tick everyone who worked those hours. A person can be in one group per day. Other hours or other work? <b>Add another group</b>.',
+    '<b>Submit overtime</b>: it goes into the overtime records and the HR Manager is told of the day\'s submissions at midday.']],
+  ['check', 'Overtime waiting to be confirmed (HR Manager)', [
+    'Menu > Attendance > <b>Overtime</b>: the first tab, <b>Waiting to confirm</b>, carries a number until you confirm.',
+    'Each card is one department\'s day. Check the people and hours, then <b>Confirm</b> (or <b>Confirm all</b>). The number goes down.',
+    'At midday you are e-mailed the entries still waiting, with a link that opens this page after you sign in.']],
+  ['box', 'Make a procurement request', [
+    'Menu > Requests > <b>Make a procurement request</b>: for the HR department. You are the requester.',
+    'Pick the date it is needed by, then each item with its details, category, quantity and why. <b>Send for approval</b>: your manager, then the plant manager.']],
+  ['check', 'My approvals', [
+    'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
+    'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
+    'The orange number on the menu is the number of items on this page. It falls as you act.',
+    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['info', 'Phone or laptop', [
+    'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
+  ['edit', 'Suggestions', [
+    'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
+    'It goes to the system team only. It changes nothing in the system.']],
+];
+function viewHelp(){
+  return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')
+    + `<div class="grid g2">${HELP.map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
+        <div class="card-b"><ol class="small" style="margin:0;padding-left:18px;line-height:1.55">${steps.map(x => `<li style="margin-bottom:4px">${x}</li>`).join('')}</ol></div></div>`).join('')}</div>` };
+}
+route('/help', viewHelp);

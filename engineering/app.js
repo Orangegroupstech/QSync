@@ -82,7 +82,9 @@ function meFromAuth(auth, scope){
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 const PAGES = [["/spares", "engineering.spares"], ["/jobs", "engineering.jobs"], ["/floor", "engineering.jobs"],
   ["/rca", "engineering.actions"], ["/actions", "engineering.actions"], ["/pm", "engineering.pm"], ["/overview", "engineering.actions"], ["/outdoor", "engineering.outdoor"],
-  ["/equipment", "engineering.equipment"], ["/settings", "engineering.settings"], ["/ahu", "engineering.ahu"]];   // route prefix -> page, first match wins
+  ["/equipment", "engineering.equipment"], ["/settings", "engineering.settings"], ["/ahu", "engineering.ahu"], ["/checks", "engineering.jobs"]];   // route prefix -> page, first match wins
+// Requests (043: spares and other items to Procurement, overtime to HR): the Engineering Manager and the storekeeper
+const canRequest = () => levelOf('engineering.spares') === 'edit' || levelOf('engineering.jobs') === 'edit';
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => p === pre || p.startsWith(pre + '/'));
@@ -97,7 +99,7 @@ function homePath(){
   const first = allowedNav()[0];
   return first ? first.items[0].path : '/ahu';
 }
-function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canOpen(path){ const p = String(path == null ? currentPath() : path); return /^\/(help|requests\/approvals)(\?|$)/.test(p) ? true : /^\/requests(\/|\?|$)/.test(p) ? canRequest() : !!levelOf(pageOf(path)); }
 function canEditHere(){ return levelOf(pageOf()) === 'edit'; }
 
 const API_BASE = 'https://orangegroupsai.online';
@@ -230,11 +232,17 @@ function matchRoute(path){
 function navModel(){
   const mgr = levelOf('engineering.jobs') === 'edit';
   return [
+    { title:'Mine', items:[ { path:'/requests/approvals', label:'My approvals', icon:'check', count: () => oklWaiting.count('engineering') } ] },
     { title:'Maintenance', items:[
       { path:'/overview', label:'Overview', icon:'layers' },
       { path:'/jobs', label:'Calls and jobs', icon:'wrench' },
       { path:'/pm', label:'Preventive maintenance', icon:'checkCircle' },
+      { path:'/checks', label:'Periodic checks', icon:'check' },
       { path:'/rca', label:'RCA', icon:'edit' },
+    ] },
+    { title:'Requests', items:[
+      { path:'/requests', label:'Make a procurement request', icon:'box' },
+      { path:'/requests/overtime', label:'Submit overtime', icon:'users' },
     ] },
     { title:'Logs', items:[
       { path:'/ahu', label:'AHU Temperature Log', icon:'thermo' },
@@ -245,8 +253,9 @@ function navModel(){
     ] },
     { title:'Setup', items:[
       { path:'/equipment', label:'Equipment and parts', icon:'layers' },
-      { path:'/settings', label:'Settings', icon:'sliders' },
+      { path:'/settings', label:'Settings', icon:'sliders', count: () => rpWaitingCount() },
     ].concat(mgr ? [{ path:'/floor', label:'Floor messages', icon:'externalLink' }] : []) },
+    { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ];
 }
 
@@ -256,12 +265,15 @@ function allowedNav(){
 }
 function renderShell(inner, meta){
   const path = currentPath().split('?')[0];
-  const navHtml = allowedNav().map(g => `
+  const nav = allowedNav();
+  // the closest menu item is the one lit (/requests/overtime is Overtime, not also Make a request)
+  const lit = nav.flatMap(g => g.items).filter(it => path === it.path || path.startsWith(it.path + '/')).sort((a, b) => b.path.length - a.path.length)[0];
+  const navHtml = nav.map(g => `
     <div class="nav-group">${esc(g.title)}</div>
     ${g.items.map(it => {
-      const active = path === it.path || path.startsWith(it.path + '/');
-      return `<a class="nav-item ${active?'active':''}" href="#${it.path}">
-        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span></a>`;
+      const n = it.count ? it.count() : 0;
+      return `<a class="nav-item ${it === lit ? 'active' : ''}" href="#${it.path}">
+        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span>${n ? `<span class="nav-count" title="${n} waiting">${n}</span>` : ''}</a>`;
     }).join('')}`).join('');
 
   return `
@@ -287,9 +299,8 @@ function renderShell(inner, meta){
     <div class="main">
       <header class="topbar">
         <button class="btn-icon menu-btn" onclick="document.body.classList.add('nav-open')" aria-label="Open menu">${I.menu}</button>
-        <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home">
-          <span class="logo sm" style="border-width:1.5px;box-shadow:0 0 0 1.5px var(--brand)">
-            <span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></a>
+        <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home"><span style="display:flex;align-items:center;gap:8px"><img src="../logo.png" alt="Orange Kalbe Limited" style="height:30px;width:auto;display:block">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.12em;color:var(--text-2);line-height:1.15">ORANGE KALBE<br>LIMITED</span></span></a>
         <div style="min-width:0">
           <div class="crumb">${esc(meta.crumb||'')}</div>
           <div class="ttl">${esc(meta.title||'')}</div>
@@ -298,7 +309,22 @@ function renderShell(inner, meta){
       </header>
       <main class="content">${inner}</main>
     </div>
+    ${botNav(path)}
   </div>`;
+}
+// phones and tablets: the pages a technician uses most, one tap away at the bottom (043)
+function botNav(path){
+  const tab = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || '';
+  const items = [
+    { href: '/jobs', label: 'Calls', icon: 'wrench', on: path === '/jobs' && !tab || /^\/jobs\/EJ/.test(path) && JB.backTo !== '/jobs?tab=other', n: jbCallsWaiting() },
+    { href: '/jobs?tab=other', label: 'Other jobs', icon: 'layers', on: path === '/jobs' && tab === 'other' || /^\/jobs\/(new|record)$/.test(path) },
+    { href: '/pm', label: 'PM', icon: 'checkCircle', on: /^\/pm/.test(path) },
+    { href: '/checks', label: 'Checks', icon: 'check', on: /^\/checks/.test(path), n: CK.todayOpen || 0 },
+  ].filter(x => canOpen(x.href.split('?')[0]));
+  if (items.length < 2) return '';
+  return `<nav class="botnav no-print" aria-label="Quick links">${items.map(x => `<a class="bn-item ${x.on ? 'on' : ''}" href="#${x.href}"><span class="ic">${I[x.icon]}</span>
+      <span>${esc(x.label)}</span>${x.n ? `<span class="bn-count">${x.n}</span>` : ''}</a>`).join('')}
+    <button type="button" class="bn-item" onclick="document.body.classList.add('nav-open')"><span class="ic">${I.menu}</span><span>Menu</span></button></nav>`;
 }
 function pageHead(title, sub, actions){
   return `<div class="page-head">
@@ -374,6 +400,8 @@ function render(){
     }
     const m = matchRoute(path);
     if (!m){
+      // a link to a page that does not exist (an old e-mail, a typo): open this console's home page and say so, not a dead end
+      if (path.split('?')[0] !== '/' && !window.__oklLost) { window.__oklLost = true; try { toast('That link is out of date', 'Opened the home page instead.', 'warn', 6000); } catch (e) { /* ignore */ } location.hash = '#/'; return; }
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
     }
@@ -754,7 +782,7 @@ function viewAsset(params){
   return { title: a.name, crumb:'Equipment', keepScroll: true,
     html: `<div class="row between" style="margin-bottom:12px">${back}<div class="row" style="gap:8px">${dlButton(`apDownload('${esc(code)}')`)}
         ${canEditHere() ? `<button class="btn btn-ghost" onclick="eqOpen('${esc(code)}')">${I.edit} Edit</button>` : ''}
-        ${canJob ? `<button class="btn btn-ghost" onclick="go('/jobs/new?asset=${encodeURIComponent(code)}')">${I.wrench} Start a job</button><button class="btn btn-primary" onclick="go('/pm/record?asset=${encodeURIComponent(code)}')">${I.plus} Record a PM</button>` : ''}</div></div>
+        ${canJob ? `<button class="btn btn-ghost" onclick="go('/jobs/new?asset=${encodeURIComponent(code)}')">${I.wrench} New fix</button><button class="btn btn-primary" onclick="go('/pm/record?asset=${encodeURIComponent(code)}')">${I.plus} Record a PM</button>` : ''}</div></div>
     <div class="card" style="margin-bottom:14px"><div class="card-b"><h2 style="font-size:20px;margin:0 0 6px">${esc(a.name)}</h2>
       <div class="row small" style="gap:6px 16px;flex-wrap:wrap">${facts.map(([l, v]) => `<span><span class="muted">${esc(l)}:</span> <b>${esc(v)}</b></span>`).join('')}</div>
       ${a.notes ? `<div class="small muted" style="margin-top:6px">${esc(a.notes)}</div>` : ''}</div></div>
@@ -887,7 +915,7 @@ function viewPmParts(){
   if (!PP.data) { PP.data = 'loading'; ppLoad(); }
   const d = PP.data, ready = d && d !== 'loading' && !d.error, edit = ppCanEdit();
   const head = pageHead('Equipment and parts', `The parts each machine needs on preventive maintenance, and how often each one is changed. A part is changed at a PM when it falls due no more than ${num((ready && d.window_days) || 14)} days after it (Settings). The PM notices list them.`,
-    (ready ? dlButton('ppDownload()') : '') + (edit ? `<button class="btn btn-primary" onclick="ppOpen(null)">${I.plus} Add a part</button>` : '')) + eqTabs('parts');
+    (ready ? dlButton('ppDownload()') : '') + (edit ? `<button class="btn btn-primary" onclick="ppOpen(null)">${I.plus} Add parts</button>` : '')) + eqTabs('parts');
   if (!ready) return { title:'PM parts plan', crumb:'Setup', html: head + `<div class="card"><div class="card-b ${d && d.error ? '' : 'small muted'}">${d && d.error ? emptyState('alert', 'Could not load', esc(d.error)) : 'Loading...'}</div></div>` };
   const rows = ppParts(), today = todayIso();
   return { title:'PM parts plan', crumb:'Setup', keepScroll: true,
@@ -907,7 +935,89 @@ function ppDownload(){
   downloadXlsx('PM parts plan', [{ name: 'PM parts plan', head: ['Code', 'Equipment', 'Area', 'SKU', 'Part', 'Qty', 'Unit', 'How often', 'Last changed', 'Next change', 'In stock', 'Note'],
     rows: ppParts().map(p => [p.asset, p.asset_name, p.area, p.sku, p.name, +p.qty, p.unit, everyText(p), p.last_change, p.next_change, p.sku ? +p.stock : '', p.note]) }]);
 }
+/* several parts for several machines at once (043): tick the machines, one line per part (store part or a material's
+   name, quantity, how often). A part already on a machine's plan is updated. The server saves everything or nothing. */
+const ppLineNew = () => ({ text: '', qty: '', every_n: '3', every_unit: 'month' });
+function ppLinesHtml(L){
+  return L.map((l, i) => { const it = spBySku(spSkuFrom(l.text));
+    return `<div class="pl-row pp-line">
+      <div class="pl-part"><input class="inp" data-pp-part="${i}" list="ppmSkus" value="${esc(l.text)}" placeholder="Store part (SKU or name), or a material's name" aria-label="Part ${i + 1}">
+        <div class="tiny muted" data-pp-info="${i}">${it ? spDetail(it, l.text) : l.text.trim() ? 'Not a store item: kept by its name.' : ''}</div></div>
+      <input class="inp pl-qty" type="number" min="0" step="any" data-pp-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
+      <div class="pp-every"><span class="tiny muted">every</span><input class="inp" type="number" min="1" max="520" step="1" data-pp-n="${i}" value="${esc(l.every_n)}" aria-label="Every how many ${i + 1}">
+        <select class="inp" data-pp-unit="${i}" aria-label="Unit ${i + 1}">${Object.keys(EVERY_UNIT).map(k => `<option value="${k}" ${l.every_unit === k ? 'selected' : ''}>${EVERY_UNIT[k][1]}</option>`).join('')}</select></div>
+      <button type="button" class="btn btn-ghost btn-sm" data-pp-rm="${i}" ${L.length === 1 ? 'disabled' : ''} aria-label="Remove line ${i + 1}">${I.x}</button></div>`; }).join('');
+}
+function ppOpenMany(asset){
+  const picked = new Set(asset ? [asset] : []), L = [ppLineNew()];
+  let q = '';
+  const eqs = (EQ.list || []).filter(a => a.status === 'Active').sort((a, b) => a.name.localeCompare(b.name));
+  const listHtml = () => { const t = q.trim().toLowerCase();
+    const shown = eqs.filter(a => !t || (a.name + ' ' + a.code + ' ' + (a.area || '') + ' ' + a.type).toLowerCase().includes(t)).slice(0, 200);
+    return shown.map(a => `<label class="check pp-eq"><input type="checkbox" data-pp-eq="${esc(a.code)}" ${picked.has(a.code) ? 'checked' : ''}><span>${esc(a.name)}<span class="hint">${esc([a.type, a.area].filter(Boolean).join(' · '))}</span></span></label>`).join('')
+      || '<div class="small muted" style="padding:8px">Nothing matches.</div>'; };
+  openModal({ title:'Add parts to the PM plan', size:'wide', sub:'Pick the machines, then one line per part with its quantity and how often it is changed. Every machine picked gets every part.',
+    body: `<form novalidate>
+      <div class="field"><span class="lbl">Machines <span class="muted" style="font-weight:500" id="ppmN">(${picked.size} picked)</span></span>
+        <input class="inp" id="ppmQ" placeholder="Search: Kunlong, compressor, AHU..." style="margin-bottom:6px">
+        <div class="pp-eqs" id="ppmList">${listHtml()}</div>
+        <div class="row" style="gap:6px;margin-top:6px"><button type="button" class="btn btn-ghost btn-sm" id="ppmAll">Tick all shown</button><button type="button" class="btn btn-ghost btn-sm" id="ppmNone">Clear</button></div></div>
+      <div class="field"><span class="lbl">Parts</span><div id="ppmLines">${ppLinesHtml(L)}</div>
+        <button type="button" class="btn btn-ghost btn-sm" id="ppmAdd" style="margin-top:6px">${I.plus} Add another part</button>
+        <datalist id="ppmSkus">${spSkuOptions()}</datalist></div>
+      <div class="grid g2">
+        <div class="field"><label for="ppmLast">Last changed on (if known, for all)</label><input class="inp" id="ppmLast" type="date" max="${todayIso()}"></div>
+        <div class="field"><label for="ppmNote">Note (optional)</label><input class="inp" id="ppmNote" maxlength="300"></div></div>
+      <div class="err-msg hide" data-err="ppm"></div></form>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save to the plan</button>`,
+    onMount: (w, close) => {
+      const count = () => { $('#ppmN', w).textContent = '(' + picked.size + ' picked)'; };
+      const wireEq = () => $$('[data-pp-eq]', w).forEach(c => c.onchange = () => { if (c.checked) picked.add(c.dataset.ppEq); else picked.delete(c.dataset.ppEq); count(); });
+      const redrawEq = () => { $('#ppmList', w).innerHTML = listHtml(); wireEq(); };
+      $('#ppmQ', w).oninput = e => { q = e.target.value; redrawEq(); };
+      $('#ppmAll', w).onclick = () => { $$('[data-pp-eq]', w).forEach(c => picked.add(c.dataset.ppEq)); redrawEq(); count(); };
+      $('#ppmNone', w).onclick = () => { picked.clear(); redrawEq(); count(); };
+      const wireLines = () => {
+        $$('[data-pp-part]', w).forEach(el => { el.oninput = el.onchange = e => { const l = L[+el.dataset.ppPart], it = spBySku(spSkuFrom(el.value));
+          if (e && e.type === 'change') spFullText(el, it);
+          l.text = el.value; $(`[data-pp-info="${el.dataset.ppPart}"]`, w).innerHTML = it ? spDetail(it, l.text) : l.text.trim() ? 'Not a store item: kept by its name.' : ''; }; });
+        $$('[data-pp-qty]', w).forEach(el => { el.oninput = () => { L[+el.dataset.ppQty].qty = el.value; }; });
+        $$('[data-pp-n]', w).forEach(el => { el.oninput = () => { L[+el.dataset.ppN].every_n = el.value; }; });
+        $$('[data-pp-unit]', w).forEach(el => { el.onchange = () => { L[+el.dataset.ppUnit].every_unit = el.value; }; });
+        $$('[data-pp-rm]', w).forEach(el => { el.onclick = () => { L.splice(+el.dataset.ppRm, 1); $('#ppmLines', w).innerHTML = ppLinesHtml(L); wireLines(); }; });
+      };
+      $('#ppmAdd', w).onclick = () => { L.push(ppLineNew()); $('#ppmLines', w).innerHTML = ppLinesHtml(L); wireLines(); const ins = $$('[data-pp-part]', w); ins[ins.length - 1].focus(); };
+      wireEq(); wireLines();
+      const sv = $('[data-save]', w);
+      sv.onclick = async () => {
+        clearErrors(w);
+        if (!picked.size) return setErr('ppm', 'Tick at least one machine.', w);
+        if (picked.size > 60) return setErr('ppm', 'At most 60 machines at once.', w);
+        const lines = [], seen = {};
+        for (let i = 0; i < L.length; i++) {
+          const l = L[i], n = L.length > 1 ? 'Part ' + (i + 1) + ': ' : '', t = l.text.trim();
+          if (!t && !String(l.qty).trim()) continue;
+          const it = spBySku(spSkuFrom(t)), key = it ? it.sku : 'n:' + t.toLowerCase();
+          if (!it && t.length < 2) return setErr('ppm', n + 'pick the part from the store list, or type the material\'s name.', w);
+          if (seen[key]) return setErr('ppm', n + 'this part is listed twice.', w);
+          seen[key] = 1;
+          if (!(+l.qty > 0)) return setErr('ppm', n + 'enter the quantity.', w);
+          if (!(+l.every_n >= 1 && +l.every_n <= 520 && +l.every_n === Math.floor(+l.every_n))) return setErr('ppm', n + 'say how often it is changed (every 1 to 520).', w);
+          lines.push(it ? { sku: it.sku, qty: String(l.qty).trim(), every_n: String(l.every_n), every_unit: l.every_unit }
+                        : { name: t, qty: String(l.qty).trim(), every_n: String(l.every_n), every_unit: l.every_unit });
+        }
+        if (!lines.length) return setErr('ppm', 'Add at least one part.', w);
+        sv.disabled = true;
+        try {
+          const r = await api('/webhook/engineering/api/pm/parts/save', { method:'POST', body:{ part:{ assets: Array.from(picked), lines, last_changed_on: $('#ppmLast', w).value, note: $('#ppmNote', w).value.trim() } } });
+          close(); toast('PM parts plan saved', (r.added ? r.added + ' added' : '') + (r.added && r.updated ? ', ' : '') + (r.updated ? r.updated + ' updated (already on the plan)' : ''), 'ok', 6000);
+          PP.data = null; AP = {}; PM.data = null; render();
+        } catch (e) { setErr('ppm', e.message, w); sv.disabled = false; }
+      };
+    } });
+}
 function ppOpen(id, asset){
+  if (!id) return ppOpenMany(asset);     // adding: several parts and machines at once (043); an existing line opens on its own
   const all = (PP.data && PP.data.parts) || [], fromPage = Object.values(AP).flatMap(x => (x && x.pm_parts) || []);
   const p = id ? (all.find(x => x.id === id) || fromPage.find(x => x.id === id)) : null;
   const v = p || { asset: asset || '', sku: '', name: '', qty: '', every_n: 3, every_unit: 'month', last_changed_on: '', note: '' };
@@ -1078,10 +1188,15 @@ async function esLoad(force){
   catch (err) { ES.error = err.message; }
   finally { ES.loading = false; render(); }
 }
+function settingsTabs(cur){
+  const n = rpWaitingCount();
+  return `<div class="tabs" style="margin-bottom:14px"><a class="tab ${cur === 'rules' ? 'on' : ''}" href="#/settings">Rules and lists</a>`
+    + (levelOf('engineering.jobs') === 'edit' ? `<a class="tab ${cur === 'names' ? 'on' : ''}" href="#/settings/report-names">Daily report machine names${n ? ` <span class="badge b-warn" style="padding:1px 7px">${n}</span>` : ''}</a>` : '') + '</div>';
+}
 function viewSettings(){
   if (!ES.list && !ES.error) esLoad();
   const canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
-  const head = pageHead('Settings', 'The numbers behind the Engineering rules. Changes apply from the next check.' + (canEdit ? '' : ' Only people with edit access can change them.'));
+  const head = pageHead('Settings', 'The numbers behind the Engineering rules. Changes apply from the next check.' + (canEdit ? '' : ' Only people with edit access can change them.')) + settingsTabs('rules');
   if (ES.error) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the settings', esc(ES.error), `<button class="btn btn-primary" onclick="esLoad(true)">Try again</button>`)}</div></div>` };
   if (!ES.list) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   const when = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', dateStyle:'medium', timeStyle:'short' }) : '';
@@ -1132,6 +1247,7 @@ function viewSettings(){
   };
 }
 route('/settings', viewSettings);
+route('/settings/report-names', () => viewReport());
 
 
 /* ============================================================
@@ -1401,6 +1517,10 @@ function spOpen(sku){
         if (spare.supplier && letters(spare.supplier) < 2) return setErr('spDesc', 'The supplier needs a name, not only a number (leave it empty if not known).', w);
         if (!spare.location) return setErr('spDesc', 'Choose the location.', w);
         if (!/^\d+(\.\d{1,2})?$/.test(spare.reorder_level) || +spare.reorder_level > 10000) return setErr('spDesc', 'The reorder level must be a number from 0 to 10 000.', w);
+        if (!isNew && v.unit && spare.unit !== v.unit) {
+          if (!(await confirmDialog('Change the unit', `Change the unit of <b>${esc(v.sku)}</b> from <b>${esc(v.unit)}</b> to <b>${esc(spare.unit)}</b>? The stock and the past moves keep their numbers (${num(v.stock || 0)} ${esc(v.unit)} becomes ${num(v.stock || 0)} ${esc(spare.unit)}).`, 'Change the unit'))) return;
+          spare.confirm_unit = true;
+        }
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/save', { method:'POST', body:{ spare } }); close(); toast(isNew ? 'Added ' + r.sku : 'Saved', spare.description, 'ok'); await spLoad(true); }
         catch (err) { setErr('spDesc', err.message, w); sv.disabled = false; }
@@ -1411,8 +1531,48 @@ function spOpen(sku){
 
 /* ---- Receive / issue forms */
 // one delivery: the invoice, supplier and date once, then one line per part
+// a part that is not in the catalogue, typed on a receipt (043): its name, type and unit; the server adds it with the next
+// number of its type and receives it in the same step. The same name next time is the part already there.
+const nlNew = () => ({ name: '', prefix: '', unit: 'pcs', qty: '', price: '', confirm: false });
+const nameKey = t => String(t || "").toLowerCase().replace(/[^a-z0-9]/g, "");     // the same name, whatever the case, spacing or punctuation
+function nameWords(t){ return Array.from(new Set(String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean)
+  .map(w => w.length > 3 && /[a-z]s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w))); }
+function namesAlike(a, b){
+  const wa = nameWords(a), wb = nameWords(b), ka = String(a || '').toLowerCase().replace(/[^a-z0-9]/g, ''), kb = String(b || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!wa.length || !wb.length) return false;
+  if (ka === kb) return true;
+  // the words with digits (sizes, part numbers) must be the same: "Bearing 6205" and "Bearing 6206" are two parts
+  const nums = l => l.filter(x => /[0-9]/.test(x)).sort().join(' ');
+  if (nums(wa) !== nums(wb)) return false;
+  if ((wa.every(x => wb.includes(x)) && wb.every(x => wa.includes(x)))) return true;
+  if (Math.min(ka.length, kb.length) >= 6 && (ka.includes(kb) || kb.includes(ka))) return true;
+  return Math.min(wa.length, wb.length) >= 2 && wa.filter(x => wb.includes(x)).length / Math.max(wa.length, wb.length) >= 0.75;
+}
+const spAlike = nm => (SP.list || []).filter(x => x.active && nameKey(x.description) !== nameKey(nm) && namesAlike(x.description, nm)).slice(0, 3);
+function spNextSku(prefix){ if (!prefix) return ''; const n = Math.max(0, ...(SP.list || []).filter(x => x.sku.slice(0, 2) === prefix).map(x => +x.sku.slice(3) || 0)); return prefix + ' ' + String(n + 1).padStart(3, '0'); }
+function eqNextOther(){ const n = Math.max(0, ...(EQ.list || []).map(a => (/^OTH-(\d+)$/.exec(a.code) || [0, 0])[1] * 1)); return 'OTH-' + String(n + 1).padStart(3, '0'); }
+function nlRows(N){
+  return N.map((l, i) => `<div class="pl-row nl-row">
+    <div class="pl-part"><input class="inp" data-nl-name="${i}" maxlength="160" value="${esc(l.name)}" placeholder="Name of the new part, e.g. Bearing 6205 2RS" aria-label="New part ${i + 1}">
+      <div class="row" style="gap:6px;margin-top:6px;flex-wrap:nowrap"><select class="inp" data-nl-prefix="${i}" aria-label="Type ${i + 1}"><option value="">Type...</option>${Object.entries(SP_TYPES).map(([k, v]) => `<option value="${k}" ${l.prefix === k ? 'selected' : ''}>${k} ${v}</option>`).join('')}</select>
+        <select class="inp" data-nl-unit="${i}" style="width:auto" aria-label="Unit ${i + 1}">${SP_UNITS.map(u => `<option ${l.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
+      <div class="tiny muted" data-nl-info="${i}">${nlInfo(l)}</div>
+      <label class="row small ${l.name && spAlike(l.name.trim()).length ? '' : 'hide'}" data-nl-newwrap="${i}" style="gap:6px;margin-top:4px"><input type="checkbox" data-nl-new="${i}" ${l.confirm ? 'checked' : ''}> It is a new part (not one of those)</label></div>
+    <input class="inp pl-qty" type="number" min="0" step="any" data-nl-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
+    <input class="inp pl-price" type="number" min="0" step="any" data-nl-price="${i}" value="${esc(l.price)}" placeholder="Unit price" aria-label="Unit price ${i + 1}">
+    <button type="button" class="btn btn-ghost btn-sm" data-nl-rm="${i}" aria-label="Remove new part ${i + 1}">${I.x}</button></div>`).join('');
+}
+// what happens to a typed name: the same part (reused), like a part already there (confirm), or new with its code
+function nlInfo(l){
+  const nm = String(l.name || '').trim().replace(/\s+/g, ' '); if (!nm) return 'New: added to the catalogue with the next number of its type.';
+  const same = (SP.list || []).find(x => x.active && nameKey(x.description) === nameKey(nm));
+  if (same) return 'Already in the catalogue as <b>' + esc(same.sku) + '</b>: it is received on that part (next time pick ' + esc(same.sku) + ' from the list).';
+  const alike = spAlike(nm);
+  if (alike.length) return '<span style="color:var(--warn-ink, #92400e)">Looks like ' + alike.map(x => '<b>' + esc(x.sku) + '</b> ' + esc(x.description)).join(', ') + '. If it is one of those, remove this line and pick it in the list above.</span>';
+  return 'New part: it gets the code <b>' + esc(spNextSku(l.prefix) || '(choose the type)') + '</b>. Next time pick it by that code.';
+}
 function spReceive(sku){
-  const x = sku ? spBySku(sku) : null, me = S.me.name, L = [plNew(sku)], opt = { id: 'rcLines', price: true };
+  const x = sku ? spBySku(sku) : null, me = S.me.name, L = [plNew(sku)], opt = { id: 'rcLines', price: true }, N = [];
   openModal({
     title:'Receive parts', size:'wide', sub:'A delivery into the store: one invoice, one line per part. The invoice number and prices come from the supplier\'s invoice.',
     body: `<form novalidate><div class="grid g2">
@@ -1422,19 +1582,48 @@ function spReceive(sku){
       <div class="field"><label for="rcBy">Received by</label><select class="inp" id="rcBy"><option value="">${esc(me)} (me)</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
     </div>
     <div class="field"><span class="lbl">Parts received</span>${plHtml(L, opt)}
-      <div class="hint">${I.info}<span>A part that is not in the catalogue yet: add it first (Add part).</span></div></div>
+      <div data-nl-rows>${nlRows(N)}</div>
+      <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A part not in the catalogue</button>
+      <div class="hint">${I.info}<span>Not in the list? Use "A part not in the catalogue": type its name, type and unit. It is added to the catalogue and remembered.</span></div></div>
     <div class="field"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
     <div class="err-msg hide" data-err="rcInv"></div></form>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Receive</button>`,
     onMount: (w, close) => {
       plBind(w, L, opt);
+      const nbox = $('[data-nl-rows]', w);
+      const wireN = () => {
+        $$('[data-nl-name]', w).forEach(el => { el.oninput = () => { const l = N[+el.dataset.nlName]; l.name = el.value; $(`[data-nl-info="${el.dataset.nlName}"]`, w).innerHTML = nlInfo(l);
+          const wr = $(`[data-nl-newwrap="${el.dataset.nlName}"]`, w); if (wr) wr.classList.toggle('hide', !spAlike(el.value.trim()).length); }; });
+        $$('[data-nl-new]', w).forEach(el => { el.onchange = () => { N[+el.dataset.nlNew].confirm = el.checked; }; });
+        $$('[data-nl-prefix]', w).forEach(el => { el.onchange = () => { const l = N[+el.dataset.nlPrefix]; l.prefix = el.value; $(`[data-nl-info="${el.dataset.nlPrefix}"]`, w).innerHTML = nlInfo(l); }; });
+        $$('[data-nl-unit]', w).forEach(el => { el.onchange = () => { N[+el.dataset.nlUnit].unit = el.value; }; });
+        $$('[data-nl-qty]', w).forEach(el => { el.oninput = () => { N[+el.dataset.nlQty].qty = el.value; }; });
+        $$('[data-nl-price]', w).forEach(el => { el.oninput = () => { N[+el.dataset.nlPrice].price = el.value; }; });
+        $$('[data-nl-rm]', w).forEach(el => { el.onclick = () => { N.splice(+el.dataset.nlRm, 1); nbox.innerHTML = nlRows(N); wireN(); }; });
+      };
+      $('[data-nl-add]', w).onclick = () => { N.push(nlNew()); nbox.innerHTML = nlRows(N); wireN(); const ins = $$('[data-nl-name]', w); ins[ins.length - 1].focus(); };
       const sv = $('[data-save]', w);
       sv.onclick = async () => {
         clearErrors(w);
-        const chk = plCheck(L, opt);
+        const chk = plCheck(L, Object.assign({}, opt, { optional: N.length > 0 }));
         if (chk.error) return setErr('rcInv', chk.error, w);
+        const newLines = [];
+        for (let i = 0; i < N.length; i++) {
+          const l = N[i], n = 'New part ' + (i + 1) + ': ', nm = l.name.trim().replace(/\s+/g, ' ');
+          if (!nm && !String(l.qty).trim()) continue;
+          if (nm.length < 2 || letters(nm) < 2) return setErr('rcInv', n + 'type its name in words.', w);
+          const same = (SP.list || []).find(x => x.active && nameKey(x.description) === nameKey(nm));
+          if (!same && !l.prefix) return setErr('rcInv', n + 'choose its type (MP, EP, PP...).', w);
+          if (!same && !l.confirm && spAlike(nm).length) return setErr('rcInv', n + '"' + nm + '" looks like ' + spAlike(nm).map(x => x.sku + ' ' + x.description).join(', ') + '. Pick that part, or tick "It is a new part".', w);
+          const unit = same ? same.unit : l.unit, whole = !['m', 'L', 'kg'].includes(unit);
+          if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return setErr('rcInv', n + 'enter a quantity above 0' + (whole ? ', in whole ' + unit + '.' : '.'), w);
+          if (!(+l.price > 0)) return setErr('rcInv', n + 'enter the unit price from the invoice.', w);
+          if (chk.lines.some(c => same && c.sku === same.sku) || newLines.some(c => nameKey(c.new.description) === nameKey(nm))) return setErr('rcInv', n + 'this part is listed twice.', w);
+          newLines.push({ new: { description: nm, prefix: l.prefix, unit: l.unit, confirm: !!l.confirm }, qty: String(l.qty).trim(), unit_price: String(l.price).trim() });
+        }
+        if (!chk.lines.length && !newLines.length) return setErr('rcInv', 'Add at least one part.', w);
         const receipt = { invoice_no: $('#rcInv', w).value.trim(), supplier: $('#rcSup', w).value.trim(), date: $('#rcDate', w).value, received_by: $('#rcBy', w).value,
-          note: $('#rcNote', w).value.trim(), lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty, unit_price: l.unit_price })) };
+          note: $('#rcNote', w).value.trim(), lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty, unit_price: l.unit_price })).concat(newLines) };
         if (!receipt.invoice_no || !receipt.supplier) return setErr('rcInv', 'The invoice number and the supplier are needed.', w);
         if (receipt.invoice_no.length < 2 || !/[A-Za-z0-9]/.test(receipt.invoice_no)) return setErr('rcInv', 'Give the invoice number as on the invoice.', w);
         if (letters(receipt.supplier) < 2) return setErr('rcInv', 'Give the supplier\'s name.', w);
@@ -1444,7 +1633,8 @@ function spReceive(sku){
         if (odd.length && !(await confirmDialog('Check the price', 'Far from the last price:<br>' + odd.map(esc).join('<br>') + '<br>Is it right?', 'Yes, it is right'))) return;
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/receipt', { method:'POST', body:{ receipt } }); close();
-              toast('Received ' + receipt.lines.length + ' part' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', '), 'ok'); await spRefresh(); }
+              toast('Received ' + receipt.lines.length + ' part' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', ')
+                + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ' given: ' + r.added.map(a => a.sku + ' = ' + a.description).join(', ') + '. Pick ' + (r.added.length === 1 ? 'it' : 'them') + ' by that code next time.' : ''), 'ok', 12000); await spRefresh(); }
         catch (err) { setErr('rcInv', err.message, w); sv.disabled = false; }
       };
     },
@@ -1459,7 +1649,8 @@ function spIssue(sku){
       <div class="field" style="grid-column:1/-1"><label for="isAsset">For which equipment</label><input class="inp" id="isAsset" list="isAssets" placeholder="Type a machine, AHU, utility..."><datalist id="isAssets">${spAssetOptions()}</datalist>
         <label class="row small" style="gap:6px;margin-top:6px"><input type="checkbox" id="isOther"> Other: not in the list (an office AC, a fan...)</label>
         <div id="isOtherRow" class="hide" style="margin-top:6px"><input class="inp" id="isOtherName" maxlength="80" placeholder="Name it, e.g. Office AC, QA room">
-          <div class="tiny muted" style="margin-top:4px">Kept as equipment of type "Other": next time it is in the list.</div></div></div>
+          <div class="tiny muted" style="margin-top:4px" id="isOtherInfo">Kept as equipment of type "Other" with its own code: next time it is in the list.</div>
+          <label class="row small hide" id="isOtherNewWrap" style="gap:6px;margin-top:4px"><input type="checkbox" id="isOtherNew"> It is new equipment (not one of those)</label></div></div>
       <div class="field"><label for="isWho">Collected by</label><select class="inp" id="isWho"><option value="">Choose...</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
       <div class="field"><label for="isDate">Date</label><input class="inp" id="isDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
     </div>
@@ -1471,6 +1662,16 @@ function spIssue(sku){
       plBind(w, L, opt);
       const other = $('#isOther', w);
       other.onchange = () => { $('#isOtherRow', w).classList.toggle('hide', !other.checked); $('#isAsset', w).disabled = other.checked; if (other.checked) $('#isOtherName', w).focus(); };
+      // what the typed name becomes: the equipment already there (reused), like one there (confirm), or new with its code
+      const eqAlike = nm => (EQ.list || []).filter(a => a.status === 'Active' && nameKey(a.name) !== nameKey(nm) && namesAlike(a.name, nm)).slice(0, 3);
+      $('#isOtherName', w).oninput = e => {
+        const nm = e.target.value.trim().replace(/\s+/g, ' '), same = (EQ.list || []).find(a => a.status === 'Active' && nameKey(a.name) === nameKey(nm)), al = nm ? eqAlike(nm) : [];
+        $('#isOtherInfo', w).innerHTML = !nm ? 'Kept as equipment of type "Other" with its own code: next time it is in the list.'
+          : same ? 'Already in the list as <b>' + esc(same.code) + '</b>: that one is used.'
+          : al.length ? 'Looks like ' + al.map(a => '<b>' + esc(a.code) + '</b> ' + esc(a.name)).join(', ') + '. If it is one of those, untick "Other" and pick it.'
+          : 'New: it gets the code <b>' + esc(eqNextOther()) + '</b>. Next time pick it from the list.';
+        $('#isOtherNewWrap', w).classList.toggle('hide', !!same || !al.length);
+      };
       const sv = $('[data-save]', w);
       sv.onclick = async () => {
         clearErrors(w);
@@ -1481,8 +1682,13 @@ function spIssue(sku){
         if (other.checked) {
           const nm = $('#isOtherName', w).value.trim().replace(/\s+/g, ' ');
           if (nm.length < 2 || letters(nm) < 2) return setErr('isAsset', 'Name the equipment, e.g. "Office AC, QA room".', w);
-          const same = (EQ.list || []).find(a => a.status === 'Active' && a.name.toLowerCase() === nm.toLowerCase());
-          if (same) issue.asset = same.code; else issue.asset_other = nm;
+          const same = (EQ.list || []).find(a => a.status === 'Active' && nameKey(a.name) === nameKey(nm));
+          if (same) issue.asset = same.code;
+          else {
+            const al = (EQ.list || []).filter(a => a.status === 'Active' && namesAlike(a.name, nm));
+            if (al.length && !$('#isOtherNew', w).checked) return setErr('isAsset', '"' + nm + '" looks like ' + al.slice(0, 3).map(a => a.name + ' (' + a.code + ')').join(', ') + '. Pick that one, or tick "It is new equipment".', w);
+            issue.asset_other = nm; issue.asset_other_confirm = al.length > 0;
+          }
         } else {
           issue.asset = spAssetFrom($('#isAsset', w).value);
           if (!(EQ.list || []).some(a => a.code === issue.asset)) return setErr('isAsset', 'Pick the equipment from the list, or tick "Other" and name it.', w);
@@ -1491,7 +1697,7 @@ function spIssue(sku){
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/issue', { method:'POST', body:{ issue } }); close();
               toast('Issued ' + issue.lines.length + ' part' + (issue.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', ')
-                + (r.asset_created ? ' · ' + issue.asset_other + ' added to the equipment list' : ''), 'ok');
+                + (r.asset_created ? ' · new code ' + r.asset_created + ' given to "' + issue.asset_other + '". Next time pick ' + r.asset_created + ' from the list.' : ''), 'ok', r.asset_created ? 12000 : 5000);
               if (r.asset_created) eqLoad(true);
               await spRefresh(); }
         catch (err) { setErr('isAsset', err.message, w); sv.disabled = false; }
@@ -1738,9 +1944,33 @@ const jbWhen = j => j.source === 'report' ? whenText(j.stopped_since || j.starte
 const minsBetween = (a, b) => (a ? Math.max(0, Math.round(((b ? new Date(b) : new Date()) - new Date(a)) / 60000)) : null);
 function dur(m){ if (m == null) return '--'; if (m < 60) return m + ' min'; const h = Math.floor(m / 60); return h + ' h ' + String(m % 60).padStart(2, '0') + ' min'; }
 function jbMe(){ return (JB.board && JB.board.me) || {}; }
+// a clock that counts up on screen (7 Nov 2026: "Repair so far" should count): <span data-since=ISO [data-sec]>
+function durSec(s){ s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60;
+  return (h ? h + ' h ' + String(m).padStart(2, '0') + ' min ' : m + ' min ') + String(x).padStart(2, '0') + ' s'; }
+const liveDur = (since, sec) => since ? `<span class="live-dur" data-since="${esc(since)}"${sec ? ' data-sec' : ''}>${sec ? durSec((Date.now() - new Date(since)) / 1000) : dur(minsBetween(since))}</span>` : '--';
+setInterval(() => document.querySelectorAll('.live-dur[data-since]').forEach(el => {
+  const t = new Date(el.dataset.since); if (isNaN(t)) return;
+  el.textContent = el.hasAttribute('data-sec') ? durSec((Date.now() - t) / 1000) : dur(minsBetween(el.dataset.since));
+}), 1000);
+// when a card's clock started (null: the card shows a fixed figure)
+function jbClockSince(j){
+  if (j.status === 'called' || j.status === 'accepted') return j.called_at || j.created_at;
+  if (j.status === 'waiting_part') return j.waiting_since;
+  if (j.status === 'working') return j.started_at || j.arrived_at;
+  return null;
+}
 function jbOnIt(j){ return (j.technicians || []).some(t => t.enroll_id === jbMe().enroll_id); }
-// one tab per job: a job you are on is under My jobs only, not also under Calls or Other open jobs
-function jbList(k){ const l = (JB.board || {})[k] || []; return k === 'calls' || k === 'open' ? l.filter(j => !jbOnIt(j)) : l; }
+/* Three tabs (043, user: fewer tabs for phones): Calls = the calls from the live floor app; Other jobs = everything else that
+   is open (jobs started here, PMs, issues from the daily report to fill in); History. Jobs you are on come first in each,
+   and "Only mine" narrows the list. Old links (?tab=mine, open, reports) land on Other jobs. */
+function jbList(k){
+  const b = JB.board || {};
+  const l = k === 'calls' ? (b.calls || []) : (b.open || []).concat(b.reports || []);
+  const mine = l.filter(jbOnIt), rest = l.filter(j => !jbOnIt(j));
+  return JB.onlyMine ? mine : mine.concat(rest);
+}
+const jbCallsWaiting = () => ((JB.board || {}).calls || []).filter(j => j.status === 'called').length;
+function jbTabOf(){ const t = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || 'calls'; return t === 'history' ? 'history' : t === 'calls' ? 'calls' : 'other'; }
 function jbBadge(j){
   const who = j.accepted_by_name ? (j.accepted_by === jbMe().enroll_id ? 'you' : j.accepted_by_name) : '';
   const working = (j.technicians || []).map(t => t.enroll_id === jbMe().enroll_id ? 'you' : t.name).join(', ');
@@ -1777,9 +2007,9 @@ function jbAutoRefresh(on){
   if (on) JB.timer = setInterval(() => { if (currentPath().split('?')[0] === '/jobs' && !document.querySelector('#layers .overlay') && !JB.draft) jbLoad(true); else if (!/^\/jobs/.test(currentPath())) jbAutoRefresh(false); }, 30000);
 }
 function jbTabs(cur){
-  const n = k => jbList(k).length, open = jbList('calls').filter(j => j.status === 'called').length;
-  const tabs = [['calls', 'Calls', n('calls'), open], ['mine', 'My jobs', n('mine')], ['open', 'Other open jobs', n('open')], ['reports', 'From the daily report', n('reports'), n('reports')], ['history', 'History']];
-  return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k, l, c, warn]) => `<a class="tab ${k === cur ? 'on' : ''}" href="#/jobs${k === 'calls' ? '' : '?tab=' + k}">${esc(l)}${c != null ? ` <span class="badge ${warn ? 'b-warn' : ''}" style="padding:1px 7px">${c}</span>` : ''}</a>`).join('')}</div>`;
+  const b = JB.board || {}, nCalls = (b.calls || []).length, nOther = (b.open || []).length + (b.reports || []).length;
+  const tabs = [['calls', 'Calls', JB.board ? nCalls : null, jbCallsWaiting()], ['other', 'Other jobs', JB.board ? nOther : null, (b.reports || []).filter(j => !jbOnIt(j)).length], ['history', 'History']];
+  return `<div class="tabs jb-tabs" style="margin-bottom:14px">${tabs.map(([k, l, c, warn]) => `<a class="tab ${k === cur ? 'on' : ''}" href="#/jobs${k === 'calls' ? '' : '?tab=' + k}">${esc(l)}${c != null ? ` <span class="badge ${warn ? 'b-warn' : ''}" style="padding:1px 7px">${c}</span>` : ''}</a>`).join('')}</div>`;
 }
 function jbCard(j){
   const me = jbMe(), mine = jbOnIt(j), canAct = levelOf('engineering.jobs') && ['submit', 'edit'].includes(levelOf('engineering.jobs')) && me.staff;
@@ -1788,12 +2018,12 @@ function jbCard(j){
   else if (canAct && j.status === 'accepted' && mine) btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); jbDo('${esc(j.job_id)}', 'arrive')">Start job</button>`;
   else if (canAct && j.status === 'to_report') btn = `<button class="btn btn-primary btn-block" onclick="event.stopPropagation(); go('/jobs/${esc(j.job_id)}')">Fill in what was done</button>`;
   if (j.status === 'to_report') {
-    const what = [j.area, j.report_product, 'down ' + dur(j.downtime_minutes)].filter(Boolean).map(esc).join(' · ');
+    const what = ['From the daily report', j.area, j.report_product, 'down ' + dur(j.downtime_minutes)].filter(Boolean).map(esc).join(' · ');
     return `<div class="card job-card" onclick="go('/jobs/${esc(j.job_id)}')"><div class="card-b">
       <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div class="strong" style="font-size:16px">${esc(j.machine_name || j.asset)}</div>
         <div class="mono small muted" style="white-space:nowrap">${esc(lagosDay(j.started_at).slice(0, 10))}</div></div>
       <div class="small" style="margin:4px 0 2px">${esc(j.call_note || j.stop_reason || '')}</div><div class="small muted" style="margin-bottom:10px">${what}</div>
-      <div class="row" style="gap:10px;margin-bottom:${btn ? '12px' : '0'}">${jbBadge(j)}<span class="mono tiny muted" style="margin-left:auto">${esc(j.job_id)}</span></div>${btn}</div></div>`;
+      <div class="row" style="gap:10px;margin-bottom:${btn ? '12px' : '0'}">${jbBadge(j)}${mine ? '<span class="badge b-brand">You are on it</span>' : ''}<span class="mono tiny muted" style="margin-left:auto">${esc(j.job_id)}</span></div>${btn}</div></div>`;
   }
   const where = [j.area || j.stage, j.source === 'console' ? JOB_TYPE[j.type] : (j.stop_reason || JOB_TYPE[j.type]), j.called_by_name].filter(Boolean).map(esc).join(' · ');
   return `<div class="card job-card" onclick="go('/jobs/${esc(j.job_id)}')">
@@ -1801,7 +2031,7 @@ function jbCard(j){
       <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div class="strong" style="font-size:16px">${esc(j.machine_name || j.asset || j.machine_code)}</div>
         <div class="mono small muted" style="white-space:nowrap">${j.called_at ? 'called ' + hm(j.called_at) : 'started ' + hm(j.started_at || j.created_at)}</div></div>
       <div class="small muted" style="margin:4px 0 10px">${where}</div>
-      <div class="row" style="gap:10px;margin-bottom:${btn ? '12px' : '0'}">${jbBadge(j)}<span class="mono strong">${dur(jbClock(j))}</span><span class="mono tiny muted" style="margin-left:auto">${esc(j.job_id)}</span></div>
+      <div class="row" style="gap:10px;margin-bottom:${btn ? '12px' : '0'}">${jbBadge(j)}${mine && j.status !== 'working' ? '<span class="badge b-brand">You are on it</span>' : ''}<span class="mono strong">${jbClockSince(j) ? liveDur(jbClockSince(j)) : dur(jbClock(j))}</span><span class="mono tiny muted" style="margin-left:auto">${esc(j.job_id)}</span></div>
       ${btn}
     </div></div>`;
 }
@@ -1816,38 +2046,57 @@ function jbPushBanner(){
     <button class="btn btn-primary btn-sm" onclick="pushTurnOn()">Turn on notifications</button></div>`;
 }
 function viewJobs(){
-  const tab = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab') || 'calls';
+  const tab = jbTabOf();
+  JB.backTo = tab === 'calls' ? '/jobs' : '/jobs?tab=' + tab;     // a job opened from here goes back here when it is closed (043)
   if (tab === 'history') return viewJobsHistory();
   if (!JB.board && !JB.error) jbLoad();
-  JB.draft = null; JB.cat = null; jbAutoRefresh(true); pushCheck();
-  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs')), mgr = levelOf('engineering.jobs') === 'edit';
-  const head = pageHead('Calls and jobs', 'Maintenance calls from the floor and the jobs Engineering is working on. This page refreshes by itself.',
-    (mgr ? `<button class="btn btn-ghost" onclick="go('/jobs/report')">${I.download} Report machine names</button>` : '')
-    + (canStart ? `<button class="btn btn-ghost" onclick="go('/jobs/record')">${I.check} Record finished work</button><button class="btn btn-primary" onclick="go('/jobs/new')">${I.plus} Start a job</button>` : ''));
+  JB.draft = null; JB.cat = null; JB.techs = null; jbAutoRefresh(true); pushCheck();
+  const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
+  const head = pageHead('Calls and jobs', 'Calls from the floor and the other jobs Engineering is working on. Tap a job to fill in what was done. This page refreshes by itself.',
+    canStart ? `<button class="btn btn-primary" onclick="go('/jobs/new')">${I.plus} New job</button>` : '');
   if (JB.error) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the jobs', esc(JB.error), `<button class="btn btn-primary" onclick="jbLoad(true)">Try again</button>`)}</div></div>` };
-  if (!JB.board) return { title:'Calls and jobs', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (!JB.board) return { title:'Calls and jobs', crumb:'Maintenance', html: head + jbTabs(tab) + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   const b = JB.board, list = jbList(tab);
   const me = b.me || {};
   const notStaff = canStart && !me.staff ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>Your account is not linked to an Engineering employee, so you can look but not take calls. Ask an admin to link it (Users).</div></div>` : '';
-  const open = (b.calls || []).filter(j => j.status === 'called');
-  const sum = tab === 'calls' ? `<div class="small" style="margin-bottom:10px"><span class="badge ${open.length ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${(b.calls || []).length} open call${(b.calls || []).length === 1 ? '' : 's'} · ${open.length} not accepted yet${(b.calls || []).length > list.length ? ' · ' + ((b.calls || []).length - list.length) + ' yours, under My jobs' : ''}</span>
-    <span class="muted"> updated ${hm(b.now)}</span></div>` : '';
-  const empty = { calls: 'No open calls for you to take. New calls from the floor appear here.', mine: 'You are not on any open job.', open: 'No other open jobs.',
-                  reports: 'Nothing to report. Machine stops from the OKL daily packaging report e-mail (all products but Zaiki and Mintacid) appear here for you to fill in, for 7 days; older ones are in History.' }[tab];
+  const all = tab === 'calls' ? (b.calls || []) : (b.open || []).concat(b.reports || []), mineN = all.filter(jbOnIt).length;
+  const waiting = jbCallsWaiting(), toFill = (b.reports || []).length;
+  const sum = `<div class="row jb-sum" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      ${tab === 'calls' ? `<span class="badge ${waiting ? 'b-warn' : 'b-ok'}"><span class="dot"></span>${all.length} open call${all.length === 1 ? '' : 's'} · ${waiting} not accepted yet</span>`
+        : `<span class="badge"><span class="dot"></span>${all.length} open${toFill ? ' · ' + toFill + ' from the daily report to fill in' : ''}</span>`}
+      ${me.staff ? `<button type="button" class="chip ${JB.onlyMine ? 'on' : ''}" data-only-mine>Only mine (${mineN})</button>` : ''}
+      <span class="small muted" style="margin-left:auto">updated ${hm(b.now)}</span></div>`;
+  const empty = JB.onlyMine ? 'You are not on any of these. Clear "Only mine" to see them all.'
+    : tab === 'calls' ? 'No open calls. New calls from the live floor app appear here.'
+    : 'No other open jobs. Jobs started here, PMs in progress and the machine stops from the daily packaging report (to fill in, for 3 days) appear here.';
   return {
     title:'Calls and jobs', crumb:'Maintenance', keepScroll: true,
     html: head + jbPushBanner() + notStaff + jbTabs(tab) + sum
-      + (tab === 'reports' && list.length ? `<div class="small muted" style="margin-bottom:10px">Issues from the daily packaging report. Open one, say what failed and what was done, and save it.</div>` : '')
       + (list.length ? `<div class="grid g3 job-grid">${list.map(jbCard).join('')}</div>` : `<div class="card"><div class="card-b">${emptyState('wrench', empty, '')}</div></div>`),
+    bind(){ const m = $('[data-only-mine]'); if (m) m.onclick = () => { JB.onlyMine = !JB.onlyMine; render(); }; },
   };
 }
 route('/jobs', viewJobs);
 
-async function jbDo(id, action, extra){
+// where a job goes back to: the list it was opened from (Calls, Other jobs, PM...), else by its kind (043)
+function jbBackPath(j){
+  if (/^\/pm\/jobs\//.test(currentPath())) return JB.backTo && /^\/pm/.test(JB.backTo) ? JB.backTo : '/pm';
+  if (JB.backTo) return JB.backTo;
+  return j && j.source === 'call' ? '/jobs' : j && j.type === 'preventive' ? '/pm' : '/jobs?tab=other';
+}
+const BACK_LABEL = p => /^\/pm\/effectiveness/.test(p) ? 'PM effectiveness' : /^\/pm/.test(p) ? 'Preventive maintenance' : /^\/equipment/.test(p) ? 'Equipment'
+  : /^\/checks/.test(p) ? 'Periodic checks' : /^\/rca/.test(p) ? 'RCA' : /tab=other/.test(p) ? 'Other jobs' : /tab=history/.test(p) ? 'History' : 'Calls';
+// leave: after closing, cancelling or "Save for later" the person is taken back to that list (043: staying on the job confused people)
+async function jbDo(id, action, extra, leave){
   try {
     const r = await api('/webhook/engineering/api/jobs/action', { method:'POST', body: Object.assign({ id, action }, extra || {}) });
     JB.one[id] = r.job; RC.data = null;   // closing a job can start an RCA: load the list again
-    toast({ accept: 'On your jobs', arrive: 'Started', wait: 'Waiting for the part', resume: 'Back on it', done: 'Job closed', cancel: 'Job cancelled', save: 'Saved', reopen: 'Reopened' }[action] || 'Done', r.job.job_id, 'ok');
+    if (['done', 'cancel', 'save'].includes(action)) { JB.cat = null; JB.techs = null; }
+    const back = jbBackPath(r.job);
+    toast({ accept: 'On your jobs', arrive: 'Started', wait: 'Waiting for the part', resume: 'Back on it', done: 'Job closed', cancel: 'Job cancelled', save: 'Saved', reopen: 'Reopened' }[action] || 'Done',
+      r.job.job_id + (leave ? ' · back to ' + BACK_LABEL(back) : ''), 'ok');
+    if (r.job.type === 'preventive') PM.data = null;
+    if (leave) { JB.board = null; go(back); jbLoad(true); return r.job; }
     await jbLoad(true);
     if (action === 'accept' || action === 'arrive') go('/jobs/' + id);
     return r.job;
@@ -1861,7 +2110,9 @@ async function jbLoadOne(id){
   render();
 }
 function viewJob(params, ctx){
-  const id = params.id, from = ctx || { back: '/jobs', label: 'Calls and jobs' };
+  const id = params.id;
+  if (ctx && !(JB.backTo && /^\/pm/.test(JB.backTo))) JB.backTo = ctx.back;     // /pm/jobs/... opened from a link: back to PM effectiveness
+  const from = { back: jbBackPath(JB.one[id]), label: BACK_LABEL(jbBackPath(JB.one[id])) };
   if (!SP.list && !SP.loading) spLoad();
   if (!EQ.list && !EQ.loading) eqLoad();
   if (!JB.board && !JB.loading) jbLoad();
@@ -1895,6 +2146,12 @@ function viewJob(params, ctx){
   if (j.finished_at && !fromRep) tl.push([`Closed${j.closed_by ? ' by ' + j.closed_by : ''}`, dayHm(j.finished_at)]);
   else if (fromRep && j.status === 'done') tl.push(['Closed', j.closed_by ? 'by ' + j.closed_by : 'as history']);
   const dis = canWrite && j.status !== 'called' && j.status !== 'accepted' ? '' : 'disabled';
+  // who worked on it (043): the people on the job, plus you on a daily-report issue; kept until the job is saved
+  const people = (SP.people || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  // (worked out again when "who I am" arrives late, until someone is tapped)
+  if (!JB.techs || JB.techs.id !== id || JB.techs.at !== j.updated_at || (!JB.techs.touched && !JB.techs.me && me.enroll_id))
+    JB.techs = { id, at: j.updated_at, me: !!me.enroll_id, list: (j.technicians || []).map(t => t.enroll_id).concat(rep && me.staff && !onIt ? [me.enroll_id] : []) };
+  const techs = JB.techs.list;
   const pmParts = (j.pm_parts || []).filter(p => p.sku && !(j.parts || []).some(m => m.sku === p.sku && m.status !== 'cancelled'));
   const parts = (j.parts || []).filter(p => p.status !== 'cancelled');
   const partStatus = p => p.reversed_by ? '<span class="badge b-slate">Reversed</span>' : p.status === 'waiting' ? '<span class="badge b-warn">Waiting hand-over</span>' : '<span class="badge b-ok">Handed over</span>';
@@ -1904,7 +2161,7 @@ function viewJob(params, ctx){
   else if (can && me.staff && j.status === 'accepted') actions = `<button class="btn btn-primary btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Start job (I'm at the machine)</button>`;
   else if (canWrite && rep) actions = `<button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">${I.check} Save and close</button>`;
   else if (can && me.staff && !onIt && (j.status === 'working' || j.status === 'waiting_part')) actions = `<button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'arrive')">Join this job</button>`;
-  else if (canWrite && j.status === 'working') actions = `<button class="btn btn-ghost btn-lg" onclick="jbWait('${esc(id)}')">Waiting for part</button><button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">Job done</button>`;
+  else if (canWrite && j.status === 'working') actions = `${isCall ? `<button class="btn btn-ghost btn-lg" onclick="jbWait('${esc(id)}')">Waiting for part</button>` : ''}<button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">Job done</button>`;
   else if (canWrite && j.status === 'waiting_part') actions = `<button class="btn btn-ghost btn-lg" onclick="jbDo('${esc(id)}', 'resume')">Back on it</button><button class="btn btn-primary btn-lg" onclick="jbSave('${esc(id)}', 'done')">Job done</button>`;
   else if (mgr && j.status === 'done') actions = `<button class="btn btn-ghost" onclick="jbDo('${esc(id)}', 'reopen')">Reopen</button><button class="btn btn-primary" onclick="jbSave('${esc(id)}', 'save')">${I.check} Save changes</button>`;
   return {
@@ -1921,9 +2178,9 @@ function viewJob(params, ctx){
     </div></div>
     ${rcJobBanner(j.job_id)}
     <div class="grid g2" style="margin-bottom:14px">
-      ${isCall ? `<div class="stat"><div class="lbl">${j.arrived_at ? 'Waited for a technician' : 'Waiting for a technician'}</div><div class="val mono">${dur(waited)}</div></div>` : ''}
+      ${isCall ? `<div class="stat"><div class="lbl">${j.arrived_at ? 'Waited for a technician' : 'Waiting for a technician'}</div><div class="val mono">${j.arrived_at || closed ? dur(waited) : liveDur(j.called_at, true)}</div></div>` : ''}
       ${fromRep ? `<div class="stat"><div class="lbl">Machine down (from the report)</div><div class="val mono">${dur(j.downtime_minutes)}</div></div>`
-        : `<div class="stat"><div class="lbl">${j.finished_at ? 'Repair time' : 'Repair so far'}</div><div class="val mono">${j.started_at || j.arrived_at ? dur(repair) : '--'}</div></div>`}
+        : `<div class="stat"><div class="lbl">${j.finished_at ? 'Repair time' : 'Repair so far'}</div><div class="val mono">${!(j.started_at || j.arrived_at) ? '--' : j.finished_at || closed ? dur(repair) : liveDur(j.started_at || j.arrived_at, true)}</div></div>`}
     </div>
     <div class="card" style="margin-bottom:14px"><div class="card-b">${tl.map(([a, b]) => `<div class="row between small" style="padding:4px 0;border-bottom:1px solid var(--line-2)"><span>${esc(a)}</span><span class="mono strong">${esc(b)}</span></div>`).join('') || '<span class="small muted">Nothing yet.</span>'}
       ${(j.technicians || []).length ? `<div class="small" style="margin-top:8px"><b>On the job:</b> ${j.technicians.map(t => esc(t.name)).join(', ')}</div>` : ''}</div></div>
@@ -1935,6 +2192,8 @@ function viewJob(params, ctx){
         <div class="card-b" id="jbChk">${chkHtml(checks, JB.chk.S, dis)}</div></div>` : ''}
       <div class="field"><label for="jbDone">${checks.length ? 'Anything else done? (optional)' : 'What was done?'}</label><textarea class="inp" id="jbDone" rows="3" maxlength="2000" ${dis} placeholder="${checks.length ? 'e.g. Also changed the belt' : 'e.g. Replaced the seal kit and tested ten cycles'}">${esc(j.work_done === 'PM checklist completed.' ? '' : (j.work_done || ''))}</textarea></div>
       ${j.type === 'breakdown' ? `<div class="field"><label for="jbCause">Cause (optional)</label><input class="inp" id="jbCause" maxlength="1000" ${dis} placeholder="e.g. Air cylinder seal worn" value="${esc(j.cause || '')}"></div>` : ''}
+      ${people.length && !dis ? `<div class="field"><span class="lbl">Who worked on it?</span><div class="row jb-people" style="gap:6px">${people.map(p => `<button type="button" class="chip big-chip ${techs.includes(p.enroll_id) ? 'on' : ''}" data-tech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div>
+        <div class="tiny muted" style="margin-top:4px">Optional: tap the others who worked on it (tap again to take someone off). Alone? Leave it as it is.</div></div>` : ''}
       <div class="err-msg hide" data-err="jbDone"></div>
     </form>
     <div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>Parts used <span class="muted" style="font-weight:500">(optional)</span></h3>
@@ -1948,25 +2207,28 @@ function viewJob(params, ctx){
         : '<span class="small muted">None added.</span>'}</div></div>
     ${isCall && !closed ? `<div class="small muted" style="margin-bottom:10px">The operator restarts the machine on the floor. Closing the job here does not.</div>` : ''}
     <div class="row job-actions" style="gap:10px">${actions}
-      ${canWrite && !closed && j.status !== 'called' && j.status !== 'accepted' ? `<button class="btn btn-ghost" onclick="jbSave('${esc(id)}', 'save')">Save for later</button>` : ''}
+      ${canWrite && !closed && !rep && j.status !== 'called' && j.status !== 'accepted' ? `<button class="btn btn-ghost" onclick="jbSave('${esc(id)}', 'save')">Save, finish later</button>` : ''}
       ${can && !closed && (onIt || mgr || j.status === 'called') && !(isCall && j.status !== 'called' && !mgr) ? `<button class="btn btn-ghost" style="margin-left:auto" onclick="jbCancel('${esc(id)}')">Cancel job</button>` : ''}
     </div>`,
     bind(){
       // the pick is kept until the job is saved (a redraw must not drop it)
       $$('[data-cat]').forEach(b => b.onclick = () => { if (b.disabled) return; JB.cat = { id, at: j.updated_at, c: b.dataset.cat }; $$('[data-cat]').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
+      $$('.jb-people [data-tech]').forEach(b => b.onclick = () => { const k = b.dataset.tech, L = JB.techs.list; JB.techs.touched = true;
+        JB.techs.list = L.includes(k) ? L.filter(x => x !== k) : L.concat(k); b.classList.toggle('on', JB.techs.list.includes(k)); });
       chkBind($('#jbChk'), checks, JB.chk.S, dis);
     },
   };
 }
-route('/jobs/:id', params => params.id === 'new' ? viewJobNew() : params.id === 'record' ? viewJobNew({ mode: 'record' }) : params.id === 'report' ? viewReport() : viewJob(params));
+route('/jobs/:id', params => params.id === 'new' ? viewJobNew() : params.id === 'record' ? viewJobNew({ mode: 'record' })
+  : params.id === 'report' ? (location.replace('#/settings/report-names'), { title:'Settings', crumb:'Setup', html:'' }) : viewJob(params));
 route('/pm/jobs/:id', params => viewJob(params, { back: '/pm/effectiveness', label: 'PM effectiveness' }));
 
 function jbFormValues(){
   const cat = $('[data-cat].on'), a = $('#jbAsset');
   return { failure_category: cat ? cat.dataset.cat : '', cause: ($('#jbCause') || {}).value || '', work_done: ($('#jbDone') || {}).value || '',
-           asset: a ? spAssetFrom(a.value) : undefined };
+           asset: a ? spAssetFrom(a.value) : undefined, technicians: $('.jb-people') && JB.techs ? JB.techs.list.slice() : undefined };
 }
-async function jbSave(id, action){
+async function jbSave(id, action, opts){
   const v = jbFormValues(), j = JB.one[id] || {};
   clearErrors(document);
   const checks = j.checks || [];
@@ -1984,21 +2246,32 @@ async function jbSave(id, action){
     if (!ok) return;
   }
   if (v.asset === '') delete v.asset;
-  try { await jbDo(id, action, v); } catch (e) { setErr('jbDone', e.message); }
+  if (v.technicians && !v.technicians.length) delete v.technicians;     // nobody picked: the people already on it stay (optional, 7 Nov)
+  // closing and "Save for later" go back to the list the job came from (043)
+  try { await jbDo(id, action, v, !(opts && opts.stay)); } catch (e) { setErr('jbDone', e.message); }
 }
 function jbWait(id){
   openModal({ title:'Waiting for part', size:'narrow', sub:'The floor sees "waiting for part" on the machine.',
     body:`<div class="field"><label for="jwNote">Which part? (optional)</label><input class="inp" id="jwNote" maxlength="300" placeholder="e.g. Seal kit from the store"></div>`,
     footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn btn-primary" data-save>Waiting for part</button>`,
-    onMount: (w, close) => { $('[data-save]', w).onclick = async () => { close(); try { await jbSave(id, 'save'); await jbDo(id, 'wait', { note: $('#jwNote', w).value.trim() }); } catch (e) { /* toast shown */ } }; } });
+    onMount: (w, close) => { $('[data-save]', w).onclick = async () => { const note = $('#jwNote', w).value.trim(); close(); try { await jbSave(id, 'save', { stay: true }); await jbDo(id, 'wait', { note }, true); } catch (e) { /* toast shown */ } }; } });
 }
+const CANCEL_WHY = ['Opened by mistake', 'Twice: another job covers it', 'Machine running again, nothing to fix', 'Not an Engineering job', 'Other'];
 function jbCancel(id){
-  openModal({ title:'Cancel job ' + id, size:'narrow', sub:'Parts waiting for the hand-over are cancelled with it.',
-    body:`<div class="field"><label for="jcWhy">Why?</label><input class="inp" id="jcWhy" maxlength="300" placeholder="e.g. opened by mistake"></div><div class="err-msg hide" data-err="jcWhy"></div>`,
+  let pick = '';
+  openModal({ title:'Cancel job ' + id, size:'narrow', sub:'A cancelled job goes to History with its reason. Parts waiting for the hand-over are cancelled with it.',
+    body:`<div class="field"><span class="lbl">Why is it cancelled?</span><div class="row" style="gap:6px">${CANCEL_WHY.map(r => `<button type="button" class="chip big-chip" data-why="${esc(r)}">${esc(r)}</button>`).join('')}</div></div>
+      <div class="field"><label for="jcWhy">More detail <span class="muted" data-why-opt>(optional)</span></label><input class="inp" id="jcWhy" maxlength="250" placeholder="e.g. EJ-02480 is the same breakdown"></div><div class="err-msg hide" data-err="jcWhy"></div>`,
     footer:`<button class="btn btn-ghost" data-close>Back</button><button class="btn btn-danger" data-save>Cancel the job</button>`,
-    onMount: (w, close) => { $('[data-save]', w).onclick = async () => {
-      clearErrors(w); const reason = $('#jcWhy', w).value.trim(); if (reason.length < 5) return setErr('jcWhy', 'Say why.', w);
-      try { await jbDo(id, 'cancel', { reason }); close(); } catch (e) { setErr('jcWhy', e.message, w); } }; } });
+    onMount: (w, close) => {
+      $$('[data-why]', w).forEach(b => b.onclick = () => { pick = b.dataset.why; $$('[data-why]', w).forEach(x => x.classList.toggle('on', x === b));
+        $('[data-why-opt]', w).textContent = pick === 'Other' ? '(say why)' : '(optional)'; });
+      $('[data-save]', w).onclick = async () => {
+        clearErrors(w); const more = $('#jcWhy', w).value.trim();
+        if (!pick) return setErr('jcWhy', 'Pick why it is cancelled.', w);
+        if (pick === 'Other' && more.length < 5) return setErr('jcWhy', 'Say why it is cancelled.', w);
+        const reason = pick === 'Other' ? more : pick + (more ? ': ' + more : '');
+        try { await jbDo(id, 'cancel', { reason }, true); close(); } catch (e) { setErr('jcWhy', e.message, w); } }; } });
 }
 function jbAddPart(id, fromPlan){
   const j = JB.one[id] || {};
@@ -2027,13 +2300,13 @@ async function jbRemovePart(id, moveId){
   catch (e) { toast('Could not remove it', e.message, 'err', 7000); }
 }
 
-/* ---- jobs without a call. Each kind has its own address and goes back where it came from (round 3, 29 Oct 2026):
-     /jobs/new        Start a job: work starting now (a breakdown found on a round, corrective, inspection, improvement)
-     /jobs/record     Record finished work: work already done, with its date, start and finish time
-     /pm/record       a PM: starting now (the checklist is filled in on the job), or already finished (the checklist is here)
-   A call from the floor is only ever started from the call itself ("I'm coming", then "Start job").
-   ?asset= preselects the equipment. Dates and times are separate boxes (easier on a phone). */
-const JN_TYPES = [['breakdown', 'Breakdown'], ['corrective', 'Corrective'], ['inspection', 'Inspection'], ['improvement', 'Improvement']];
+/* ---- a job without a call: one page, "New job" (7 Nov 2026, user: the job types are a fix or a preventive maintenance).
+     First what it is: a Fix (something broke: what failed, what was done) or Preventive (the checklist and the parts).
+     Then when: Starting now (filled in on the job when you finish) or Already finished (everything here, in one go).
+     A PM is usually written up afterwards, so Preventive starts on "Already finished" and its times are optional
+     (the checklist and the parts are what matter); a fix needs its times (they give the repair time).
+     /jobs/new (?type=preventive, ?asset=), /jobs/record (a fix already finished), /pm/record (a PM).
+   A call from the floor is only ever started from the call itself ("I'm coming", then "Start job"). */
 const lagosDate = iso => lagosDay(iso).slice(0, 10), lagosTime = iso => lagosDay(iso).slice(11, 16);
 // a Lagos date and "HH:MM" -> ISO time; a finish time earlier than the start is the next day
 const jnIso = (date, time) => date && time ? date + 'T' + time + ':00+01:00' : '';
@@ -2047,92 +2320,99 @@ function jnPlanParts(code){ const x = ((PM.data && PM.data.due) || []).find(r =>
 function viewJobNew(ctx){
   ctx = ctx || {};
   const qs = new URLSearchParams(currentPath().split('?')[1] || '');
-  if (!ctx.pm && qs.get('type') === 'preventive') { location.replace('#/pm/record' + (qs.get('asset') ? '?asset=' + encodeURIComponent(qs.get('asset')) : '')); return { title:'Record a PM', crumb:'Maintenance', html:'' }; }
   if (!EQ.list && !EQ.loading) eqLoad();
   if (!SP.list && !SP.loading) spLoad();
   if (!JB.board && !JB.loading) jbLoad();
-  if (ctx.pm && !PP.data) { PP.data = 'loading'; ppLoad(); }
-  if (ctx.pm && !PM.data) { PM.data = 'loading'; pmLoad(); }
-  const where = ctx.pm ? { back: '/pm', label: 'Preventive maintenance', crumb: 'Preventive maintenance' } : { back: '/jobs', label: 'Calls and jobs', crumb: 'Maintenance' };
-  const back = `<a class="btn btn-ghost btn-sm" href="#${where.back}">${I.chevL} ${esc(where.label)}</a>`;
-  const draftKey = currentPath();
-  if (!JB.draft || JB.draft.key !== draftKey) JB.draft = { key: draftKey,
-    type: ctx.pm ? 'preventive' : (JOB_TYPE[qs.get('type')] && qs.get('type') !== 'preventive' ? qs.get('type') : ''),
-    cat: '', parts: [plNew()], partsFor: '', techs: [], asset: qs.get('asset') || '', note: '', work: '', pmMode: 'start', chk: null,
-    date: todayIso(), t0: '', t1: '' };
+  const draftKey = currentPath().split('?')[0] + '?' + (qs.get('asset') || '');
+  if (!JB.draft || JB.draft.key !== draftKey) {
+    const kind = ctx.pm || qs.get('type') === 'preventive' ? 'pm' : 'fix';
+    JB.draft = { key: draftKey, kind, when: kind === 'pm' || ctx.mode === 'record' ? 'record' : 'start',
+      cat: '', parts: [plNew()], partsFor: '', techs: [], asset: qs.get('asset') || '', note: '', work: '', chk: null, date: todayIso(), t0: '', t1: '' };
+  }
   const d = JB.draft, cats = (JB.board && JB.board.failure_categories) || [], me = jbMe();
-  const mode = ctx.pm ? d.pmMode : (ctx.mode || 'start');
+  const isPm = d.kind === 'pm', mode = d.when;
+  if (isPm && !PP.data) { PP.data = 'loading'; ppLoad(); }
+  if (isPm && !PM.data) { PM.data = 'loading'; pmLoad(); }
+  const fromPm = ctx.pm || (JB.backTo && /^\/pm/.test(JB.backTo));
+  const backPath = fromPm ? '/pm' : JB.backTo && /^\/(jobs|checks)/.test(JB.backTo) ? JB.backTo : '/jobs?tab=other';
+  const where = { back: backPath, label: BACK_LABEL(backPath), crumb: fromPm ? 'Preventive maintenance' : 'Maintenance' };
+  const back = `<a class="btn btn-ghost btn-sm" href="#${where.back}">${I.chevL} ${esc(where.label)}</a>`;
   const assetCode = spAssetFrom(d.assetText != null ? d.assetText : d.asset);
-  const items = ctx.pm && mode === 'record' && eqByCode(assetCode) ? jnChecklist(assetCode) : [];
-  if (ctx.pm && mode === 'record' && (!d.chk || d.chk.asset !== assetCode)) d.chk = { asset: assetCode, S: chkState(items) };
-  if (ctx.pm && mode === 'record' && eqByCode(assetCode) && d.partsFor !== assetCode && PM.data && PM.data !== 'loading' && !d.parts.some(l => l.sku)) {
+  const items = isPm && mode === 'record' && eqByCode(assetCode) ? jnChecklist(assetCode) : [];
+  if (isPm && mode === 'record' && (!d.chk || d.chk.asset !== assetCode)) d.chk = { asset: assetCode, S: chkState(items) };
+  if (isPm && mode === 'record' && eqByCode(assetCode) && d.partsFor !== assetCode && PM.data && PM.data !== 'loading' && !d.parts.some(l => l.sku)) {
     const due = jnPlanParts(assetCode); if (due.length) d.parts = due.map(p => Object.assign(plNew(p.sku), { qty: num(p.qty) })); d.partsFor = assetCode;
   }
-  const title = ctx.pm ? 'Record a PM' : mode === 'start' ? 'Start a job' : 'Record finished work';
-  const sub = ctx.pm ? 'Preventive maintenance on one piece of equipment. Its next PM date is worked out from this. Past PMs from old records: Record past PMs.'
-    : (mode === 'start' ? 'Work you are starting now without a call. Fill in what was done on the job when you finish.' : 'Work that is already done: say when, and what was done.')
-      + ' A PM is recorded from Preventive maintenance (it has the checklist).';
+  const title = 'New job';
+  const sub = 'Pick what it is and when. A call from the floor is taken from Calls, not here.';
   const people = (SP.people || []).filter(p => p.enroll_id !== me.enroll_id);
   const popt = { id: 'jnLines', optional: true };
-  const typeChips = !ctx.pm;
-  const showCat = d.type === 'breakdown' && mode === 'record';
   const timeBoxes = mode === 'record' ? `<div class="grid g3 jn-when">
       <div class="field"><label for="jnDate">Date</label><input class="inp" type="date" id="jnDate" value="${esc(d.date)}" max="${todayIso()}"></div>
-      <div class="field"><label for="jnT0">Started</label><input class="inp" type="time" id="jnT0" value="${esc(d.t0)}"></div>
-      <div class="field"><label for="jnT1">Finished</label><input class="inp" type="time" id="jnT1" value="${esc(d.t1)}"><div class="hint">${I.info}<span>Earlier than the start? Then it is the next day.</span></div></div></div>` : '';
-  const pmLoading = ctx.pm && mode === 'record' && (!PP.data || PP.data === 'loading');
+      <div class="field"><label for="jnT0">Started${isPm ? ' (optional)' : ''}</label><input class="inp" type="time" id="jnT0" value="${esc(d.t0)}"></div>
+      <div class="field"><label for="jnT1">Finished${isPm ? ' (optional)' : ''}</label><input class="inp" type="time" id="jnT1" value="${esc(d.t1)}"><div class="hint">${I.info}<span>Earlier than the start? Then it is the next day.</span></div></div></div>` : '';
+  const pmLoading = isPm && mode === 'record' && (!PP.data || PP.data === 'loading');
+  const seg = (k, opts) => `<div class="seg">${opts.map(([v, l]) => `<button type="button" class="${d[k] === v ? 'on' : ''}" data-${k}="${v}">${l}</button>`).join('')}</div>`;
+  const what = isPm ? (mode === 'start' ? 'A PM starting now: the job opens with its checklist, fill it in as you go.' : 'A PM already done: tick the checklist and the parts used. The times are optional.')
+                    : (mode === 'start' ? 'A fix starting now: the job opens, fill in what failed and what was done when you finish.' : 'A fix already done: what failed, what was done, and when.');
   return {
     title, crumb: where.crumb, keepScroll: true,
-    html: back + pageHead(title, sub, ctx.pm && levelOf('engineering.jobs') === 'edit' ? `<button class="btn btn-ghost" onclick="go('/pm/backfill')">Record past PMs</button>` : '') + `
+    html: back + pageHead(title, sub, isPm && levelOf('engineering.jobs') === 'edit' ? `<button class="btn btn-ghost" onclick="go('/pm/backfill')">Record past PMs</button>` : '') + `
     <form id="jnForm" novalidate>
-      ${ctx.pm ? `<div class="field"><span class="lbl">The PM is</span><div class="seg"><button type="button" class="${mode === 'start' ? 'on' : ''}" data-pmmode="start">Starting now</button><button type="button" class="${mode === 'record' ? 'on' : ''}" data-pmmode="record">Already finished</button></div></div>` : ''}
+      <div class="field"><span class="lbl">What is it?</span>${seg('kind', [['fix', 'Fix (something broke)'], ['pm', 'Preventive (PM)']])}</div>
+      <div class="field"><span class="lbl">When?</span>${seg('when', [['start', 'Starting now'], ['record', 'Already finished']])}<div class="tiny muted" style="margin-top:6px">${esc(what)}</div></div>
       <div class="field"><label for="jnAsset">Which machine or equipment?</label><input class="inp" id="jnAsset" list="jnAssets" value="${esc(d.assetText != null ? d.assetText : (d.asset && eqByCode(d.asset) ? eqByCode(d.asset).name + ' (' + d.asset + ')' : ''))}" placeholder="Type to search: compressor, Kunlong, AHU 1.4..."><datalist id="jnAssets">${spAssetOptions()}</datalist></div>
-      ${typeChips ? `<div class="field"><span class="lbl">Type of job</span><div class="row" style="gap:8px">${JN_TYPES.map(([k, l]) => `<button type="button" class="chip big-chip ${d.type === k ? 'on' : ''}" data-type="${k}">${l}</button>`).join('')}</div></div>` : ''}
-      ${showCat || (typeChips && mode === 'record') ? `<div class="field" id="jnCatWrap" style="${showCat ? '' : 'display:none'}"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${d.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>` : ''}
-      ${mode === 'start' && !ctx.pm ? `<div class="field"><label for="jnNote">What is wrong? (optional)</label><input class="inp" id="jnNote" maxlength="500" value="${esc(d.note || '')}" placeholder="e.g. Belt slipping on the conveyor"></div>` : ''}
+      ${!isPm && mode === 'record' ? `<div class="field"><span class="lbl">What failed?</span><div class="row" style="gap:8px">${cats.map(c => `<button type="button" class="chip big-chip ${d.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>` : ''}
+      ${mode === 'start' && !isPm ? `<div class="field"><label for="jnNote">What is wrong? (optional)</label><input class="inp" id="jnNote" maxlength="500" value="${esc(d.note || '')}" placeholder="e.g. Belt slipping on the conveyor"></div>` : ''}
       ${pmLoading ? '<div class="small muted" style="margin-bottom:12px">Loading the checklist...</div>' : ''}
+      ${isPm && mode === 'record' && !pmLoading && eqByCode(assetCode) && !items.length ? `<div class="small muted" style="margin-bottom:12px">This equipment has no PM checklist yet: say what was done below.</div>` : ''}
       ${items.length ? `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>PM checklist</h3><div class="sub">Tick each item, or mark it not done and say why.</div></div></div><div class="card-b" id="jnChk">${chkHtml(items, d.chk.S, '')}</div></div>` : ''}
-      ${mode === 'record' ? `<div class="field"><label for="jnDone">${items.length ? 'Anything else done? (optional)' : 'What was done?'}</label><textarea class="inp" id="jnDone" rows="3" maxlength="2000" placeholder="${ctx.pm ? 'e.g. Greased the bearings, changed the belts' : 'e.g. Re-tensioned the belt and topped up the oil'}">${esc(d.work || '')}</textarea></div>` : ''}
-      ${people.length ? `<div class="field"><span class="lbl">Who else ${mode === 'start' ? 'is working on it' : 'worked on it'}? (optional)</span><div class="row" style="gap:6px">${people.map(p => `<button type="button" class="chip ${d.techs.includes(p.enroll_id) ? 'on' : ''}" data-tech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+      ${mode === 'record' ? `<div class="field"><label for="jnDone">${items.length ? 'Anything else done? (optional)' : 'What was done?'}</label><textarea class="inp" id="jnDone" rows="3" maxlength="2000" placeholder="${isPm ? 'e.g. Greased the bearings, changed the belts' : 'e.g. Re-tensioned the belt and topped up the oil'}">${esc(d.work || '')}</textarea></div>` : ''}
+      ${people.length ? `<div class="field"><span class="lbl">Who else ${mode === 'start' ? 'is working on it' : 'worked on it'}? (optional: leave it if it is only you)</span><div class="row" style="gap:6px">${people.map(p => `<button type="button" class="chip ${d.techs.includes(p.enroll_id) ? 'on' : ''}" data-tech="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
       ${mode === 'record' ? `<div class="field"><span class="lbl">Parts used <span class="muted" style="font-weight:500">(optional; the storekeeper confirms the hand-over)</span></span>${plHtml(d.parts, popt)}
-        ${ctx.pm && d.partsFor === assetCode && d.parts.some(l => l.sku) ? `<div class="tiny muted" style="margin-top:4px">Filled in from the PM parts plan: change what was not used.</div>` : ''}</div>` : ''}
+        ${isPm && d.partsFor === assetCode && d.parts.some(l => l.sku) ? `<div class="tiny muted" style="margin-top:4px">Filled in from the PM parts plan: change what was not used.</div>` : ''}</div>` : ''}
       ${timeBoxes}
       <div class="err-msg hide" data-err="jnDone"></div>
     </form>
-    <div class="row job-actions" style="gap:10px"><button class="btn btn-primary btn-lg" id="jnGo">${mode === 'start' ? (ctx.pm ? 'Start the PM' : 'Start job') : (ctx.pm ? 'Save the PM' : 'Save the job')}</button></div>`,
+    <div class="row job-actions" style="gap:10px"><button class="btn btn-primary btn-lg" id="jnGo">${mode === 'start' ? (isPm ? 'Start the PM' : 'Start the fix') : (isPm ? 'Save the PM' : 'Save the fix')}</button></div>`,
     bind(){
-      $$('[data-pmmode]').forEach(b => b.onclick = () => { keep(); d.pmMode = b.dataset.pmmode; render(); });
-      $$('[data-type]').forEach(b => b.onclick = () => { d.type = b.dataset.type; $$('[data-type]').forEach(x => x.classList.toggle('on', x === b)); const w = $('#jnCatWrap'); if (w) w.style.display = d.type === 'breakdown' ? '' : 'none'; });
+      $$('[data-kind]').forEach(b => b.onclick = () => { keep(); if (d.kind === b.dataset.kind) return; d.kind = b.dataset.kind; if (d.kind === 'pm') d.when = 'record'; d.chk = null; d.partsFor = ''; render(); });
+      $$('[data-when]').forEach(b => b.onclick = () => { keep(); d.when = b.dataset.when; render(); });
       $$('[data-cat]').forEach(b => b.onclick = () => { d.cat = b.dataset.cat; $$('[data-cat]').forEach(x => x.classList.toggle('on', x === b)); });
       $$('[data-tech]').forEach(b => b.onclick = () => { const k = b.dataset.tech; d.techs = d.techs.includes(k) ? d.techs.filter(x => x !== k) : d.techs.concat(k); b.classList.toggle('on'); });
       function keep(){ const a = $('#jnAsset'); if (a) d.assetText = a.value; [['#jnNote', 'note'], ['#jnDone', 'work'], ['#jnDate', 'date'], ['#jnT0', 't0'], ['#jnT1', 't1']].forEach(([id, k]) => { const el = $(id); if (el) d[k] = el.value; }); }
       ['#jnNote', '#jnDone', '#jnDate', '#jnT0', '#jnT1'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', keep); });
       const a = $('#jnAsset');
-      if (a) { a.addEventListener('input', keep); if (ctx.pm && mode === 'record') a.addEventListener('change', () => { keep(); render(); }); }
+      if (a) { a.addEventListener('input', keep); if (isPm && mode === 'record') a.addEventListener('change', () => { keep(); render(); }); }
       if (items.length) chkBind($('#jnChk'), items, d.chk.S, '');
       if (mode === 'record') plBind(document, d.parts, popt);
       $('#jnGo').onclick = async () => {
         keep(); clearErrors(document);
         const asset = spAssetFrom(a ? a.value : '');
         if (!(EQ.list || []).some(x => x.code === asset && x.status === 'Active')) return setErr('jnDone', 'Choose the machine or equipment from the list.');
-        if (!d.type) return setErr('jnDone', 'Pick the type of job.');
-        const job = { asset, type: d.type, technicians: d.techs, done: mode === 'record' };
+        const type = isPm ? 'preventive' : 'breakdown';
+        const job = { asset, type, technicians: d.techs, done: mode === 'record' };
         if (mode === 'start') job.note = String(d.note || '').trim();
         else {
-          if (d.type === 'breakdown' && !d.cat) return setErr('jnDone', 'Pick what failed.');
+          if (!isPm && !d.cat) return setErr('jnDone', 'Pick what failed.');
           if (items.length) { const c = chkCheck(items, d.chk.S, true); if (c.error) return setErr('jnDone', c.error); job.checks = c.checks; }
           if (String(d.work || '').trim().length < 5 && !items.length) return setErr('jnDone', 'Say what was done.');
-          if (!d.date || !d.t0 || !d.t1) return setErr('jnDone', 'Enter the date, and the start and finish times.');
-          job.started_at = jnIso(d.date, d.t0); job.finished_at = jnFinishIso(d.date, d.t0, d.t1);
+          if (!d.date) return setErr('jnDone', 'Enter the date.');
+          if (!isPm && (!d.t0 || !d.t1)) return setErr('jnDone', 'Enter the start and finish times (they give the repair time).');
+          if (!!d.t0 !== !!d.t1) return setErr('jnDone', 'Enter both times, or neither.');
+          if (d.t0) { job.started_at = jnIso(d.date, d.t0); job.finished_at = jnFinishIso(d.date, d.t0, d.t1); }
+          else { const t = d.date === todayIso() ? new Date().toISOString() : jnIso(d.date, '12:00'); job.started_at = t; job.finished_at = t; }     // a PM without times
           if (new Date(job.finished_at) > new Date(Date.now() + 5 * 60000)) return setErr('jnDone', 'The finish time is in the future.');
           const chk = plCheck(d.parts, popt);
           if (chk.error) return setErr('jnDone', 'Parts: ' + chk.error);
-          Object.assign(job, { failure_category: d.type === 'breakdown' ? d.cat : '', work_done: String(d.work || '').trim(), parts: chk.lines.map(p => ({ sku: p.sku, qty: p.qty })) });
+          Object.assign(job, { failure_category: isPm ? '' : d.cat, work_done: String(d.work || '').trim(), parts: chk.lines.map(p => ({ sku: p.sku, qty: p.qty })) });
         }
         $('#jnGo').disabled = true;
         try { const r = await api('/webhook/engineering/api/jobs/start', { method:'POST', body:{ job } }); JB.draft = null; JB.one[r.job.job_id] = r.job; AP = {};
-              if (ctx.pm) PM.data = null;
-              toast(mode === 'record' ? (ctx.pm ? 'PM recorded' : 'Job recorded') : (ctx.pm ? 'PM started' : 'Job started'), r.job.job_id, 'ok'); jbLoad(true); go((ctx.pm ? '/pm/jobs/' : '/jobs/') + r.job.job_id); }
+              if (isPm) PM.data = null;
+              toast(mode === 'record' ? (isPm ? 'PM recorded' : 'Fix recorded') : (isPm ? 'PM started' : 'Fix started'), r.job.job_id + (mode === 'record' ? ' · back to ' + where.label : ''), 'ok');
+              JB.board = null; jbLoad(true);
+              if (mode === 'record') go(where.back); else { JB.backTo = fromPm ? '/pm' : '/jobs?tab=other'; go((fromPm ? '/pm/jobs/' : '/jobs/') + r.job.job_id); } }
         catch (e) { setErr('jnDone', e.message); $('#jnGo').disabled = false; }
       };
     },
@@ -2198,14 +2478,20 @@ route('/pm/backfill', viewBackfill);
    e-mail listener and Home > Daily production read the files). The report e-mail adds its machine stops by itself; a stop
    whose machine name the register does not know waits here until the manager chooses the machine once (remembered on the machine).
    GET /webhook/engineering/api/jobs/report/waiting, POST /jobs/report/machine {name, code}. */
-let RP = { waiting: null, waitPick: {} };     // waiting: issues from the e-mailed report whose machine name is unknown (028)
-async function rpWaitingLoad(){ try { RP.waiting = (await api('/webhook/engineering/api/jobs/report/waiting')).waiting || []; } catch (e) { RP.waiting = []; } render(); }
+let RP = { waiting: null, waitPick: {}, at: 0, busy: false };     // waiting: issues from the e-mailed report whose machine name is unknown (028)
+async function rpWaitingLoad(){ try { RP.waiting = (await api('/webhook/engineering/api/jobs/report/waiting')).waiting || []; } catch (e) { RP.waiting = []; } RP.at = Date.now(); render(); }
+// how many machine names from the daily report wait for the manager (the badge on Settings); looked up again every 10 minutes
+function rpWaitingCount(){
+  if (levelOf('engineering.jobs') !== 'edit') return 0;
+  if (RP.waiting === null || (RP.at && Date.now() - RP.at > 10 * 60000 && !RP.busy)) { if (RP.waiting === null) RP.waiting = []; RP.busy = true; rpWaitingLoad().finally(() => { RP.busy = false; }); }
+  return new Set((RP.waiting || []).map(w => rpNorm(w.machine))).size;
+}
 const rpNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 function viewReport(){
   if (!EQ.list && !EQ.loading) eqLoad();
-  if (RP.waiting === null && levelOf('engineering.jobs') === 'edit') { RP.waiting = []; rpWaitingLoad(); }
-  const back = `<a class="btn btn-ghost btn-sm" href="#/jobs?tab=reports">${I.chevL} Calls and jobs</a>`;
-  if (levelOf('engineering.jobs') !== 'edit') return { title:'Daily report machine names', crumb:'Maintenance', html: back + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager chooses machines for the daily report', '')}</div></div>` };
+  rpWaitingCount();
+  const back = settingsTabs('names');
+  if (levelOf('engineering.jobs') !== 'edit') return { title:'Daily report machine names', crumb:'Setup', html: pageHead('Settings') + `<div class="card" style="margin-top:12px"><div class="card-b">${emptyState('alert', 'Only the Engineering Manager chooses machines for the daily report', '')}</div></div>` };
   const opts = cur => `<option value="">Choose the machine...</option>` + (EQ.list || []).filter(a => a.status === 'Active' && ['Machine', 'Line', 'Utility'].includes(a.type)).sort((a, b) => a.name.localeCompare(b.name))
     .map(a => `<option value="${esc(a.code)}" ${a.code === cur ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
   // issues from the e-mail that wait for a machine: one row per machine name as the report writes it
@@ -2218,8 +2504,9 @@ function viewReport(){
       <td data-label="Issues" class="small">${g.items.slice(0, 4).map(x => `${esc(String(x.day).slice(0, 10))} · ${esc(x.product)} · ${esc(x.text)} (${x.minutes} min)`).join('<br>')}${g.items.length > 4 ? `<br><span class="muted">and ${g.items.length - 4} more</span>` : ''}</td>
       <td data-label="Machine"><select class="inp" data-rp-wait="${i}" style="min-width:190px">${opts(RP.waitPick[g.key] || '')}</select></td>
       <td><button class="btn btn-primary btn-sm" data-rp-wait-save="${i}" ${RP.waitPick[g.key] ? '' : 'disabled'}>Save</button><span class="err-msg hide" data-err="rpWait${i}"></span></td></tr>`).join('')}</tbody></table></div></div>` : '';
-  return { title:'Daily report machine names', crumb:'Maintenance', keepScroll: true,
-    html: back + pageHead('Machine names from the daily packaging report', 'The OKL report e-mail adds its machine stops to Calls and jobs by itself (every stop; a shortest length can be set in Settings): the last report day for technicians to fill in, earlier days as history. A machine name the register does not know waits here until you choose the machine once. A missed e-mail: upload the files on the home page, Daily production.')
+  return { title:'Daily report machine names', crumb:'Setup', keepScroll: true,
+    html: pageHead('Settings', 'The numbers behind the Engineering rules, and the machine names of the daily packaging report.') + back
+      + `<div class="small muted" style="margin-bottom:12px">The OKL report e-mail adds its machine stops to Calls and jobs (Other jobs) by itself: the last report day for technicians to fill in, earlier days as history. A machine name the register does not know waits here until you choose the machine once; the number on Settings in the menu says how many wait. A missed e-mail: upload the files on the home page, Daily production.</div>`
       + (waitCard || `<div class="card"><div class="card-b">${emptyState('check', 'No machine names waiting', 'Every machine in the report was recognised.')}</div></div>`),
     bind(){
       $$('[data-rp-wait]').forEach(sel => sel.onchange = () => { RP.waitPick[groups[+sel.dataset.rpWait].key] = sel.value; render(); });
@@ -2363,6 +2650,8 @@ function pmEffFiltered(){ return ((PM.data || {}).effectiveness || []).filter(x 
 function viewPm(tab){
   if (!PM.data) { PM.data = 'loading'; pmLoad(); }
   if (!EQ.list && !EQ.loading) eqLoad();
+  JB.backTo = tab === 'eff' ? '/pm/effectiveness' : '/pm';      // a PM opened from here comes back here when it is closed (043)
+  if (tab !== 'eff' && levelOf('engineering.jobs') && !JB.board && !JB.loading && !JB.error) jbLoad();
   const canStart = ['submit', 'edit'].includes(levelOf('engineering.jobs')), mgr = levelOf('engineering.jobs') === 'edit';
   const d = PM.data, ready = d && d !== 'loading' && !d.error;
   const head = pageHead('Preventive maintenance', tab === 'due' ? 'What is due on every piece of equipment that is maintained. Set an interval per item in Equipment; the rest use the default.'
@@ -2401,8 +2690,12 @@ function viewPm(tab){
   }
   const n = k => due.filter(x => x.state === k).length, rows = pmDueFiltered();
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
+  const going = (((JB.board || {}).open) || []).filter(j => j.type === 'preventive').sort((a, b) => jbOnIt(b) - jbOnIt(a));
+  const goingHtml = going.length ? `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>PMs in progress <span class="badge" style="padding:1px 7px">${going.length}</span></h3>
+      <div class="sub">Open one to tick the checklist, add parts and close it.</div></div></div>
+    <div class="card-b"><div class="grid g3 job-grid">${going.map(jbCard).join('')}</div></div></div>` : '';
   return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
-    html: head + `<div class="grid g4" style="margin-bottom:14px">
+    html: head + goingHtml + `<div class="grid g4" style="margin-bottom:14px">
       <div class="stat link ${n('overdue') ? 'acc-danger' : ''}" onclick="pmSet('state', 'overdue')"><div class="lbl">Overdue</div><div class="val">${n('overdue')}</div></div>
       <div class="stat link" onclick="pmSet('state', 'due')"><div class="lbl">Due this week</div><div class="val">${n('due')}</div></div>
       <div class="stat link" onclick="pmSet('state', 'ok')"><div class="lbl">On schedule</div><div class="val">${n('ok')}</div></div>
@@ -2418,7 +2711,7 @@ function viewPm(tab){
         <td data-label="Area" class="small">${esc(x.area || '')}</td><td data-label="Every" style="text-align:right">${x.interval_days} d</td><td data-label="Last PM" class="small">${esc(x.last_pm || '--')}</td><td data-label="Next due" class="small">${esc(x.due_date || '--')}</td>
         <td data-label="Status">${PM_STATE[x.state] || ''}${x.checklist_items ? '' : '<div class="tiny muted">no checklist</div>'}</td>
         <td data-label="Parts" class="small">${(x.parts || []).map(p => `<div>${esc((p.sku ? p.sku + ' ' : '') + p.name)} x ${num(p.qty)}${p.sku && +p.stock < +p.qty ? ' <span class="badge b-danger">short</span>' : ''}</div>`).join('') || '<span class="muted">--</span>'}</td>
-        <td style="text-align:right">${canStart ? `<button class="btn btn-ghost btn-sm" onclick="go('/pm/record?asset=${encodeURIComponent(x.asset)}')">Record PM</button>` : ''}</td></tr>`).join('')
+        <td style="text-align:right">${canStart ? `<button class="btn ${x.state === 'overdue' || x.state === 'due' ? 'btn-primary' : 'btn-ghost'} btn-sm pm-go" onclick="go('/pm/record?asset=${encodeURIComponent(x.asset)}')">Start or record PM</button>` : ''}</td></tr>`).join('')
         || `<tr><td colspan="9" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody></table></div>
       <div class="small muted" style="padding:12px 18px">${rows.length} of ${due.length} shown. Default interval ${num(d.default_interval)} days (Settings). Parts come from the <a href="#/equipment/parts">PM parts plan</a>.</div></div>`,
     bind(){
@@ -2578,7 +2871,7 @@ route('/actions/:no', () => { location.replace('#/rca'); return { title:'RCA', c
    ============================================================ */
 let OV = { data: null, preset: '30', from: '', to: '', f: { type: '', area: '', asset: '' } };
 const OV_PRESETS = [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['month', 'This month'], ['lastmonth', 'Last month'], ['custom', 'Pick dates']];
-const OV_TABS = [['reliability', 'Reliability', '/overview'], ['response', 'Response', '/overview/response'], ['preventive', 'Preventive', '/overview/preventive'], ['followup', 'Store', '/overview/followup']];
+const OV_TABS = [['reliability', 'Reliability', '/overview'], ['response', 'Response', '/overview/response'], ['preventive', 'Preventive', '/overview/preventive'], ['followup', 'Store', '/overview/followup'], ['watch', 'Weekend watch', '/overview/watch']];
 function ovRange(){
   const t = todayIso(), back = n => { const d = new Date(t + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
   if (OV.preset === 'custom') return { from: OV.from || back(29), to: OV.to || t };
@@ -2732,3 +3025,282 @@ function odDownload(){
   downloadXlsx('Outdoor units ' + String(d.month || '').slice(0, 7), [{ name: 'Outdoor units', head: ['Unit', 'Code', 'Running', 'Amps', 'Low psi', 'High psi', 'T1', 'Evap', 'Superheat', 'T2', 'Cond', 'Subcooling', 'Checked on', 'Checked by', 'Timing', 'Status', 'Note'],
     rows: (d.units || []).map(u => [u.name, u.code, u.logged ? (u.running ? 'yes' : 'no') : '', u.amps, u.low_psi, u.high_psi, u.t1, u.evap, u.superheat, u.t2, u.cond, u.subcooling, u.checked_on, u.checked_by, u.timing, u.status || 'Not checked', u.note]) }]);
 }
+
+/* ============================================================
+   043 (7 Nov 2026): Weekend watch, Periodic checks, Requests
+   ============================================================ */
+
+/* ---- Weekend watch: the machines with the most breakdown trouble of the last 7 days (the Friday 11:00 e-mail shows the
+   same). GET /webhook/engineering/api/week-watch?to= */
+let WW = { to: '', data: null };
+async function wwLoad(){ try { WW.data = await api('/webhook/engineering/api/week-watch' + (WW.to ? '?to=' + WW.to : '')); } catch (e) { WW.data = { error: e.message }; } render(); }
+function wwAdvice(x){
+  const out = [], top = (x.categories || [])[0], pm = x.pm || {};
+  if (pm.state === 'overdue') out.push('PM overdue (due ' + pm.due_date + '): do it this weekend.');
+  else if (pm.state === 'due') out.push('PM due ' + pm.due_date + ': bring it forward to the weekend.');
+  else if (pm.state === 'no_record') out.push('No PM recorded: plan one.');
+  if (top && top.n >= 2) out.push(top.n + ' stops were ' + top.category.toLowerCase() + ': inspect those parts.');
+  if (+x.failures >= 3 && +x.failures > +x.before) out.push('Stopped ' + x.failures + ' times (' + x.before + ' the week before): look for the root cause.');
+  const sr = (x.stop_reasons || [])[0]; if (sr && sr.n >= 2) out.push('Floor: "' + sr.reason + '" ' + sr.n + ' times.');
+  const wait = (x.open_jobs || []).filter(j => j.status === 'waiting_part'); if (wait.length) out.push('Waiting for a part: ' + wait.map(j => j.job).join(', ') + '.');
+  if (!out.length) out.push('Check the repairs of the week hold.');
+  return out;
+}
+function viewWatch(top){
+  if (!WW.data) { WW.data = 'loading'; wwLoad(); }
+  const d = WW.data;
+  const head = (top || (pageHead('Overview', 'Maintenance at a glance.')
+    + `<div class="tabs" style="margin-bottom:14px">${OV_TABS.map(([k, l, h]) => `<a class="tab ${k === 'watch' ? 'on' : ''}" href="#${h}">${l}</a>`).join('')}</div>`))
+    + `<div class="row filter-bar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:flex-end"><div class="field" style="margin:0"><label for="wwTo">7 days up to</label>
+       <input class="inp" type="date" id="wwTo" value="${esc(WW.to || todayIso())}" max="${todayIso()}" style="width:auto"></div>
+       <div class="small muted">The machines with the most breakdown trouble, ranked by time lost (each stop also counts 30 min). Every Friday at 11:00 this goes by e-mail to the Engineering Manager (copies: Settings).</div></div>`;
+  const bind = () => { const t = $('#wwTo'); if (t) t.onchange = e => { WW.to = e.target.value; WW.data = null; render(); }; };
+  if (d === 'loading') return { title:'Weekend watch', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>`, bind };
+  if (d.error) return { title:'Weekend watch', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>`, bind };
+  const t = d.totals || {}, list = d.machines || [];
+  return { title:'Weekend watch', crumb:'Maintenance', keepScroll: true, bind,
+    html: head + `<div class="grid g4" style="margin-bottom:14px">
+        <div class="stat"><div class="lbl">Breakdowns and stops</div><div class="val">${t.failures || 0}</div><div class="meta">${t.failures_before || 0} the 7 days before</div></div>
+        <div class="stat"><div class="lbl">Time down</div><div class="val">${dur(t.minutes || 0)}</div></div>
+        <div class="stat"><div class="lbl">Machines</div><div class="val">${t.machines || 0}</div></div>
+        <div class="stat"><div class="lbl">PMs overdue or due</div><div class="val">${(d.pm_due || []).length}</div></div></div>
+      ${list.length ? list.map((x, i) => `<div class="card" style="margin-bottom:12px"><div class="card-b">
+        <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div><span class="badge ${i < 3 ? 'b-danger' : 'b-warn'}">${i + 1}</span> <a class="strong" style="font-size:16px" href="#/equipment/${esc(x.asset)}">${esc(x.name)}</a>
+          <div class="small muted">${esc(x.area || '')}</div></div><div class="mono strong" style="white-space:nowrap">${x.failures} stop${+x.failures === 1 ? '' : 's'} · ${dur(+x.minutes)}</div></div>
+        ${(x.categories || []).length ? `<div class="small" style="margin-top:6px">What failed: ${x.categories.map(k => esc(k.category) + ' ' + k.n).join(', ')}</div>` : ''}
+        <ul class="small" style="margin:8px 0 6px;padding-left:18px">${wwAdvice(x).map(a => `<li>${esc(a)}</li>`).join('')}</ul>
+        ${(x.events || []).slice(0, 4).map(e => `<div class="tiny muted" style="padding:3px 0;border-top:1px solid var(--line-2)"><a href="#/jobs/${esc(e.job)}">${esc(e.job)}</a> · ${esc(e.day)} · ${esc(e.note || '')}${e.work_done ? ' &rarr; ' + esc(e.work_done) : ''}</div>`).join('')}
+      </div></div>`).join('') : `<div class="card"><div class="card-b">${emptyState('check', 'No breakdowns in these 7 days', '')}</div></div>`}` };
+}
+route('/overview/watch', () => viewWatch());
+
+/* ---- Periodic checks (OKL_ENG_routines): the manager sets them (what, on which machines, which weekdays, reminder time,
+   its owner, one person); the owner gets a WhatsApp reminder at that time with a link to mark it (or marks it here). 16:00: the manager hears of the
+   checks of the day not marked. GET /checks, POST /checks/save {routine}, POST /checks/mark {check} */
+const WEEKDAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [7, 'Sun']];
+let CK = { data: null, todayOpen: 0 };
+async function ckLoad(){
+  try { CK.data = await api('/webhook/engineering/api/checks'); CK.todayOpen = (CK.data.checks || []).filter(c => c.due_on === CK.data.today && c.status === 'due').length; }
+  catch (e) { CK.data = { error: e.message }; }
+  render();
+}
+const ckDays = r => (r.days || []).map(n => (WEEKDAYS.find(w => w[0] === n) || [0, ''])[1]).join(', ') + (r.every_weeks > 1 ? ', every ' + r.every_weeks + ' weeks' : '');
+const CK_STATE = { due: '<span class="badge b-warn"><span class="dot"></span>To do</span>', done: '<span class="badge b-ok">Done</span>', not_done: '<span class="badge b-slate">Not done</span>', missed: '<span class="badge b-danger">Missed</span>' };
+function ckDayLabel(iso, today){
+  if (iso === today) return 'Today';
+  const d = new Date(iso + 'T12:00:00Z'), t = new Date(today + 'T12:00:00Z'), diff = Math.round((d - t) / 864e5);
+  return (diff === 1 ? 'Tomorrow, ' : diff === -1 ? 'Yesterday, ' : '') + d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+function viewChecks(){
+  if (!CK.data) { CK.data = 'loading'; ckLoad(); }
+  if (!JB.board && !JB.loading && !JB.error) jbLoad();     // who "me" is (the board knows)
+  JB.backTo = '/checks';
+  const mgr = levelOf('engineering.jobs') === 'edit', d = CK.data;
+  const t0 = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab'), tab = t0 === 'schedules' || t0 === 'watch' ? t0 : 'week';
+  const head = pageHead('Periodic checks', 'Everything due on set days in one place: the periodic checks (like cleaning the AHU pre-filters every Wednesday and Saturday), the PMs due and the weekend watch. The owner of a check gets a WhatsApp reminder at its time and marks it from the link in it.',
+      mgr ? `<button class="btn btn-primary" onclick="ckOpen(null)">${I.plus} New periodic check</button>` : '')
+    + `<div class="tabs" style="margin-bottom:14px"><a class="tab ${tab === 'week' ? 'on' : ''}" href="#/checks">This week</a><a class="tab ${tab === 'watch' ? 'on' : ''}" href="#/checks?tab=watch">Weekend watch</a><a class="tab ${tab === 'schedules' ? 'on' : ''}" href="#/checks?tab=schedules">Schedules${d && d.routines ? ` <span class="badge" style="padding:1px 7px">${d.routines.filter(r => r.active).length}</span>` : ''}</a></div>`;
+  if (tab === 'watch') { const v = viewWatch(head); v.title = 'Periodic checks'; return v; }
+  if (d === 'loading') return { title:'Periodic checks', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title:'Periodic checks', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error), `<button class="btn btn-primary" onclick="CK.data = null; render()">Try again</button>`)}</div></div>` };
+  if (tab === 'schedules') {
+    const rs = d.routines || [];
+    return { title:'Periodic checks', crumb:'Maintenance', keepScroll: true,
+      html: head + (rs.length ? `<div class="grid g2">${rs.map(r => `<div class="card ${mgr ? 'job-card' : ''}" ${mgr ? `onclick="ckOpen(${r.id})"` : ''} style="${r.active ? '' : 'opacity:.6'}"><div class="card-b">
+          <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div class="strong" style="font-size:15px">${esc(r.title)}</div>${r.active ? '' : '<span class="badge b-slate">Off</span>'}</div>
+          <div class="small" style="margin-top:4px">${esc(ckDays(r))} at ${esc(r.remind_at)}${r.ends_on ? ' · until ' + esc(r.ends_on) : ''}</div>
+          ${(r.asset_names || []).length ? `<div class="small muted">On: ${esc(r.asset_names.join(', '))}</div>` : ''}
+          <div class="small muted">Owner: ${(r.people_names || []).map(p => esc(p.name) + (p.phone ? '' : ' (no WhatsApp number: marks it in the console)')).join(', ')}</div>
+          ${r.next ? `<div class="tiny muted" style="margin-top:4px">Next: ${esc(ckDayLabel(r.next, d.today))}</div>` : ''}</div></div>`).join('')}</div>`
+        : `<div class="card"><div class="card-b">${emptyState('check', 'No periodic checks yet', mgr ? 'Add one: what it is, the days, the time of the reminder and who does it.' : 'The Engineering Manager sets them.')}</div></div>`) };
+  }
+  // this week: today first, then the next days, then the last 7 days (what was missed)
+  const all = d.checks || [], me = d.me || jbMe().enroll_id;
+  const today = all.filter(c => c.due_on === d.today), next = all.filter(c => c.due_on > d.today), past = all.filter(c => c.due_on < d.today).reverse();
+  // only the owner marks a check (7 Nov 2026); everyone else sees how it stands
+  const card = c => { const open = c.status === 'due' || c.status === 'missed';
+    const mine = !!me && (c.people || []).some(p => p.enroll_id === me), canMark = mine && c.due_on <= d.today && c.due_on >= addDaysIso(d.today, -7);
+    return `<div class="card ck-card"><div class="card-b">
+      <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div><div class="strong" style="font-size:15px">${esc(c.title)}</div>
+        <div class="small muted">${esc(c.remind_at)}${(c.asset_names || []).length ? ' · ' + esc(c.asset_names.join(', ')) : ''}</div></div>${CK_STATE[c.status] || ''}</div>
+      ${c.details ? `<div class="small" style="margin-top:6px">${esc(c.details)}</div>` : ''}
+      <div class="small muted" style="margin-top:4px">${(c.people || []).map(p => esc(p.name)).join(', ')}${mine ? ' <span class="badge b-brand">You</span>' : ''}</div>
+      ${!open ? `<div class="small" style="margin-top:6px">${c.status === 'done' ? 'Done by ' + esc((c.done_by || []).join(', ') || c.recorded_by || '') : 'Not done: ' + esc(c.note || '')}${c.status === 'done' && c.note ? ' · ' + esc(c.note) : ''}${c.done_at ? ' <span class="tiny muted">' + esc(dayHm(c.done_at)) + '</span>' : ''}</div>` : ''}
+      ${canMark && open ? `<div class="row ck-actions" style="gap:8px;margin-top:10px"><button class="btn btn-primary" onclick="ckMark(${c.routine_id}, '${esc(c.due_on)}', 'done')">${I.check} Done</button><button class="btn btn-ghost" onclick="ckMark(${c.routine_id}, '${esc(c.due_on)}', 'not_done')">I could not do it</button></div>`
+        : canMark && !open ? `<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="ckMark(${c.routine_id}, '${esc(c.due_on)}', '${c.status === 'done' ? 'not_done' : 'done'}')">Change</button>`
+        : open && !mine && c.due_on <= d.today ? `<div class="tiny muted" style="margin-top:8px">${esc(((c.people || [])[0] || {}).name || 'The owner')} marks it (from the WhatsApp link or here).</div>` : ''}
+    </div></div>`; };
+  const group = (title, list) => list.length ? `<div class="strong" style="margin:14px 0 8px">${esc(title)}</div><div class="grid g3 job-grid">${list.map(card).join('')}</div>` : '';
+  const days = arr => Array.from(new Set(arr.map(c => c.due_on)));
+  const pm = d.pm || [], canPm = ['submit', 'edit'].includes(levelOf('engineering.jobs'));
+  const pmHtml = pm.length ? `<div class="strong" style="margin:18px 0 8px">PMs due <span class="muted" style="font-weight:500">(overdue, or due within 7 days)</span></div>
+    <div class="card"><div class="card-b" style="padding:6px 14px">${pm.map(x => `<div class="row between" style="padding:8px 0;border-bottom:1px solid var(--line-2);gap:8px">
+      <div><a class="strong" href="#/equipment/${esc(x.asset)}">${esc(x.name)}</a><div class="tiny muted">${esc(x.area || '')} · due ${esc(x.due_date || '')}${x.last_pm ? ' · last PM ' + esc(x.last_pm) : ''}</div></div>
+      <div class="row" style="gap:8px">${x.state === 'overdue' ? '<span class="badge b-danger">Overdue</span>' : '<span class="badge b-warn">Due</span>'}
+        ${canPm ? `<button class="btn btn-ghost btn-sm" onclick="JB.backTo = '/checks'; go('/pm/record?asset=${encodeURIComponent(x.asset)}')">Record PM</button>` : ''}</div></div>`).join('')}</div></div>` : '';
+  const auto = `<div class="card" style="margin-top:18px"><div class="card-h"><div><h3>Sent by itself</h3><div class="sub">The reminders and messages Engineering gets without anyone sending them.</div></div></div><div class="card-b small" style="padding-top:4px">
+    <div style="padding:5px 0;border-bottom:1px solid var(--line-2)"><b>Periodic checks</b>: a WhatsApp to the owner at the check's time, with a link to mark it done or say why not. At 16:00 the Engineering Manager hears of the checks of the day not marked.</div>
+    <div style="padding:5px 0;border-bottom:1px solid var(--line-2)"><b>PM coming up</b>: an e-mail each morning (07:30) of the PMs due soon, linking to this page.</div>
+    <div style="padding:5px 0"><b>Weekend watch</b>: Friday 11:00, an e-mail to the Engineering Manager (copied to the technicians and the Settings list) of the machines to look at over the weekend (tab "Weekend watch").</div></div></div>`;
+  return { title:'Periodic checks', crumb:'Maintenance', keepScroll: true,
+    html: head + (today.length ? group('Today', today) : `<div class="card"><div class="card-b">${emptyState('check', 'No periodic checks today', (d.routines || []).length ? '' : mgr ? 'Add one with "New periodic check".' : '')}</div></div>`)
+      + days(next).map(day => group(ckDayLabel(day, d.today), next.filter(c => c.due_on === day))).join('')
+      + pmHtml
+      + (past.length ? `<div class="strong" style="margin:18px 0 8px">The last 7 days</div><div class="grid g3 job-grid">${past.map(card).join('')}</div>` : '') + auto };
+}
+function addDaysIso(iso, n){ const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+route('/checks', viewChecks);
+function ckMark(routineId, dueOn, status){
+  const c = ((CK.data && CK.data.checks) || []).find(x => x.routine_id === routineId && x.due_on === dueOn) || {};
+  openModal({ title: (status === 'done' ? 'Done: ' : 'Could not do it: ') + (c.title || ''), size:'narrow', sub: ckDayLabel(dueOn, CK.data.today),
+    body: `<div class="field"><label for="ckNote">${status === 'done' ? 'Note (optional)' : 'Why could it not be done?'}</label><textarea class="inp" id="ckNote" rows="2" maxlength="500" placeholder="${status === 'done' ? 'e.g. Pre-filters very dusty, changed two' : 'e.g. No spare pre-filter in the store'}"></textarea></div>
+      <div class="err-msg hide" data-err="ckNote"></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Back</button><button class="btn btn-primary" data-save>${status === 'done' ? I.check + ' Mark done' : 'Save'}</button>`,
+    onMount: (w, close) => {
+      const sv = $('[data-save]', w);
+      sv.onclick = async () => {
+        clearErrors(w); const note = $('#ckNote', w).value.trim();
+        if (status === 'not_done' && note.length < 5) return setErr('ckNote', 'Say why it was not done.', w);
+        sv.disabled = true;
+        try { await api('/webhook/engineering/api/checks/mark', { method:'POST', body:{ check:{ routine_id: routineId, due_on: dueOn, status, note } } });
+              close(); toast(status === 'done' ? 'Check done' : 'Saved', c.title || '', 'ok'); CK.data = null; render(); }
+        catch (e) { setErr('ckNote', e.message, w); sv.disabled = false; }
+      };
+    } });
+}
+function ckOpen(id){
+  if (!EQ.list && !EQ.loading) eqLoad();
+  const r = id ? ((CK.data && CK.data.routines) || []).find(x => x.id === id) : null;
+  const v = r || { title: '', details: '', assets: [], days: [], every_weeks: 1, remind_at: '08:00', starts_on: todayIso(), ends_on: '', people: [] };
+  const days = new Set(v.days), people = new Set((v.people || []).slice(0, 1)), assets = new Set(v.assets), staff = (CK.data && CK.data.people) || [];
+  const assetChips = () => Array.from(assets).map(code => `<span class="chip on">${esc((eqByCode(code) || { name: code }).name)} <button type="button" class="btn-icon ck-x" data-ck-arm="${esc(code)}" aria-label="Remove">${I.x}</button></span>`).join('') || '<span class="tiny muted">None: a general check.</span>';
+  openModal({ title: r ? 'Periodic check' : 'New periodic check', size:'wide', sub: 'What is checked, on which days, the time of the WhatsApp reminder and who does it.',
+    body: `<form novalidate>
+      <div class="field"><label for="ckT">What is the check?</label><input class="inp" id="ckT" maxlength="120" value="${esc(v.title)}" placeholder="e.g. Clean the AHU pre-filters"></div>
+      <div class="field"><label for="ckD">Details (optional)</label><textarea class="inp" id="ckD" rows="2" maxlength="1000" placeholder="e.g. Vacuum and wash; change any torn filter">${esc(v.details || '')}</textarea></div>
+      <div class="field"><span class="lbl">On which machines? (optional)</span><div class="row" style="gap:6px;margin-bottom:6px" id="ckAs">${assetChips()}</div>
+        <input class="inp" id="ckA" list="ckAssets" placeholder="Type to add: AHU 1, compressor..."><datalist id="ckAssets">${spAssetOptions()}</datalist></div>
+      <div class="field"><span class="lbl">Days</span><div class="row" style="gap:6px">${WEEKDAYS.map(([n, l]) => `<button type="button" class="chip big-chip ${days.has(n) ? 'on' : ''}" data-ck-day="${n}">${l}</button>`).join('')}</div></div>
+      <div class="grid g2">
+        <div class="field"><label for="ckW">Every</label><select class="inp" id="ckW">${[1, 2, 3, 4].map(n => `<option value="${n}" ${+v.every_weeks === n ? 'selected' : ''}>${n === 1 ? 'week' : n + ' weeks'}</option>`).join('')}</select></div>
+        <div class="field"><label for="ckR">Reminder at</label><input class="inp" type="time" id="ckR" min="05:00" max="20:00" value="${esc(v.remind_at)}"></div>
+        <div class="field"><label for="ckS">From</label><input class="inp" type="date" id="ckS" value="${esc(v.starts_on)}"></div>
+        <div class="field"><label for="ckE">Until (optional)</label><input class="inp" type="date" id="ckE" value="${esc(v.ends_on || '')}"><div class="hint">${I.info}<span>Empty: it goes on until switched off.</span></div></div></div>
+      <div class="field"><span class="lbl">Who owns it? (one person: they get the WhatsApp reminder and mark it)</span><div class="row" style="gap:6px">${staff.map(p => `<button type="button" class="chip big-chip ${people.has(p.enroll_id) ? 'on' : ''}" data-ck-who="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>
+      <div class="err-msg hide" data-err="ckT"></div></form>`,
+    footer: `${r ? `<button class="btn btn-ghost" data-onoff style="margin-right:auto">${r.active ? 'Switch off' : 'Switch on'}</button>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
+    onMount: (w, close) => {
+      const wireA = () => $$('[data-ck-arm]', w).forEach(b => b.onclick = () => { assets.delete(b.dataset.ckArm); $('#ckAs', w).innerHTML = assetChips(); wireA(); });
+      const a = $('#ckA', w);
+      a.onchange = () => { const code = spAssetFrom(a.value); if (eqByCode(code)) { assets.add(code); a.value = ''; $('#ckAs', w).innerHTML = assetChips(); wireA(); } };
+      wireA();
+      $$('[data-ck-day]', w).forEach(b => b.onclick = () => { const n = +b.dataset.ckDay; if (days.has(n)) days.delete(n); else days.add(n); b.classList.toggle('on', days.has(n)); });
+      $$('[data-ck-who]', w).forEach(b => b.onclick = () => { const k = b.dataset.ckWho; const had = people.has(k); people.clear(); if (!had) people.add(k);
+        $$('[data-ck-who]', w).forEach(x => x.classList.toggle('on', people.has(x.dataset.ckWho))); });
+      const save = async body => { try { await api('/webhook/engineering/api/checks/save', { method:'POST', body:{ routine: body } }); close(); toast('Saved', body.title || '', 'ok'); CK.data = null; render(); }
+                                   catch (e) { setErr('ckT', e.message, w); } };
+      const oo = $('[data-onoff]', w); if (oo) oo.onclick = () => save({ id: r.id, active: !r.active });
+      $('[data-save]', w).onclick = () => {
+        clearErrors(w);
+        const body = { id: r ? r.id : '', title: $('#ckT', w).value.trim(), details: $('#ckD', w).value.trim(), assets: Array.from(assets), days: Array.from(days).sort(),
+                       every_weeks: +$('#ckW', w).value, remind_at: $('#ckR', w).value, starts_on: $('#ckS', w).value, ends_on: $('#ckE', w).value, people: Array.from(people) };
+        if (body.title.length < 3) return setErr('ckT', 'Say what the check is.', w);
+        if (!body.days.length) return setErr('ckT', 'Tap the days.', w);
+        if (!body.remind_at) return setErr('ckT', 'Set the time of the reminder.', w);
+        if (body.people.length !== 1) return setErr('ckT', 'Tap the one person who owns the check.', w);
+        save(body);
+      };
+    } });
+}
+
+/* ---- Requests (the Engineering Manager and the storekeeper): Make a request (to Procurement) and Overtime (to HR), with
+   what Engineering sent lately. The forms are the shared ones in ../requests.js (the same design in every console). */
+let RQ = { data: null };
+async function rqLoad(){ try { RQ.data = await api('/webhook/engineering/api/requests'); } catch (e) { RQ.data = { error: e.message }; } render(); }
+const RQ_STAGE = { engineering: 'Engineering Manager', operations: 'Operations Manager', plant_head: 'Plant Manager', manager: 'Manager' };
+function rqCfg(){
+  return { api: API_BASE, department: 'Engineering', flow: 'engineering', requester: (S.me && S.me.name) || '', icons: I,
+           parts: (SP.list || []).filter(x => x.active).map(x => ({ sku: x.sku, description: x.description, brand: x.brand, part_number: x.part_number })),
+           people: ((RQ.data && RQ.data.people) || SP.people || []).slice().sort((a, b) => a.name.localeCompare(b.name)),
+           toast, onSent: () => { RQ.data = null; render(); } };
+}
+// My approvals: the same page in every console (../waiting.js), from the one server list (okl_waiting): requests to approve (a requisition
+// at my approver seat), work assigned to me (jobs, calls, checks), things I raised that came back, overdue items in my area.
+// A requisition opens its approval page in the Procurement console (sign in once, then the item).
+function viewApprovals(){
+  const pg = oklWaiting.page('engineering');
+  return { title:'My approvals', crumb:'Mine', keepScroll: true, html: pageHead('My approvals', 'What waits for you: requests to approve, work assigned to you, things that came back and overdue items in your area. The number on the menu is this list.') + pg.html };
+}
+route('/requests/approvals', viewApprovals);
+function viewRequests(kind){
+  if (!canRequest()) return { title:'Requests', crumb:'Requests', html: `<div class="card"><div class="card-b">${emptyState('lock', 'Only the Engineering Manager and the storekeeper raise requests here', '')}</div></div>` };
+  if (!window.oklRequests) return { title:'Requests', crumb:'Requests', html: `<div class="card"><div class="card-b">${emptyState('alert', 'The request forms did not load', 'Reload the page.')}</div></div>` };
+  if (!RQ.data) { RQ.data = 'loading'; rqLoad(); }
+  if (!SP.list && !SP.loading) spLoad();
+  const d = RQ.data, ready = d && d !== 'loading' && !d.error;
+  // the same page as every console (../requests.js); the rows are mapped to its shape
+  const rows = !ready ? [] : kind === 'overtime'
+    ? (d.overtime || []).map(o => ({ date: o.work_date, day_type: o.day_type, name: o.name || o.enroll_id, start: o.start, end: o.end, hours: num(o.hours), duty: o.duty, submitted_by: o.submitted_by }))
+    : (d.requisitions || []).map(b => ({ batch_id: b.batch_id, created_at: b.created_at, requester: b.requester, requirement_date: b.requirement_date, decided: b.status === 'processed',
+        status: b.status === 'processed' ? 'Decided' : 'With the ' + (RQ_STAGE[b.stage] || b.stage || 'approver'),
+        items: (b.items || []).map(i => ({ material: i.material, detail: i.detail, qty: num(i.qty), status: i.status })) }));
+  const pg = oklRequests.page(kind, Object.assign(rqCfg(), { lede: kind === 'overtime' ? 'Overtime worked by Engineering staff, to the HR overtime log. The HR Manager is told of the day\'s submissions at midday.' : undefined }), rows);
+  const err = d && d.error ? `<div class="notice warn" style="margin-top:14px">${I.alert}<div>Could not load what was sent: ${esc(d.error)}</div></div>` : '';
+  return { title: pg.title, crumb:'Requests', keepScroll: true, html: pageHead(pg.title, pg.lede) + pg.html + err, bind: pg.bind };
+}
+route('/requests', () => viewRequests('item'));
+route('/requests/overtime', () => viewRequests('overtime'));
+
+/* ---- How to use (7 Nov 2026, user: every new feature comes with a short manual for the people using it). Kept short:
+   one card per task, the steps in the order they are done. Update it with every change people will notice. */
+const HELP = [
+  ['wrench', 'A call from the floor (live)', [
+    'Calls and jobs > <b>Calls</b>. A new call shows "Not accepted".',
+    'Tap <b>I\'m coming</b>, then <b>Start job</b> when you are at the machine. The clock counts while you work.',
+    'Part needed from the store or a supplier? <b>Waiting for part</b>: the floor sees it on the machine. <b>Back on it</b> when it comes.',
+    'Finished: pick what failed, say what was done, then <b>Job done</b>. You go back to the list.',
+    'A call nobody takes in 12 hours, or that the floor ends first, closes by itself and goes to History with the reason.']],
+  ['plus', 'A fix or a PM without a call', [
+    'Calls and jobs > <b>New job</b> (or Preventive maintenance > Start or record PM).',
+    'Pick <b>Fix</b> (something broke) or <b>Preventive (PM)</b>, then <b>Starting now</b> or <b>Already finished</b>.',
+    'Already finished: fill in everything on that page. A fix needs its start and finish times; for a PM the checklist and parts matter, the times are optional.',
+    'Starting now: the job opens under Other jobs; fill it in and tap <b>Job done</b> when you finish, or <b>Save, finish later</b>.']],
+  ['users', 'Who worked on it', [
+    'On a job, tap the others who worked with you. It is optional: working alone, leave it.']],
+  ['x', 'Cancelling a job', [
+    'Only a job opened by mistake, a double, or one with nothing to fix. Tap <b>Cancel job</b>, pick the reason (and say more if it is "Other"). It goes to History with the reason.']],
+  ['check', 'Periodic checks', [
+    'The manager sets a check: what, on which machines, the days, the reminder time and <b>one owner</b>.',
+    'At that time the owner gets a WhatsApp with a link. Open it: <b>Done</b> (with a note if you want) or <b>I could not do it</b> (say why). No sign-in needed.',
+    'Or open Periodic checks in the console and mark it there. Only the owner marks it; others see how it stands.',
+    'At 16:00 the manager gets the checks of the day not marked.',
+    'The same page lists the PMs due this week and the Weekend watch.']],
+  ['layers', 'Weekend watch', [
+    'Every Friday at 11:00 the Engineering Manager gets the machines with the most breakdown trouble that week, ranked, with what to look at over the weekend. The technicians are copied.',
+    'Any time: Periodic checks > Weekend watch.']],
+  ['box', 'Parts: receive, issue, new names', [
+    'Receive parts: pick the parts from the list. A part not in the catalogue: <b>A part not in the catalogue</b>, type its name, type and unit. It gets the next code (e.g. MP 671), shown before you save: pick it by that code next time.',
+    'Issue for equipment not in the list: tick <b>Other</b> and name it. It gets a code (OTH-004...): pick it from the list next time.',
+    'A name like one already there (e.g. "bearings 6205" and "Bearing 6205") is stopped: use the one there, or tick that it is new.',
+    'Changing a part\'s unit after it has moved asks you to confirm: the numbers stay, only the unit changes.']],
+  ['edit', 'Requests (manager and storekeeper)', [
+    '<b>Make a procurement request</b>: spares or any item, to Procurement. Pick a store part and its description fills in; or type a new item and describe it.',
+    '<b>Submit overtime</b>: the date, the times, the work and who; it goes to the HR overtime log.',
+    '<b>My approvals</b> (see below) lists the requisitions waiting for your decision; <b>Open</b> goes to the approval page.']],
+  ['check', 'My approvals', [
+    'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
+    'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
+    'The orange number on the menu is the number of items on this page. It falls as you act.',
+    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['info', 'Phone or laptop', [
+    'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
+  ['edit', 'Suggestions', [
+    'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
+    'It goes to the system team only. It changes nothing in the system.']],
+];
+function viewHelp(){
+  return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task. Ask the Engineering Manager if something is not clear.')
+    + `<div class="grid g2">${HELP.map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
+        <div class="card-b"><ol class="small" style="margin:0;padding-left:18px;line-height:1.55">${steps.map(x => `<li style="margin-bottom:4px">${x}</li>`).join('')}</ol></div></div>`).join('')}</div>` };
+}
+route('/help', viewHelp);

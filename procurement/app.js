@@ -75,13 +75,13 @@ function meFromAuth(auth, scope){
 }
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
-const PAGES = [["/items", "procurement.requests"], ["/new-request", "procurement"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "procurement.requests"], ["/help", "procurement.requests"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
   return hit ? hit[1] : 'procurement';
 }
-function canOpen(path){ return !!levelOf(pageOf(path)); }
+function canOpen(path){ return /^\/(approve|my-approvals|help)(\/|\?|$)/.test(String(path == null ? currentPath() : path)) ? true : !!levelOf(pageOf(path)); }   // approvers open their own requests even without the console's pages
 function canEditHere(){ return levelOf(pageOf()) === 'edit'; }
 
 const API_BASE = 'https://orangegroupsai.online';
@@ -207,11 +207,13 @@ function matchRoute(path){
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   const groups = [
+    { title:'Mine', items:[ { path:'/my-approvals', label:'My approvals', icon:'check', count: () => oklWaiting.count('procurement') } ] },
     { title:'Modules', items:[
       { path:'/items', label:'Procurement Log', icon:'box' },
-      { path:'/new-request', label:'New Request', icon:'plus' },
+      { path:'/new-request', label:'Make a procurement request', icon:'plus' },
     ] },
   ];
+  groups.push({ title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] });
   return groups;
 }
 
@@ -226,7 +228,7 @@ function renderShell(inner, meta){
     ${g.items.map(it => {
       const active = path === it.path || path.startsWith(it.path + '/');
       return `<a class="nav-item ${active?'active':''}" href="#${it.path}">
-        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span></a>`;
+        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span>${it.count ? waitBadge(it.count()) : ''}</a>`;
     }).join('')}`).join('');
 
   return `
@@ -252,9 +254,8 @@ function renderShell(inner, meta){
     <div class="main">
       <header class="topbar">
         <button class="btn-icon menu-btn" onclick="document.body.classList.add('nav-open')" aria-label="Open menu">${I.menu}</button>
-        <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home">
-          <span class="logo sm" style="border-width:1.5px;box-shadow:0 0 0 1.5px var(--brand)">
-            <span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></a>
+        <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home"><span style="display:flex;align-items:center;gap:8px"><img src="../logo.png" alt="Orange Kalbe Limited" style="height:30px;width:auto;display:block">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.12em;color:var(--text-2);line-height:1.15">ORANGE KALBE<br>LIMITED</span></span></a>
         <div style="min-width:0">
           <div class="crumb">${esc(meta.crumb||'')}</div>
           <div class="ttl">${esc(meta.title||'')}</div>
@@ -297,8 +298,9 @@ function fatalErrorHtml(err){
 async function bootstrap(){
   const auth = await api('/webhook/auth/api/me');
   if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
-  const data = await api('/webhook/procurement/api/items');
-  S = { me: meFromAuth(auth, 'procurement'), items: data.items };
+  let data = { items: [] }, limited = false;
+  try { data = await api('/webhook/procurement/api/items'); } catch (e) { if (e && e.status === 403) limited = true; else throw e; }   // an approver without the console's pages still gets My approvals and the approval page
+  S = { me: meFromAuth(auth, 'procurement'), items: data.items || [], limited };
   resetIdleTimer();
 }
 function render(){
@@ -313,6 +315,8 @@ function render(){
     }
     const m = matchRoute(path);
     if (!m){
+      // a link to a page that does not exist (an old e-mail, a typo): open this console's home page and say so, not a dead end
+      if (path.split('?')[0] !== '/' && !window.__oklLost) { window.__oklLost = true; try { toast('That link is out of date', 'Opened the home page instead.', 'warn', 6000); } catch (e) { /* ignore */ } location.hash = '#/'; return; }
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
     }
@@ -570,46 +574,25 @@ route('/', () => viewItems());
 route('/items', () => viewItems());
 
 /* ============================================================
-   New Request - a launcher, not a rebuilt form. Lists every
-   department (Engineering plus each department that has a
-   requester on file), mirroring the hosted requisition landing
-   page; each tile opens that department's hosted form in a new tab.
+   New Request (unified 7 Nov 2026): the shared procurement request form (../requests.js), the same page, checks and
+   words as Engineering, HR, QSync and Production. Pick the department, the requester is you; it goes into the same
+   approvals as the old hosted form. Engineering's own requests (with the store parts list) are made in the Engineering console.
    ============================================================ */
-const REQUISITION_URL = 'https://orangegroupsai.online/webhook/procurement/requisition';
+let NR = { dept: '' };
 function viewNewRequest(){
   if (!rolesCache && !rolesLoading && !rolesError) loadRoles();
   const deptNames = [...new Set((rolesCache || [])
     .filter(r => r.flow === 'dept' && r.stage === 'requester' && r.department)
     .map(r => r.department))].sort();
-  const departments = ['Engineering', ...deptNames];
-
-  const optionCard = (name) => `
-    <a class="card new-request-card" href="${esc(REQUISITION_URL + '?department=' + encodeURIComponent(name))}" target="_blank" rel="noopener"
-       style="display:block;text-decoration:none;color:inherit">
-      <div class="card-h"><h3>${esc(name)}</h3></div>
-      <div class="card-b">
-        <p class="small muted">Submit a material requisition for ${esc(name)}.</p>
-        <div class="row" style="margin-top:14px;gap:6px;color:var(--brand-600);font-weight:600;font-size:13px">
-          Open form ${I.externalLink}
-        </div>
-      </div>
-    </a>`;
-
   let note = '';
-  if (rolesLoading) note = `<div class="hint" style="margin-bottom:14px">${I.info}<span>Loading the other departments...</span></div>`;
-  else if (rolesError) note = `<div class="notice info" style="margin-bottom:14px">${I.info}<div>Could not load the other departments (${esc(rolesError)}).
+  if (rolesLoading) note = `<div class="hint" style="margin-bottom:14px">${I.info}<span>Loading the departments...</span></div>`;
+  else if (rolesError) note = `<div class="notice info" style="margin-bottom:14px">${I.info}<div>Could not load the departments (${esc(rolesError)}).
       <button class="btn btn-ghost btn-sm" onclick="retryRoles()">Retry</button></div></div>`;
-
-  return {
-    title:'New Request', crumb:'Modules',
-    html: `
-    <style>.new-request-card{transition:.16s ease}
-      .new-request-card:hover{border-color:var(--brand);box-shadow:0 8px 24px rgba(16,25,20,.08);transform:translateY(-2px)}</style>
-    ${pageHead('New Request', 'Pick the department this request is for - each opens that department\'s hosted form in a new tab.')}
-    ${note}
-    <div class="grid g3">${departments.map(optionCard).join('')}</div>`,
-    bind(){},
-  };
+  if (!window.oklRequests) return { title:'New Request', crumb:'Modules', html: `<div class="card"><div class="card-b">${emptyState('alert', 'The form did not load', 'Reload the page.')}</div></div>` };
+  const pg = oklRequests.page('item', { api: API_BASE, department: NR.dept, departments: deptNames, flow: 'dept', requester: (S.me && S.me.name) || '', icons: I, toast, noRecent: true,
+    onDept: v => { NR.dept = v; render(); }, onSent: () => render(),
+    lede: 'Pick the department the request is for. It goes to that department\'s approvers, as the old form did. Engineering requests (store parts list) are made in the <a href="../engineering/#/requests">Engineering console</a>.' });
+  return { title: pg.title, crumb:'Modules', keepScroll: true, html: pageHead(pg.title, pg.lede) + note + pg.html, bind: pg.bind };
 }
 route('/new-request', () => viewNewRequest());
 
@@ -659,3 +642,100 @@ function retryRoles(){
 /* ============================================================
    Settings (account info, sign out)
    ============================================================ */
+
+// the orange number beside a menu item (the same look everywhere)
+function waitBadge(n){ return n ? `<span class="nav-count" title="${n} waiting for you" style="margin-left:auto;min-width:20px;padding:1px 7px;border-radius:10px;background:var(--brand);color:#fff;font-size:11px;font-weight:700;text-align:center">${n > 99 ? '99+' : n}</span>` : ''; }
+
+/* ---- My approvals: the same page in every console (../waiting.js), from the one server list (okl_waiting) ---- */
+function viewMyApprovals(){
+  const pg = oklWaiting.page('procurement');
+  return { title:'My approvals', crumb:'Mine', keepScroll: true, html: pageHead('My approvals', 'What waits for you: requests to approve, work assigned to you, things that came back and overdue items in your area. The number on the menu is this list.') + pg.html };
+}
+route('/my-approvals', viewMyApprovals);
+
+
+/* ============================================================
+   The approval page (7 Nov 2026): the link in an approval e-mail opens here, after signing in, on the exact request. Only the
+   approver of the request's current step can decide it (the server checks the signed-in account's seat). It replaces the
+   old checklist page that needed no sign-in: the decision is made as YOU.
+   ============================================================ */
+const AP = {};      // batch id -> { data, error, decisions: {rowNumber: 'approved'|'rejected'}, reason, busy, done }
+async function apLoad(id){
+  const a = AP[id] = AP[id] || { decisions: {}, reason: '' };
+  try { a.data = await api('/webhook/procurement/api/batch?batchId=' + encodeURIComponent(id)); a.error = ''; } catch (e) { a.error = e.message; }
+  render();
+}
+function apSet(id, row, v){ AP[id].decisions[row] = v; render(); }
+function apAll(id, v){ (AP[id].data.items || []).forEach(it => { AP[id].decisions[it.rowNumber] = v; }); render(); }
+async function apSubmit(id){
+  const a = AP[id], items = a.data.items || [];
+  const reasonEl = document.getElementById('apReason'); if (reasonEl) a.reason = reasonEl.value;
+  const undecided = items.filter(it => !a.decisions[it.rowNumber]);
+  if (undecided.length) return toast('Decide every item', undecided.length + ' item(s) still need a decision.', 'err');
+  const rejected = items.some(it => a.decisions[it.rowNumber] === 'rejected');
+  if (rejected && !String(a.reason || '').trim()) return toast('Say why', 'A reason is needed when any item is rejected.', 'err');
+  a.busy = true; render();
+  try {
+    const res = await fetch(API_BASE + '/webhook/procurement/decision', { method:'POST', headers:{ 'Content-Type':'application/json', Authorization: getToken() },
+      body: JSON.stringify({ batchId: id, requesterName: a.data.requester, rejectionReason: rejected ? String(a.reason).trim() : '',
+        decisions: items.map(it => ({ rowNumber: it.rowNumber, material: it.material, detail: it.detail, purpose: it.purpose, qty: it.qty, decision: a.decisions[it.rowNumber] })) }) });
+    const text = await res.text(); let msg = text; try { msg = JSON.parse(text).error || text; } catch (e) { /* plain text answer */ }
+    if (res.status === 401) { rememberHere(); toLanding(); return; }
+    if (!res.ok) throw new Error(msg || ('Not accepted (' + res.status + ')'));
+    a.done = msg || 'Your decision was recorded.'; toast('Decision recorded', a.done, 'ok', 7000);
+    if (window.oklWaiting) oklWaiting.refresh('procurement');
+  } catch (e) { toast('Not recorded', e.message, 'err', 8000); }
+  a.busy = false; render();
+}
+function viewApprove(params){
+  const id = params.batch, a = AP[id];
+  const frame = body => ({ title:'Approve a request', crumb:'Mine', keepScroll: true, html: pageHead('Approve a request', esc(id)) + body });
+  if (!a || (!a.data && !a.error)) { if (!a) AP[id] = { decisions: {}, reason: '' }; if (!AP[id].loading) { AP[id].loading = true; apLoad(id); } return frame('<div class="card"><div class="card-b small muted">Loading...</div></div>'); }
+  if (a.error) return frame(`<div class="card"><div class="card-b">${emptyState('alert', 'Could not open it', esc(a.error), '<a class="btn btn-primary" href="#/my-approvals">My approvals</a>')}</div></div>`);
+  const d = a.data;
+  if (!d.ok) return frame(`<div class="card"><div class="card-b">${emptyState('alert', 'Not found', esc(d.error || ''), '<a class="btn btn-primary" href="#/my-approvals">My approvals</a>')}</div></div>`);
+  const STAGE = { engineering: 'Engineering Manager', operations: 'Operations Manager', manager: 'Department Manager', plant_head: 'Plant Manager' };
+  const head = `<div class="card" style="margin-bottom:12px"><div class="card-b"><div class="row between" style="flex-wrap:wrap;gap:8px"><div><div class="strong mono">${esc(d.batch_id)}</div>
+      <div class="small muted">${esc(d.requester || '')} · ${esc(d.department || '')} · needed by ${esc(String(d.requirement_date || '').slice(0, 10))}</div></div>
+      <span class="badge ${d.status === 'processed' ? 'b-ok' : 'b-warn'}">${d.status === 'processed' ? 'Decided' : 'With the ' + esc(STAGE[d.stage] || d.stage)}</span></div></div></div>`;
+  if (a.done) return frame(head + `<div class="card"><div class="card-b">${emptyState('checkCircle', 'Decision recorded', esc(a.done), '<a class="btn btn-primary" href="#/my-approvals">Back to My approvals</a>')}</div></div>`);
+  const items = d.items || [];
+  const rows = items.map(it => `<tr><td data-label="Item"><div class="strong">${esc(it.material || '')}</div><div class="tiny muted">${esc(it.detail || '')}</div></td>
+      <td data-label="Purpose" class="small">${esc(it.purpose || '')}</td><td data-label="Qty" class="small">${esc(it.qty || '')}</td>
+      <td data-label="Decision">${d.can_decide ? `<div class="row" style="gap:6px"><button class="btn btn-sm ${a.decisions[it.rowNumber] === 'approved' ? 'btn-primary' : 'btn-ghost'}" onclick="apSet('${esc(id)}', ${Number(it.rowNumber)}, 'approved')">Approve</button>
+        <button class="btn btn-sm ${a.decisions[it.rowNumber] === 'rejected' ? 'btn-danger' : 'btn-ghost'}" onclick="apSet('${esc(id)}', ${Number(it.rowNumber)}, 'rejected')">Reject</button></div>` : ''}</td></tr>`).join('');
+  const rejected = items.some(it => a.decisions[it.rowNumber] === 'rejected');
+  const bottom = d.can_decide ? `<div class="row" style="gap:8px;margin:12px 0;flex-wrap:wrap"><button class="btn btn-ghost" onclick="apAll('${esc(id)}','approved')">Approve all</button><button class="btn btn-ghost" onclick="apAll('${esc(id)}','rejected')">Reject all</button></div>
+      ${rejected ? `<div class="field"><label for="apReason">Why are you rejecting? (one reason for the request)</label><textarea class="inp" id="apReason" rows="3" maxlength="500">${esc(a.reason || '')}</textarea></div>` : ''}
+      <div class="row job-actions" style="gap:10px"><button class="btn btn-primary btn-lg" ${a.busy ? 'disabled' : ''} onclick="apSubmit('${esc(id)}')">${I.check} ${a.busy ? 'Sending...' : 'Submit decisions'}</button></div>`
+    : `<div class="notice info" style="margin-top:12px">${I.info}<div>${d.status === 'processed' ? 'This request has been decided.' : 'This request is not waiting for you now. Only the approver of its current step can decide it.'}</div></div>`;
+  return frame(head + `<div class="card"><div class="tbl-wrap"><table class="tbl no-stack"><thead><tr><th>Item</th><th>Purpose</th><th>Qty</th><th>${d.can_decide ? 'Decision' : ''}</th></tr></thead><tbody>${rows}</tbody></table></div></div>` + bottom);
+}
+route('/approve/:batch', viewApprove);
+
+/* ---- How to use (7 Nov 2026: every feature people notice has a short manual) ---- */
+const HELP = [
+  ['box', 'Make a procurement request', [
+    'Menu > <b>Make a procurement request</b>. Pick the department the request is for, then the date it is needed by.',
+    'Add each item: name, description, category, quantity, why. <b>Send for approval</b>: that department\'s manager, then the plant manager.',
+    'Engineering requests (with the store parts list) are made in the Engineering console.']],
+  ['check', 'Approve a request', [
+    'An approval e-mail now links to the request in this console. Sign in with your e-mail and password and you land on it. You can also open it from <b>My approvals</b>.',
+    'Approve or reject each item, then <b>Submit decisions</b>. A reason is needed when any item is rejected. Only the approver of the request\'s current step can decide it.']],
+  ['check', 'My approvals', [
+    'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
+    'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
+    'The orange number on the menu is the number of items on this page. It falls as you act.',
+    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['info', 'Phone or laptop', [
+    'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
+  ['edit', 'Suggestions', [
+    'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
+    'It goes to the system team only. It changes nothing in the system.']],
+];
+function viewHelp(){
+  return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')
+    + `<div class="grid g2">${HELP.map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
+        <div class="card-b"><ol class="small" style="margin:0;padding-left:18px;line-height:1.55">${steps.map(x => `<li style="margin-bottom:4px">${x}</li>`).join('')}</ol></div></div>`).join('')}</div>` };
+}
+route('/help', viewHelp);

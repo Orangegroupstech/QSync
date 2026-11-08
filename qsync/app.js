@@ -171,7 +171,7 @@ function pageOf(path){
   const hit = PAGES.find(([pre]) => p === pre || p.startsWith(pre + '/'));
   return hit ? hit[1] : 'qsync';
 }
-function canOpen(path){ return /^\/help(\?|$)/.test(String(path == null ? currentPath() : path)) ? true : !!levelOf(pageOf(path)); }   // How to use: everyone
+function canOpen(path){ return /^\/(help|my-approvals|ipqa|ipqa-new|qa)(\/|\?|$)/.test(String(path == null ? currentPath() : path)) ? true : !!levelOf(pageOf(path)); }   // How to use: everyone
 function canRaiseRequest(){ return ['submit', 'edit'].includes(levelOf('qsync.requests')); }
 function noAccess(){
   try { sessionStorage.setItem('okl.notice', 'You do not have access to QSync. Ask an admin if you need it.'); } catch(e) { /* ignore */ }
@@ -348,19 +348,20 @@ function queryParams(){
 /* ---------------- Navigation model ---------------- */
 function navModel(){
   return [
+    { title:'Mine', items:[ { path:'/my-approvals', label:'My approvals', icon:'check', count: () => oklWaiting.count('qsync') } ] },
     ...(canRaiseRequest() ? [{ title:'Workspace', items:[ { path:'/new', label:'New Test Request', icon:'plus' } ] }] : []),
     ...(S.lab ? [{ title:'QC Laboratory', items:[
       { path:'/lab/inbox', label:'QC inbox', icon:'inbox' },
       { path:'/lab/my', label:'My analyses', icon:'doc' },
       { path:'/lab/oos', label:'OOS log', icon:'alert' },
     ]}] : []),
-    { title:'Department requests', items:[
-      { path:'/dept/procurement', label:'Procurement request', icon:'box' },
-      { path:'/dept/overtime', label:'Overtime', icon:'clock' },
-    ]},
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
       { path:'/reports', label:'Reports and Trends', icon:'chart' },
+    ]},
+    { title:'Department requests', items:[
+      { path:'/dept/procurement', label:'Make a procurement request', icon:'box' },
+      { path:'/dept/overtime', label:'Submit overtime', icon:'clock' },
     ]},
     { title:'Administration', items:[
       { path:'/lab/master', label:'Lab master data', icon:'settings' },
@@ -384,7 +385,7 @@ function renderShell(inner, meta){
     ${g.items.map(it => {
       const active = path.startsWith(it.path);
       return `<a class="nav-item ${active?'active':''}" href="#${it.path}">
-        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span>${pendingBadge(it.path)}</a>`;
+        <span class="ic">${I[it.icon]}</span><span>${esc(it.label)}</span>${it.count ? waitBadge(it.count()) : pendingBadge(it.path)}</a>`;
     }).join('')}`).join('');
 
   return `
@@ -411,9 +412,8 @@ function renderShell(inner, meta){
     <div class="main">
       <header class="topbar">
         <button class="btn-icon menu-btn" onclick="document.body.classList.add('nav-open')" aria-label="Open menu">${I.menu}</button>
-        <a href="#/requests" class="only-mobile" style="line-height:0" aria-label="QSync home">
-          <span class="logo sm" style="border-width:1.5px;box-shadow:0 0 0 1.5px var(--brand)">
-            <span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></a>
+        <a href="#/requests" class="only-mobile" style="line-height:0" aria-label="QSync home"><span style="display:flex;align-items:center;gap:8px"><img src="../logo.png" alt="Orange Kalbe Limited" style="height:30px;width:auto;display:block">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.12em;color:var(--text-2);line-height:1.15">ORANGE KALBE<br>LIMITED</span></span></a>
         <div style="min-width:0">
           <div class="crumb">${esc(meta.crumb||'')}</div>
           <div class="ttl">${esc(meta.title||'')}</div>
@@ -483,6 +483,8 @@ function render(){
     }
     const m = matchRoute(path);
     if (!m){
+      // a link to a page that does not exist (an old e-mail, a typo): open this console's home page and say so, not a dead end
+      if (path.split('?')[0] !== '/' && !window.__oklLost) { window.__oklLost = true; try { toast('That link is out of date', 'Opened the home page instead.', 'warn', 6000); } catch (e) { /* ignore */ } location.hash = '#/'; return; }
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
     }
@@ -534,180 +536,10 @@ window.addEventListener('hashchange', render);
 function canEdit(){ return levelOf('qsync.master') === 'edit'; }
 function viewNewRequest(){
   if (!canRaiseRequest()) return { title:'New test request', crumb:'Workspace', html:`<div class="card"><div class="card-b">${emptyState('lock','View-only access','Raising a test request needs "submit" access to Test requests. Ask an admin to grant it in User Management.')}</div></div>` };
-  const productOptions = Object.keys(PRODUCTS_META)
-    .map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
-  return {
-    title:'New test request', crumb:'Workspace',
-    html: `
-    ${pageHead('Raise a test request',
-      'Complete the batch details below and submit to IPQA. A unique request number is generated automatically and the expiry date is calculated from the approved shelf life.',
-      `<a class="btn btn-ghost" href="#/requests">Cancel</a>`)}
-    <div class="grid g-2-1">
-      <form id="reqForm" class="card" novalidate>
-        <div class="card-b">
-          <div class="sec-title">${I.box} Product and batch</div>
-          <div class="field">
-            <label for="rqProduct">Product name<span class="req">*</span></label>
-            <select class="inp" id="rqProduct" onchange="onNewReqProductChange()">
-              <option value="">-- Select a product --</option>
-              ${productOptions}
-            </select>
-            <div class="err-msg hide" data-err="rqProduct"></div>
-          </div>
-          <div class="field">
-            <label for="rqBatch">Batch number<span class="req">*</span></label>
-            <div class="inp-group">
-              <div class="addon" id="rqPrefix" style="min-width:52px">--</div>
-              <input class="inp" id="rqBatch" inputmode="numeric" maxlength="8" placeholder="e.g. 260345 - numeric part only">
-            </div>
-            <div class="err-msg hide" data-err="rqBatch"></div>
-          </div>
-          <div class="grid g2">
-            <div class="field">
-              <label for="rqSize">Batch size<span class="req">*</span></label>
-              <div class="inp-group">
-                <input class="inp" id="rqSize" inputmode="numeric" placeholder="e.g. 1200000" oninput="this.dataset.auto='0'">
-                <select class="inp fixed" id="rqUnit" style="max-width:130px" disabled><option value="">Unit</option></select>
-              </div>
-              <div class="err-msg hide" data-err="rqSize"></div>
-            </div>
-            <div class="field">
-              <label for="rqMfg">Manufacturing date (month / year)<span class="req">*</span></label>
-              <input class="inp" id="rqMfg" type="month" oninput="updateNewReqExpiry()" onchange="updateNewReqExpiry()">
-              <div class="err-msg hide" data-err="rqMfg"></div>
-            </div>
-          </div>
-          <div class="field">
-            <label for="rqExp">Expiry date (calculated)</label>
-            <input class="inp" id="rqExp" type="text" readonly tabindex="-1" placeholder="Select a product and manufacturing date">
-            <div class="hint" id="rqExpHint"></div>
-          </div>
-          <div class="field">
-            <label for="rqStage">Stage of manufacture<span class="req">*</span></label>
-            <select class="inp" id="rqStage" disabled><option value="">-- Select a product first --</option></select>
-            <div class="err-msg hide" data-err="rqStage"></div>
-            <div class="hint">${I.info}<span>Compression requests are raised by IPQA on the <a href="${IPQA_COMPRESSION_URL}" target="_blank" rel="noopener">IPQA compression sheet</a>.</span></div>
-          </div>
-        </div>
-        <div class="card-f row end sticky-actions">
-          <a class="btn btn-ghost" href="#/requests">Cancel</a>
-          <button class="btn btn-primary btn-lg" type="submit">${I.send} Submit request</button>
-        </div>
-      </form>
-      <div class="stack">
-        <div class="card"><div class="card-h"><h3>What happens next</h3></div>
-          <div class="card-b">
-            <div class="timeline">
-              <div class="tl-item current"><div class="tl-dot">1</div>
-                <div class="tl-t">You submit this request</div>
-                <div class="tl-m">A request number is generated and IPQA is notified by e-mail.</div></div>
-              <div class="tl-item"><div class="tl-dot">2</div>
-                <div class="tl-t">IPQA records the results</div>
-                <div class="tl-m">Every value is checked against the approved specification.</div></div>
-              <div class="tl-item"><div class="tl-dot">3</div>
-                <div class="tl-t">QA Supervisor reviews and releases</div>
-                <div class="tl-m">Approval notifies QC and generates the QSync sheet.</div></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>`,
-    bind: bindNewRequest
-  };
-}
-function onNewReqProductChange(){
-  const name = $('#rqProduct').value;
-  const meta = PRODUCTS_META[name];
-  const unitSel = $('#rqUnit'), stageSel = $('#rqStage');
-  $('#rqPrefix').textContent = meta ? meta.prefix : '--';
-  // pre-fill the standard batch size unless the user typed their own number
-  const sizeInp = $('#rqSize');
-  if (sizeInp && (!sizeInp.value || sizeInp.dataset.auto === '1')){
-    const std = meta && meta.defaultBatchSize ? String(meta.defaultBatchSize) : '';
-    sizeInp.value = std; sizeInp.dataset.auto = std ? '1' : '';
-  }
-  updateNewReqExpiry();
-  if (!meta){
-    unitSel.innerHTML = '<option value="">Unit</option>'; unitSel.disabled = true;
-    stageSel.innerHTML = '<option value="">-- Select a product first --</option>'; stageSel.disabled = true;
-    return;
-  }
-  unitSel.innerHTML = UNIT_OPTIONS[meta.type].map(u => `<option value="${u}">${u}</option>`).join('');
-  unitSel.disabled = false;
-  unitSel.value = meta.type === 'OLD' ? 'litres' : 'tablets';
-  stageSel.innerHTML = '<option value="">-- Select a stage --</option>' +
-    STAGE_OPTIONS[meta.type].filter(s => !(meta.noStages || []).includes(s)).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
-  stageSel.disabled = false;
-}
-// this month in Lagos as yyyy-mm: the server refuses a later manufacturing month
-function thisMonthLagos(){
-  const p = {}; new Intl.DateTimeFormat('en-GB', { timeZone:'Africa/Lagos', year:'numeric', month:'2-digit' }).formatToParts(new Date()).forEach(x => { p[x.type] = x.value; });
-  return p.year + '-' + p.month;
-}
-// Same rule as the backend: expiry = manufacturing month + the product's shelf life (months)
-function updateNewReqExpiry(){
-  const out = $('#rqExp'), hint = $('#rqExpHint');
-  if (!out) return;
-  const name = $('#rqProduct').value, mfg = $('#rqMfg').value;
-  const prod = (S && S.products || []).find(p => p.name === name);
-  const mfgEl = $('#rqMfg'); if (mfgEl) mfgEl.max = thisMonthLagos();
-  if (!name || !/^\d{4}-\d{2}$/.test(mfg) || mfg > thisMonthLagos()){ out.value = ''; hint.textContent = mfg > thisMonthLagos() ? 'The manufacturing month cannot be later than this month.' : ''; return; }
-  const months = Number(prod && prod.shelfLifeMonths) || 60;
-  const [y, m] = mfg.split('-').map(Number);
-  const total = y * 12 + (m - 1) + months;
-  out.value = MONTHS[total % 12] + ' ' + Math.floor(total / 12);
-  hint.textContent = 'Calculated from the ' + months + '-month shelf life of ' + name + '.';
-}
-let newReqToken = '';
-function makeSubmissionToken(){
-  return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
-    : Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-}
-function bindNewRequest(){
-  const f = $('#reqForm'); if (!f) return;
-  if (!newReqToken) newReqToken = makeSubmissionToken();
-  f.onsubmit = async (e) => {
-    e.preventDefault();
-    clearErrors(f);
-    const product = $('#rqProduct').value;
-    const meta = PRODUCTS_META[product];
-    if (!product || !meta) return setErr('rqProduct', 'Select a product.');
-    const suffix = $('#rqBatch').value.trim();
-    if (!/^[0-9]{1,8}$/.test(suffix)) return setErr('rqBatch', 'Enter 1 to 8 digits.');
-    const size = $('#rqSize').value.trim();
-    if (!size || isNaN(Number(size)) || Number(size) <= 0) return setErr('rqSize', 'Enter a batch size greater than zero.');
-    const unit = $('#rqUnit').value;
-    if (!unit) return setErr('rqSize', 'Select a unit.');
-    const stage = $('#rqStage').value;
-    if (!stage) return setErr('rqStage', 'Select a stage.');
-    const mfg = $('#rqMfg').value;
-    if (!mfg) return setErr('rqMfg', 'Select a manufacturing month.');
-    if (mfg > thisMonthLagos()) return setErr('rqMfg', 'Manufacturing date cannot be later than the current month.');
-
-    const prefixLetter = $('#rqPrefix').textContent;
-    const btn = f.querySelector('button[type=submit]');
-    btn.disabled = true;
-    try {
-      const res = await api('/webhook/admin/api/requests', { method:'POST', body:{
-        product_name: product,
-        batch_no: prefixLetter + suffix,
-        batch_size: size,
-        batch_size_unit: unit,
-        mfg_date: mfg,
-        stage,
-        submission_token: newReqToken,
-      }});
-      newReqToken = '';
-      toast('Request submitted', res.requestNo + ' has been raised and IPQA/QC notified.', 'ok');
-      await bootstrap();
-      go('/requests');
-    } catch (err){
-      // the server's own reason when it gives one; a bare failure is not the batch number's fault
-      toast('Could not submit this request', err.message && err.message !== 'Something went wrong.' ? err.message : 'The server refused it. Check every field (the manufacturing month cannot be in the future) and try again.', 'err');
-    } finally {
-      btn.disabled = false;
-    }
-  };
+  // the one form shared with the Production console (frontend/testrequest.js)
+  const pg = oklTestRequest.page({ api: API_BASE, products: (S && S.products) || [], icons: I, toast, pageHead, cancelHref: '#/requests',
+    onDone: async () => { await bootstrap(); go('/requests'); } });
+  return { title:'New test request', crumb:'Workspace', html: pg.html, bind: pg.bind };
 }
 
 /* ============================================================
@@ -1220,6 +1052,8 @@ function exportAudit(){
    Routes
    ============================================================ */
 route('/new', () => viewNewRequest());
+// the console's home: the first page this person may open (a link to "QSync" with no page, or to a page that is gone, lands here)
+route('/', () => { const first = allowedNav()[0]; location.replace('#' + (first ? first.items[0].path : '/requests')); return { title:'QSync', crumb:'', html:'' }; });
 route('/requests', () => viewRequests());
 route('/sheet/:id', p => viewSheet(p.id));
 route('/reports', () => viewReports());
@@ -1228,4 +1062,37 @@ route('/products', () => { mdTab = 'products'; mdProduct = null; go('/lab/master
 route('/products/:id', p => { mdTab = 'products'; mdProduct = Number(p.id); go('/lab/master'); return labWait('Lab master data', 'Administration'); });
 route('/audit', () => viewAudit());
 
+// the orange number beside a menu item (the same look everywhere)
+function waitBadge(n){ return n ? `<span class="nav-count" title="${n} waiting for you" style="margin-left:auto;min-width:20px;padding:1px 7px;border-radius:10px;background:var(--brand);color:#fff;font-size:11px;font-weight:700;text-align:center">${n > 99 ? '99+' : n}</span>` : ''; }
+
+/* ---- My approvals: the same page in every console (../waiting.js), from the one server list (okl_waiting) ---- */
+function viewMyApprovals(){
+  const pg = oklWaiting.page('qsync');
+  return { title:'My approvals', crumb:'Mine', keepScroll: true, html: pageHead('My approvals', 'What waits for you: requests to approve, work assigned to you, things that came back and overdue items in your area. The number on the menu is this list.') + pg.html };
+}
+route('/my-approvals', viewMyApprovals);
+/* The IPQA sheet and the QA review inside the console (8 Nov 2026). The same page the e-mail used to open, served after sign-in: the
+   server sees the console session, shows the sign-off as "type your full name" (no password) and checks the name is yours.
+   Access is decided by the server (IPQA / QA Supervisor sign-off in Users); the page only shows what it answers. */
+function viewSignoff(kind, no){
+  const isQa = kind === 'qa', isNew = kind === 'ipqa-new';
+  const url = API_BASE + '/webhook/test-request/' + (isQa ? 'qa' : 'ipqa') + (isNew ? '?new=compression' : '?request_no=' + encodeURIComponent(no || ''));
+  const title = isQa ? 'QA review - ' + no : isNew ? 'New Compression request (IPQA)' : 'IPQA sheet - ' + no;
+  return { title, crumb:'Workspace',
+    html: `${pageHead(title, isQa ? 'Review the IPQA results, then approve or send back. You sign by typing your name.' : 'Record the IPQA results. You sign by typing your name.', `<a class="btn btn-ghost" href="#/my-approvals">Back to My approvals</a>`)}
+      <div class="card"><div class="card-b" style="padding:0"><div id="soNote" class="small muted" style="padding:14px">Loading the page...</div>
+      <iframe id="soFrame" title="${esc(title)}" style="width:100%;border:0;min-height:480px;display:none;background:#fff"></iframe></div></div>`,
+    bind(){
+      const fr = $('#soFrame'), note = $('#soNote'); if (!fr) return;
+      fetch(url, { headers: { Authorization: getToken() || '' } }).then(r => r.text().then(h => ({ ok: r.ok, h }))).then(r => {
+        if (!r.ok && !/<html/i.test(r.h)) { note.textContent = 'The page could not be opened. Try again.'; return; }
+        fr.srcdoc = r.h; fr.style.display = 'block'; note.style.display = 'none';
+        const fit = () => { if (!document.body.contains(fr)) return clearInterval(t); try { const d = fr.contentDocument; if (d && d.documentElement) fr.style.height = Math.max(480, d.documentElement.scrollHeight + 8) + 'px'; } catch (e) { /* ignore */ } };
+        const t = setInterval(fit, 500); fr.onload = fit;
+      }).catch(() => { note.textContent = 'Could not reach the server. Check your connection and try again.'; });
+    } };
+}
+route('/ipqa/:no', p => viewSignoff('ipqa', p.no));
+route('/ipqa-new', () => viewSignoff('ipqa-new'));
+route('/qa/:no', p => viewSignoff('qa', p.no));
 

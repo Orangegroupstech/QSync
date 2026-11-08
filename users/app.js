@@ -246,9 +246,8 @@ function renderShell(inner, meta){
     <div class="main">
       <header class="topbar">
         <button class="btn-icon menu-btn" onclick="document.body.classList.add('nav-open')" aria-label="Open menu">${I.menu}</button>
-        <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home">
-          <span class="logo sm" style="border-width:1.5px;box-shadow:0 0 0 1.5px var(--brand)">
-            <span class="berry"><i></i><i></i><b></b></span><span>ORANGE GROUP</span></span></a>
+        <a href="#/" class="only-mobile" style="line-height:0" aria-label="Home"><span style="display:flex;align-items:center;gap:8px"><img src="../logo.png" alt="Orange Kalbe Limited" style="height:30px;width:auto;display:block">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.12em;color:var(--text-2);line-height:1.15">ORANGE KALBE<br>LIMITED</span></span></a>
         <div style="min-width:0">
           <div class="crumb">${esc(meta.crumb||'')}</div>
           <div class="ttl">${esc(meta.title||'')}</div>
@@ -316,6 +315,8 @@ function render(){
     const path = currentPath();
     const m = matchRoute(path);
     if (!m){
+      // a link to a page that does not exist (an old e-mail, a typo): open this console's home page and say so, not a dead end
+      if (path.split('?')[0] !== '/' && !window.__oklLost) { window.__oklLost = true; try { toast('That link is out of date', 'Opened the home page instead.', 'warn', 6000); } catch (e) { /* ignore */ } location.hash = '#/'; return; }
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
     }
@@ -1042,13 +1043,14 @@ function aprPaint(){
     $('#aprFDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option ${aprFilter.dept === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
     $('#aprFRole').innerHTML = '<option value="">All roles</option>' + ro.map(d => `<option ${aprFilter.role === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
   }
-  const all = aprState.rows, rows = aprFiltered(), unlinked = all.filter(r => !r.enroll_id).length, other = all.filter(r => r.enroll_id && aprIssues(r).length).length + all.filter(r => !r.enroll_id && !EMAIL_OK(r.email)).length;
+  const isReq = r => r.flow === 'dept' && r.stage === 'requester';
+  const all = aprState.rows.filter(r => !isReq(r)), rows = aprFiltered().filter(r => !isReq(r)), unlinked = all.filter(r => !r.enroll_id).length, other = all.filter(r => r.enroll_id && aprIssues(r).length).length + all.filter(r => !r.enroll_id && !EMAIL_OK(r.email)).length;
   const hr = r => r.flow === 'dept' && r.stage === 'manager' && /\(HR approver\)/.test(r.used_by || '');
-  const hasReq = new Set(all.filter(r => r.flow === 'dept' && r.stage === 'requester').map(r => String(r.department).toLowerCase()));
+  const hasReq = new Set(aprState.rows.filter(r => r.flow === 'dept' && r.stage === 'requester').map(r => String(r.department).toLowerCase()));
   // why a row cannot be removed (empty = it can). The server enforces the same rules.
   const keep = r => r.flow === 'engineering' ? 'Each step of the engineering flow needs exactly one person, so it can only be changed, not removed.'
     : hr(r) ? 'This is the HR approver for Leave. Change who it is instead of removing it.'
-    : (r.stage === 'manager' && hasReq.has(String(r.department).toLowerCase())) ? 'This department still has requesters, so it needs a manager. Change the manager instead.' : '';
+    : (r.stage === 'manager' && hasReq.has(String(r.department).toLowerCase())) ? 'The external department form still lists requesters, so it needs a manager. Change the manager instead.' : '';
   box.innerHTML = `${unlinked || other ? `<div class="notice warn" style="margin:14px">${I.alert}<div>${unlinked ? `<b>${unlinked}</b> of ${all.length} approver${all.length === 1 ? ' is' : 's are'} not linked to an employee record yet. ` : ''}${other ? `<b>${other}</b> ha${other === 1 ? 's' : 've'} an email that looks wrong or an employee who has left. ` : ''}Linking lets Leave recognise the person exactly (their own leave is never sent to themselves).</div></div>` : ''}
     ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Department</th><th>Role</th><th>Person</th><th>Employee record</th><th>Used by</th><th></th></tr></thead><tbody>
       ${rows.map(r => `<tr>
@@ -1061,14 +1063,14 @@ function aprPaint(){
         <td data-label=""><div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="aprOpen('${esc(r.role_key)}')">${I.edit} Change</button>
           ${keep(r) ? `<button class="btn btn-ghost btn-sm" disabled title="${esc(keep(r))}" aria-label="${esc(keep(r))}" style="opacity:.45;cursor:not-allowed">${I.x} Remove</button>` : `<button class="btn btn-ghost btn-sm" onclick="aprRemove('${esc(r.role_key)}')">${I.x} Remove</button>`}</div></td></tr>`).join('')}
       </tbody></table></div>` : `<div class="small muted" style="padding:14px">No approvers match these filters.</div>`}
-    <div class="small muted" style="padding:14px">${rows.length === all.length ? all.length : rows.length + ' of ' + all.length} approver${all.length === 1 ? '' : 's'}. <b>Requesters</b> can submit a Procurement request for their department. <b>Managers</b> approve Procurement requests and are the first approver for Leave.
+    <div class="small muted" style="padding:14px">${rows.length === all.length ? all.length : rows.length + ' of ' + all.length} approver${all.length === 1 ? '' : 's'}. <b>Managers</b> approve Procurement requests and are the first approver for Leave.
       <b>Business Support/HR is the HR department:</b> its manager is the HR approver for Leave, after the person's own manager.
       <b>Remove</b> is greyed out where the system needs that person: the engineering steps, the HR approver, and a manager whose department still has requesters. Change them instead (hover the button to see why).</div>`;
 }
 route('/approvers', () => ({
   title:'Approvers', crumb:'Admin',
-  html: `${pageHead('Approvers', 'Who approves requests and who can submit them. Procurement and Leave both use this one list.',
-    `<button class="btn btn-ghost" onclick="aprSuggest()">${I.check} Suggest links</button><button class="btn btn-ghost" onclick="aprOpen('', 'requester')">${I.plus} Add requester</button><button class="btn btn-primary" onclick="aprOpen('', 'manager')">${I.plus} Add department manager</button>`)}
+  html: `${pageHead('Approvers', 'Who approves requests. Anyone signed in raises a request in their own name; what they may raise is set by their access. Procurement and Leave both use this one list.',
+    `<button class="btn btn-ghost" onclick="aprSuggest()">${I.check} Suggest links</button><button class="btn btn-primary" onclick="aprOpen('', 'manager')">${I.plus} Add department manager</button>`)}
     <div class="row filter-bar" id="aprFilters" style="margin-bottom:14px"></div><div class="card"><div id="aprBody"></div></div>`,
   bind(){ aprPaintFilters(); aprPaint(); aprLoad(true); },
 }));
