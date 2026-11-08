@@ -207,6 +207,7 @@ function navModel(){
       { path:'/people', label:'People', icon:'users' },
       { path:'/roles', label:'Roles', icon:'layers' },
       { path:'/approvers', label:'Approvers', icon:'key' },
+      { path:'/requesters', label:'Outside-form requesters', icon:'users' },
       { path:'/audit', label:'Activity', icon:'activity' },
     ] },
   ];
@@ -1006,7 +1007,7 @@ async function aprLoad(force){
     if (e) aprState.employees = (e.employees || []).filter(x => (x.status || 'active') !== 'inactive').map(x => ({ enroll_id:x.enroll_id, name:proper(x.name), department:x.department, email:x.email || x.work_email || '', type:x.employment_type })).sort((p, q) => p.name.localeCompare(q.name));
     if (d) aprState.departments = d.departments || [];
   } catch (err) { aprState.rows = aprState.rows || []; toast('Could not load approvers', err.message, 'err'); }
-  aprState.loading = false; aprPaint();
+  aprState.loading = false; aprPaint(); rqPaint();
 }
 function aprIssues(r){
   const out = [];
@@ -1024,8 +1025,9 @@ function aprFiltered(){
     (!q || (String(r.name) + ' ' + String(r.email) + ' ' + String(r.employee_name || '') + ' ' + String(r.enroll_id || '')).toLowerCase().includes(q)))
     .sort((x, y) => aprDept(x).localeCompare(aprDept(y)) || (aprRank[x.stage] - aprRank[y.stage]) || String(x.name).localeCompare(String(y.name)));
 }
-// requester rows are not shown here (unify round): the external department form still reads them
-const aprShown = () => (aprState.rows || []).filter(r => !(r.flow === 'dept' && r.stage === 'requester'));
+// requester rows are not shown here: they are only for the forms used outside the console, managed on Outside-form requesters
+const aprIsReq = r => r.stage === 'requester';
+const aprShown = () => (aprState.rows || []).filter(r => !aprIsReq(r));
 function aprPaintFilters(){
   const rows = aprShown(), f = $('#aprFilters'); if (!f) return;
   const depts = [...new Set(rows.map(aprDept))].sort(), roles = [...new Set(rows.map(r => r.label || r.stage))].sort();
@@ -1045,8 +1047,7 @@ function aprPaint(){
     $('#aprFDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option ${aprFilter.dept === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
     $('#aprFRole').innerHTML = '<option value="">All roles</option>' + ro.map(d => `<option ${aprFilter.role === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
   }
-  const isReq = r => r.flow === 'dept' && r.stage === 'requester';
-  const all = aprState.rows.filter(r => !isReq(r)), rows = aprFiltered().filter(r => !isReq(r)), unlinked = all.filter(r => !r.enroll_id).length, other = all.filter(r => r.enroll_id && aprIssues(r).length).length + all.filter(r => !r.enroll_id && !EMAIL_OK(r.email)).length;
+  const all = aprShown(), rows = aprFiltered().filter(r => !aprIsReq(r)), unlinked = all.filter(r => !r.enroll_id).length, other = all.filter(r => r.enroll_id && aprIssues(r).length).length + all.filter(r => !r.enroll_id && !EMAIL_OK(r.email)).length;
   const hr = r => r.flow === 'dept' && r.stage === 'manager' && /\(HR approver\)/.test(r.used_by || '');
   const hasReq = new Set(aprState.rows.filter(r => r.flow === 'dept' && r.stage === 'requester').map(r => String(r.department).toLowerCase()));
   // why a row cannot be removed (empty = it can). The server enforces the same rules.
@@ -1067,7 +1068,8 @@ function aprPaint(){
       </tbody></table></div>` : `<div class="small muted" style="padding:14px">No approvers match these filters.</div>`}
     <div class="small muted" style="padding:14px">${rows.length === all.length ? all.length : rows.length + ' of ' + all.length} approver${all.length === 1 ? '' : 's'}. <b>Managers</b> approve Procurement requests and are the first approver for Leave.
       <b>Business Support/HR is the HR department:</b> its manager is the HR approver for Leave, after the person's own manager.
-      <b>Remove</b> is greyed out where the system needs that person: the engineering steps, the HR approver, and a manager whose department still has requesters. Change them instead (hover the button to see why).</div>`;
+      <b>Remove</b> is greyed out where the system needs that person: the engineering steps, the HR approver, and a manager whose department still has requesters. Change them instead (hover the button to see why).
+      Requesters for the forms used outside the console are on <a href="#/requesters">Outside-form requesters</a>.</div>`;
 }
 route('/approvers', () => ({
   title:'Approvers', crumb:'Admin',
@@ -1117,18 +1119,19 @@ function aprSuggest(){
     },
   });
 }
-function aprOpen(roleKey, newStage){
+function aprOpen(roleKey, newStage, presetDept){
   const row = roleKey ? (aprState.rows || []).find(r => r.role_key === roleKey) : null;
   if (roleKey && !row) return;
-  const emps = aprState.employees || [], deps = aprState.departments || [];
+  const emps = aprState.employees || [], deps = [...new Set((aprState.departments || []).concat(presetDept ? [presetDept] : []))];
+  const isReqDlg = row ? row.stage === 'requester' : newStage === 'requester';
   const body = `${row ? `<div class="small muted" style="margin-bottom:12px">${esc(row.label || row.stage)}${row.department ? ' - ' + esc(row.department) : ''}. Change who this is.</div>`
-      : `<div class="field"><label for="aprDept">Department</label><select class="inp" id="aprDept"><option value="">Choose...</option>${deps.map(d => `<option>${esc(d)}</option>`).join('')}</select><div class="err-msg hide" data-err="aprDept"></div></div>`}
+      : `<div class="field"><label for="aprDept">Department</label><select class="inp" id="aprDept"><option value="">Choose...</option>${deps.map(d => `<option ${d === presetDept ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select><div class="err-msg hide" data-err="aprDept"></div></div>`}
     <div class="field"><label for="aprFind">Employee record</label><input class="inp" id="aprFind" placeholder="Type to search by name, ID or department" autocomplete="off">
       <select class="inp" id="aprEmp" size="6" style="margin-top:6px"></select><div class="small muted" style="margin-top:4px">Link the person so the system recognises them. Their name and email are filled in from the record.</div></div>
     <div class="grid g2"><div class="field"><label for="aprName">Name shown</label><input class="inp" id="aprName" maxlength="100" value="${esc(row ? row.name : '')}"><div class="err-msg hide" data-err="aprName"></div></div>
       <div class="field"><label for="aprEmail">Email</label><input class="inp" id="aprEmail" type="email" value="${esc(row ? row.email : '')}"><div class="err-msg hide" data-err="aprEmail"></div></div></div>`;
   openModal({
-    title: row ? 'Change approver' : (newStage === 'manager' ? 'Add department manager' : 'Add requester'), size:'wide', body,
+    title: row ? (isReqDlg ? 'Change requester' : 'Change approver') : (newStage === 'manager' ? 'Add department manager' : 'Add requester'), size:'wide', body,
     footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
     onMount: (w, close) => {
       let picked = row && row.enroll_id ? row.enroll_id : '';
@@ -1153,12 +1156,66 @@ function aprOpen(roleKey, newStage){
         const btn = $('[data-save]', w); btn.disabled = true;
         try {
           await api('/webhook/users/api/approvers/save', { method:'POST', body:{ role_key: row ? row.role_key : '', flow:'dept', stage: row ? row.stage : newStage, department: dept, name, email, enroll_id: picked } });
-          close(); toast('Saved', (name || 'Approver') + ' saved.', 'ok'); aprLoad(true);
+          close(); toast('Saved', (name || (isReqDlg ? 'Requester' : 'Approver')) + ' saved.', 'ok'); aprLoad(true);
         } catch (err) { setErr('aprEmail', err.message, w); btn.disabled = false; }
       };
     },
   });
 }
+/* ============================================================
+   Outside-form requesters: the people the request forms used OUTSIDE the console know (no sign-in there).
+   - Department form (procurement/requisition?department=): lists the departments that have requesters, and the
+     requester names of the department picked; the request goes to that department's manager (Approvers).
+   - Engineering form: one requester, whose e-mail gets the result of Engineering requests sent from that form.
+   Requests made in a console do not use this list: they take the name and e-mail of whoever is signed in.
+   Same server functions as Approvers (users/api/approvers, save, delete).
+   ============================================================ */
+function rqPaint(){
+  const box = $('#rqBody'); if (!box) return;
+  if (!aprState.rows) { box.innerHTML = `<div class="card"><div class="card-b small muted">Loading...</div></div>`; return; }
+  const all = aprState.rows, reqs = all.filter(aprIsReq);
+  const eng = reqs.filter(r => r.flow === 'engineering'), dept = reqs.filter(r => r.flow === 'dept');
+  const managers = new Set(all.filter(r => r.flow === 'dept' && r.stage === 'manager').map(r => String(r.department).toLowerCase()));
+  const byDept = {};
+  dept.forEach(r => { (byDept[r.department] = byDept[r.department] || []).push(r); });
+  const names = Object.keys(byDept).sort((a, b) => a.localeCompare(b));
+  const issues = r => aprIssues(r).map(([x, c]) => `<span class="badge ${c}" style="margin-left:6px">${esc(x)}</span>`).join('');
+  const person = (r, canRemove, why) => `<div class="row between" style="gap:10px;padding:10px 0;border-bottom:1px solid var(--line-2);flex-wrap:wrap">
+      <div style="min-width:0"><div class="strong">${esc(r.name)}${issues(r)}</div><div class="small muted wrap-any">${esc(r.email)}${r.enroll_id ? ' · ' + esc(proper(r.employee_name || '')) + ' <span class="tiny mono">' + esc(r.enroll_id) + '</span>' : ''}</div></div>
+      <div class="row" style="gap:6px"><button class="btn btn-ghost btn-sm" onclick="aprOpen('${esc(r.role_key)}')">${I.edit} Change</button>
+        ${canRemove ? `<button class="btn btn-ghost btn-sm" onclick="rqRemove('${esc(r.role_key)}')">${I.x} Remove</button>`
+          : `<button class="btn btn-ghost btn-sm" disabled title="${esc(why)}" aria-label="${esc(why)}" style="opacity:.45;cursor:not-allowed">${I.x} Remove</button>`}</div></div>`;
+  const deptCards = names.map(d => {
+    const list = byDept[d].sort((x, y) => String(x.name).localeCompare(String(y.name)));
+    const noMgr = !managers.has(String(d).toLowerCase());
+    return `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>${esc(d)}</h3><div class="sub">${list.length} requester${list.length === 1 ? '' : 's'} on the department request form</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="aprOpen('', 'requester', '${esc(d).replace(/'/g, '&#39;')}')">${I.plus} Add requester</button></div>
+      <div class="card-b" style="padding-top:4px">${noMgr ? `<div class="notice warn" style="margin:8px 0">${I.alert}<div>This department has no manager on <a href="#/approvers">Approvers</a>, so its requests have no one to go to. Add its manager there.</div></div>` : ''}
+        ${list.map(r => person(r, true)).join('')}</div></div>`;
+  }).join('');
+  const engCard = `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>Engineering</h3><div class="sub">The Engineering request form: this person gets the result of requests sent from it</div></div></div>
+      <div class="card-b" style="padding-top:4px">${eng.length ? eng.map(r => person(r, false, 'The Engineering form needs exactly one requester, so it can only be changed, not removed.')).join('')
+        : '<div class="small muted" style="padding:10px 0">No Engineering requester is set.</div>'}</div></div>`;
+  box.innerHTML = `<div class="notice info" style="margin-bottom:14px">${I.info}<div>These people are used only by the request forms opened <b>outside the console</b> (no sign-in), for departments without a console such as HSE and Warehouse.
+      The department form lists only the departments below. A request made <b>in a console</b> does not use this list: it takes the name and e-mail of whoever is signed in.</div></div>
+    ${engCard}${deptCards || '<div class="card"><div class="card-b small muted">No department has requesters, so the department request form lists no department.</div></div>'}`;
+}
+async function rqRemove(roleKey){
+  const row = (aprState.rows || []).find(r => r.role_key === roleKey); if (!row) return;
+  const left = (aprState.rows || []).filter(r => r.flow === 'dept' && r.stage === 'requester' && r.department === row.department).length;
+  const msg = `<b>${esc(row.name)}</b> will no longer be listed on the request form for <b>${esc(row.department || '')}</b>.`
+    + (left <= 1 ? `<div class="notice warn" style="margin-top:10px">${I.alert}<div>This is the last requester of ${esc(row.department || '')}: the department will <b>no longer appear</b> on the department request form used outside the console.</div></div>` : '');
+  if (!await confirmDialog('Remove this requester?', msg, 'Remove', 'danger')) return;
+  try { await api('/webhook/users/api/approvers/delete', { method:'POST', body:{ role_key: roleKey } }); toast('Removed', row.name + ' was removed.', 'ok'); aprLoad(true); }
+  catch (err) { toast('Could not remove', err.message, 'err'); }
+}
+route('/requesters', () => ({
+  title:'Outside-form requesters', crumb:'Admin',
+  html: `${pageHead('Outside-form requesters', 'Who can be picked as the requester on the request forms used outside the console.',
+    `<button class="btn btn-primary" onclick="aprOpen('', 'requester')">${I.plus} Add requester</button>`)}<div id="rqBody"></div>`,
+  bind(){ rqPaint(); aprLoad(true); },
+}));
+
 async function aprRemove(roleKey){
   const row = (aprState.rows || []).find(r => r.role_key === roleKey); if (!row) return;
   if (!await confirmDialog('Remove this approver?', `<b>${esc(row.name)}</b> (${esc(row.label || row.stage)}, ${esc(row.department || '')}) will be taken off the list.`, 'Remove', 'danger')) return;
