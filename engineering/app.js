@@ -619,7 +619,8 @@ function viewAhu(){
     <span class="lbl">${D ? esc(monthLabel(D.month)) : 'Loading...'}</span>
     <button class="btn btn-ghost btn-sm" onclick="ahuShift(1)" aria-label="Next month" ${D && D.month >= D.today.slice(0, 7) ? 'disabled' : ''}>${I.chevR}</button>
     <button class="btn btn-ghost btn-sm" onclick="ahuThisMonth()">This month</button>
-    <a class="btn btn-ghost btn-sm" href="${SHEET_URL}" target="_blank" rel="noopener">${I.externalLink} Google Sheet</a></div>`;
+    <a class="btn btn-ghost btn-sm" href="${SHEET_URL}" target="_blank" rel="noopener">${I.externalLink} Google Sheet</a>
+    ${canRecordAhu() ? `<a class="btn btn-primary btn-sm" href="#/ahu/record">${I.plus || ''} Record readings</a>` : ''}</div>`;
   const head = pageHead('AHU Temperature Log', 'Daily room temperatures from the 34 production rooms. Readings are taken between 2:00 and 4:00 pm on working days; the limit is 25 °C.', nav);
   if (AHU.error) return { title:'AHU Temperature Log', crumb:'Engineering', keepScroll:true, bind(){}, html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(AHU.error),
     `<button class="btn btn-primary" onclick="ahuLoad('${esc(AHU.month)}')">Retry</button>`)}</div></div>` };
@@ -638,6 +639,125 @@ function viewAhu(){
   };
 }
 route('/ahu', viewAhu);
+
+/* ---- Record readings (migration 055, 9 Nov 2026): anyone with "submit" or "edit" on AHU temperatures records the day here,
+   signed in, so an absent action owner no longer blocks the log. Today and the last 3 working days; a past day is "Backfilled".
+   GET /webhook/engineering/api/ahu/form?date=YYYY-MM-DD (okl_eng_ahu_record_form), POST /webhook/engineering/api/ahu/record
+   (okl_eng_ahu_record -> the same save, group notice and Google Sheet row as before). The WhatsApp reminder links here. */
+const canRecordAhu = () => ['submit', 'edit'].includes(levelOf('engineering.ahu'));
+let AHUREC = { key:null, data:null, loading:false, error:'', saving:false, msg:'', done:null };
+function ahuRecDate(){ const m = /[?&]date=(\d{4}-\d{2}-\d{2})/.exec(currentPath()); return m ? m[1] : ''; }
+async function ahuRecLoad(date){
+  AHUREC = { key:date, data:null, loading:true, error:'', saving:false, msg:'', done:null };
+  render();
+  try {
+    const r = await api('/webhook/engineering/api/ahu/form' + (date ? '?date=' + encodeURIComponent(date) : ''));
+    if (ahuRecDate() !== date) return;                 // the person moved on to another day meanwhile
+    if (!r.ok) AHUREC.error = r.error || 'This day cannot be recorded.';
+    AHUREC.data = r;
+  } catch (e) { AHUREC.error = e.message; }
+  AHUREC.loading = false;
+  render();
+}
+const ahuDayLabel = iso => { const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number); const dt = new Date(Date.UTC(y, m - 1, d));
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()] + ' ' + d + ' ' + MONTHS[m - 1].slice(0, 3); };
+function ahuRecParse(v){
+  v = String(v == null ? '' : v).trim().replace(',', '.');
+  if (v === '') return { blank:true };
+  if (!/^\d{1,2}(\.\d{1,2})?$/.test(v)) return { bad:'Not a temperature' };
+  const n = parseFloat(v);
+  if (n < 10 || n > 35) return { bad:'Check this reading (10 to 35 °C)' };
+  return { n, text:v };
+}
+function ahuRecRooms(){ return ((AHUREC.data && AHUREC.data.groups) || []).flatMap(g => g.rooms); }
+function ahuRecRefresh(){
+  let logged = 0; const needs = [];
+  ahuRecRooms().forEach(r => {
+    const inp = document.getElementById('ahuT_' + r.id); if (!inp) return;
+    const p = ahuRecParse(inp.value), chip = document.getElementById('ahuC_' + r.id), noteBox = document.getElementById('ahuNB_' + r.id);
+    const note = document.getElementById('ahuN_' + r.id), lim = Number(r.limit), near = Number(r.near_from);
+    let cls = '', txt = '';
+    if (p.bad){ cls = 'bad'; txt = 'Check'; needs.push(r.room + ' (fix reading)'); }
+    else if (!p.blank){
+      logged++;
+      if (p.n > lim){ cls = 'bad'; txt = 'Out of limit'; if (note.value.trim().length < 3) needs.push(r.room + ' (note)'); }
+      else if (p.n >= near){ cls = 'near'; txt = 'Near limit'; }
+      else { cls = 'ok'; txt = 'OK'; }
+    }
+    chip.className = 'ahu-chip ' + cls; chip.textContent = txt;
+    noteBox.style.display = (!p.bad && !p.blank && p.n > lim) ? '' : 'none';
+    inp.classList.toggle('err', !!p.bad);
+  });
+  const total = ahuRecRooms().length, btn = document.getElementById('ahuGo'), prog = document.getElementById('ahuProg');
+  if (prog) prog.innerHTML = `<strong>${logged} of ${total}</strong> rooms entered` + (logged < total ? '<br><span class="muted">Fill every room to submit</span>'
+    : needs.length ? `<br><span class="muted">Needs: ${esc(needs.slice(0, 3).join(', '))}${needs.length > 3 ? '...' : ''}</span>` : '');
+  if (btn) btn.disabled = AHUREC.saving || !(total && logged === total && !needs.length);
+}
+async function ahuRecSubmit(){
+  const D = AHUREC.data; if (!D || AHUREC.saving) return;
+  const readings = ahuRecRooms().map(r => {
+    const p = ahuRecParse(document.getElementById('ahuT_' + r.id).value);
+    return p.n == null ? null : { room_id:r.id, temp:p.text, note: p.n > Number(r.limit) ? document.getElementById('ahuN_' + r.id).value.trim() : '' };
+  }).filter(Boolean);
+  const late = D.date < D.today;
+  if (late && !(await confirmDialog('Record a past day?', `You are recording the readings for <b>${esc(ahuDayLabel(D.date))}</b>, not today. They are marked <b>Backfilled</b> with your name. Only record readings that were really taken that day.`, 'Record ' + ahuDayLabel(D.date)))) return;
+  AHUREC.saving = true; AHUREC.msg = ''; ahuRecRefresh();
+  const btn = document.getElementById('ahuGo'); if (btn) btn.textContent = 'Saving...';
+  try {
+    const r = await api('/webhook/engineering/api/ahu/record', { method:'POST', body:{ date:D.date, readings } });
+    if (!r.ok) throw new Error(r.error || 'Could not save. Try again.');
+    AHUREC.done = r; AHU.data = null;                   // the month view reloads with the new readings
+    toast('Saved', (r.day ? r.day.logged + ' of ' + r.day.total + ' rooms' : 'Readings') + ' for ' + ahuDayLabel(r.date) + '. The group has been told.', 'ok');
+  } catch (e) { AHUREC.msg = e.message; }
+  AHUREC.saving = false;
+  render();
+}
+function viewAhuRecord(){
+  const date = ahuRecDate();
+  const head = pageHead('Record AHU readings', 'Take the readings between 2:00 and 4:00 pm. Fill in every room, then submit once. The group is told when it is saved.',
+    `<a class="btn btn-ghost btn-sm" href="#/ahu">${I.chevL} AHU log</a>`);
+  const page = (html, bind) => ({ title:'Record AHU readings', crumb:'Engineering', keepScroll:true, html: head + html, bind: bind || (() => {}) });
+  if (!canRecordAhu()) return page(`<div class="card"><div class="card-b">${emptyState('alert', 'You can view the AHU log but not record it',
+    'Recording needs submit access to AHU temperatures. Ask the Engineering Manager or an admin to give it to you in Users.', `<a class="btn btn-primary" href="#/ahu">Open the AHU log</a>`)}</div></div>`);
+  if (AHUREC.key !== date && !AHUREC.loading) setTimeout(() => ahuRecLoad(date), 0);
+  const D = AHUREC.data;
+  if (AHUREC.key !== date || AHUREC.loading || (!D && !AHUREC.error)) return page(`<div class="card"><div class="card-b">${emptyState('box', 'Loading...', 'Fetching the rooms.')}</div></div>`);
+  const days = (D && D.days) || [];
+  const dayPick = days.length ? `<div class="card" style="margin-bottom:14px"><div class="card-b"><label class="lbl" for="ahuDay">Day</label>
+      <select class="inp" id="ahuDay" data-nokeep onchange="go('/ahu/record?date=' + this.value)">${days.map(x => `<option value="${esc(x.date)}" ${D.date === x.date ? 'selected' : ''}>${esc(ahuDayLabel(x.date))}${x.date === D.today ? ' (today)' : ''}: ${x.day && x.day.logged >= x.day.total ? 'done' : (x.day ? x.day.logged : 0) + ' of ' + (x.day ? x.day.total : 34) + ' logged'}</option>`).join('')}</select>
+      <div class="small muted" style="margin-top:6px">Today and the last 3 working days can be recorded. A past day is marked <b>Backfilled</b> with your name.</div></div></div>` : '';
+  if (AHUREC.error || !D.ok) return page(dayPick + `<div class="card"><div class="card-b">${emptyState('alert', 'Cannot record this day', esc(AHUREC.error || D.error || ''),
+    `<button class="btn btn-primary" onclick="go('/ahu/record')">Open today</button>`)}</div></div>`);
+  if (AHUREC.done){
+    const r = AHUREC.done, out = (r.day && r.day.out) || [];
+    return page(`<div class="card"><div class="card-b"><h3 style="margin:0 0 6px">${I.checkCircle} Saved</h3>
+      <div>${r.day ? r.day.logged + ' of ' + r.day.total : ''} rooms logged for ${esc(ahuDayLabel(r.date))} by ${esc(r.name)}${r.backfilled ? ' (Backfilled)' : r.late ? ' (late)' : ''}. The group has been told.</div>
+      ${out.length ? `<div style="margin-top:8px"><strong style="color:var(--t-bad-tx)">Out of limit:</strong> ${out.map(o => esc(o.ahu + ' ' + o.room) + ' ' + fmtT(o.temp) + ' °C').join(', ')}</div>` : ''}
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href="#/ahu">Open the AHU log</a>
+      <button class="btn btn-ghost" onclick="ahuRecLoad(ahuRecDate())">Edit readings</button></div></div></div>`);
+  }
+  const already = ahuRecRooms().filter(r => r.temp != null).length;
+  const groups = D.groups.map(g => `<div class="card ahu-rec-group"><div class="card-h"><div><h3>${esc(g.ahu)}</h3><div class="sub">limit ${esc(g.rooms[0].limit)} °C</div></div></div><div class="card-b">
+    ${g.rooms.map(r => `<div class="ahu-rec-room"><div class="ahu-rec-row"><label for="ahuT_${r.id}">${esc(r.room)}</label>
+        <input class="inp" id="ahuT_${r.id}" inputmode="decimal" autocomplete="off" placeholder="°C" value="${r.temp != null ? esc(fmtT(r.temp)) : ''}" aria-label="${esc(r.room)} temperature in °C">
+        <span class="ahu-chip" id="ahuC_${r.id}"></span></div>
+      <div id="ahuNB_${r.id}" style="display:none;margin-top:6px"><input class="inp" id="ahuN_${r.id}" maxlength="300" placeholder="Above limit: what was done?" value="${esc(r.note || '')}"></div></div>`).join('')}
+    </div></div>`).join('');
+  return page(dayPick
+    + (already ? `<div class="small muted" style="margin:-4px 0 10px">${already} rooms already logged for this day${D.name ? ' by ' + esc(D.name) : ''}: change any reading and submit again.</div>` : '')
+    + `<div class="ahu-legend"><span class="ahu-chip ok">OK</span><span class="ahu-chip near">Near limit</span><span class="ahu-chip bad">Out of limit</span></div>`
+    + groups
+    + (AHUREC.msg ? `<div class="card" style="border-color:var(--t-bad)"><div class="card-b" style="color:var(--t-bad-tx);font-weight:600">${esc(AHUREC.msg)}</div></div>` : '')
+    + `<div class="ahu-rec-bar"><div id="ahuProg" class="small"></div><button class="btn btn-primary" id="ahuGo" disabled onclick="ahuRecSubmit()">Submit</button></div>`,
+    () => {
+      ahuRecRooms().forEach(r => {
+        document.getElementById('ahuT_' + r.id).addEventListener('input', ahuRecRefresh);
+        document.getElementById('ahuN_' + r.id).addEventListener('input', ahuRecRefresh);
+      });
+      setTimeout(ahuRecRefresh, 0);                    // after formkeep has put back anything being typed
+    });
+}
+route('/ahu/record', viewAhuRecord);
 route('/', () => { location.replace('#' + homePath()); return { title:'Engineering', crumb:'', html:'' }; });
 
 
@@ -3292,6 +3412,12 @@ const HELP = [
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
     '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['thermo', 'AHU temperature log', [
+    'Every working day at 14:00 a WhatsApp reminder links to <b>Record readings</b>. Sign in once with your e-mail and password and you land on the form.',
+    'Anyone with record access to AHU temperatures can fill it, not only the person reminded. Your name is taken from your sign-in.',
+    'Take the readings between 2:00 and 4:00 pm, fill in every room (a note is needed above 25 °C), then <b>Submit</b>. The group is told.',
+    'Missed a day? Pick it under <b>Day</b>: today and the last 3 working days can be recorded. A past day is marked <b>Backfilled</b> with your name. After 4:00 pm today is marked late.',
+    'Made a mistake? Open the same day again, change the reading and submit again.']],
   ['info', 'Phone or laptop', [
     'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
   ['edit', 'Suggestions', [

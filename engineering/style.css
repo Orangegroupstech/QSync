@@ -811,3 +811,15 @@ table.eng-grid{border-collapse:separate;border-spacing:0;font-size:12px;font-var
   .page-head .row.no-print{width:100%}
   .page-head .row.no-print .btn{flex:1 1 auto}
 }
+
+/* AHU: record readings (055) */
+.ahu-legend{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+.ahu-chip{display:inline-block;min-width:92px;text-align:center;font-size:12px;font-weight:700;padding:6px 6px;border-radius:6px;color:var(--text-3)}
+.ahu-chip.ok{background:var(--t-ok-bg);color:var(--t-ok-tx)}.ahu-chip.near{background:var(--t-near-bg);color:var(--t-near-tx)}.ahu-chip.bad{background:var(--t-bad-bg);color:var(--t-bad-tx)}
+.ahu-legend .ahu-chip{min-width:0;padding:4px 10px}
+.ahu-rec-group{margin-bottom:14px}
+.ahu-rec-room{padding:8px 0;border-top:1px solid var(--line)}.ahu-rec-room:first-child{border-top:0}
+.ahu-rec-row{display:grid;grid-template-columns:1fr 96px 100px;gap:8px;align-items:center}
+.ahu-rec-row .inp{text-align:right}
+.ahu-rec-bar{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;gap:12px;justify-content:space-between;background:var(--surface,#fff);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:6px;box-shadow:0 -4px 14px rgba(0,0,0,.06)}
+@media (max-width:640px){ .ahu-rec-row{grid-template-columns:1fr 84px 88px} .ahu-chip{min-width:0} }
