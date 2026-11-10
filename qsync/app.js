@@ -11,6 +11,7 @@ const I = (() => {
     clock: w('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/>'),
     users: w('<path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="9" cy="7" r="3.4"/><path d="M22 20v-1.5a4 4 0 0 0-3-3.85"/><path d="M16.5 3.6a4 4 0 0 1 0 7"/>'),
     chart: w('<path d="M3 3v18h18"/><path d="M7 15l3.5-4 3 2.5L20 7"/>'),
+    undo: w('<path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 010 11H11"/>'),   // recall (058)
     settings: w('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7.5 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 13.6H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.7 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9.5A1.6 1.6 0 0 0 10.5 3V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9.5a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'),
     logout: w('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>'),
     search: w('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/>', 'width="15" height="15"'),
@@ -328,10 +329,13 @@ function matchRoute(path){
   for (const r of ROUTES){
     const pp = r.pattern.split('/').filter(Boolean);
     const cp = path.split('?')[0].split('/').filter(Boolean);
-    if (pp.length !== cp.length) continue;
+    // "*name" (last part only) takes the rest of the path: request numbers have slashes (OKL/OLD/488), 10 Nov 2026
+    const rest = pp.length && pp[pp.length - 1].startsWith('*');
+    if (rest ? cp.length < pp.length : pp.length !== cp.length) continue;
     const params = {}; let ok = true;
     for (let i=0;i<pp.length;i++){
-      if (pp[i].startsWith(':')) params[pp[i].slice(1)] = decodeURIComponent(cp[i]);
+      if (pp[i].startsWith('*')) params[pp[i].slice(1)] = cp.slice(i).map(decodeURIComponent).join('/');
+      else if (pp[i].startsWith(':')) params[pp[i].slice(1)] = decodeURIComponent(cp[i]);
       else if (pp[i] !== cp[i]) { ok = false; break; }
     }
     if (ok) return { ...r, params };
@@ -712,10 +716,17 @@ function viewSheet(id){
     };
     if (!d) return labWait('Summary report', 'Records');
   }
+  // 058: from the sheet, the next step opens where it is done (it used to be a dead end until the e-mail link was used)
+  const meName = S.me && S.me.name, next = [];
+  if (['pending_ipqa', 'returned_to_ipqa'].includes(r.status)) next.push(`<a class="btn btn-primary" href="#/ipqa/${esc(r.requestNo)}">${r.status === 'returned_to_ipqa' ? 'Correct the IPQA sheet' : 'Fill the IPQA sheet'}</a>`);
+  // the review page itself checks the QA Supervisor sign-off
+  if (r.status === 'pending_qa_review' && !(meName && r.ipqaSignedBy === meName)) next.push(`<a class="btn btn-primary" href="#/qa/${esc(r.requestNo)}">Review and approve</a>`);
+  if (r.status === 'pending_qa_review' && meName && r.ipqaSignedBy === meName && typeof recallBtn === 'function') next.push(recallBtn('ipqa', r.id, r.requestNo, false, '/ipqa/' + r.requestNo));
+  if (['pending_qc_notify', 'sent_to_qc'].includes(r.status) && meName && r.qaSupervisorSignedBy === meName && typeof recallBtn === 'function') next.push(recallBtn('qa_review', r.id, r.requestNo));
   return {
     title:`QSync sheet - ${r.requestNo}`, crumb:'Records',
     html: `${pageHead(`QSync sheet - ${esc(r.requestNo)}`, '',
-      `${S.lab && ['qc_received','qc_released','qc_not_released','qa_acknowledged','sent_to_qc','pending_qc_notify'].includes(r.status)
+      `${next.join('')}${S.lab && ['qc_received','qc_released','qc_not_released','qa_acknowledged','sent_to_qc','pending_qc_notify'].includes(r.status)
           ? `<a class="btn btn-ghost" href="#/lab/request/${r.id}">${I.inbox} QC lab view</a>` : ''}
        <button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
        <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`)}
@@ -738,9 +749,109 @@ function reportsQueryString(){
   return params.length ? '?' + params.join('&') : '';
 }
 function bindReportsFilters(){
-  const yr = $('#reportsYear'); if (yr) yr.onchange = e => { reportsState.year = e.target.value; reportsCache = null; render(); };
-  const mo = $('#reportsMonth'); if (mo) mo.onchange = e => { reportsState.month = e.target.value; reportsCache = null; render(); };
-  const pr = $('#reportsProduct'); if (pr) pr.onchange = e => { reportsState.product = e.target.value; reportsCache = null; render(); };
+  const yr = $('#reportsYear'); if (yr) yr.onchange = e => { reportsState.year = e.target.value; reportsCache = null; trendsCache = null; render(); };
+  const mo = $('#reportsMonth'); if (mo) mo.onchange = e => { reportsState.month = e.target.value; reportsCache = null; trendsCache = null; render(); };
+  const pr = $('#reportsProduct'); if (pr) pr.onchange = e => { reportsState.product = e.target.value; reportsCache = null; trendsCache = null; trendsSeries = ''; render(); };
+  const ts = $('#trendSeries'); if (ts) ts.onchange = e => { trendsSeries = e.target.value; render(); };
+}
+
+/* ---- Reports and trends tabs (058, 10 Nov 2026): the cards stay on top; Overview (as before), Timing and durations,
+   Parameter trends and product performance. Data: the QSync Lab "trends" endpoint (page "qsync.reports"). ---- */
+let reportsTab = 'overview', trendsCache = null, trendsLoading = false, trendsSeries = '';
+const REPORT_TABS = [['overview', 'Overview'], ['timing', 'Timing and durations'], ['trends', 'Parameter trends and product performance']];
+function reportsTabsHtml(){
+  return `<div class="tabs">${REPORT_TABS.map(([k, l]) => `<div class="tab ${k === reportsTab ? 'active' : ''}" onclick="reportsTab='${k}';render()">${esc(l)}</div>`).join('')}</div>`;
+}
+function trendsData(){
+  if (trendsCache) return trendsCache;
+  if (!trendsLoading){
+    trendsLoading = true;
+    api('/webhook/qsync/lab/api/trends', { method: 'POST', body: Object.assign({}, reportsState) })
+      .then(d => { trendsCache = d; }).catch(e => { trendsCache = { error: e.message }; }).finally(() => { trendsLoading = false; render(); });
+  }
+  return null;
+}
+const hrs = h => (h == null ? '--' : h >= 48 ? (h / 24).toFixed(1) + ' days' : h >= 1 ? Number(h).toFixed(1) + ' h' : Math.round(h * 60) + ' min');
+function reportsTabBody(){
+  const d = trendsData();
+  if (!d) return `<div class="card"><div class="card-b">${emptyState('chart', 'Loading...', '')}</div></div>`;
+  if (d.error) return `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>`;
+  return reportsTab === 'timing' ? reportsTimingHtml(d) : reportsTrendsHtml(d);
+}
+function reportsTimingHtml(d){
+  const t = d.timing || {}, steps = (t.steps || []).filter(s => s.key !== 'total'), total = (t.steps || []).find(s => s.key === 'total') || {};
+  const max = Math.max(1, ...steps.map(s => Number(s.avg_h) || 0));
+  return `<div class="grid g4" style="margin-bottom:16px">
+      <div class="stat acc-info"><div class="lbl">Whole cycle, average</div><div class="val" style="font-size:22px">${hrs(total.avg_h)}</div><div class="meta">request to QA acknowledgement, ${total.n || 0} batches</div></div>
+      <div class="stat acc-info"><div class="lbl">Whole cycle, median</div><div class="val" style="font-size:22px">${hrs(total.median_h)}</div><div class="meta">half the batches are faster</div></div>
+      <div class="stat acc-warn"><div class="lbl">Longest</div><div class="val" style="font-size:22px">${hrs(total.max_h)}</div><div class="meta">one batch</div></div>
+      <div class="stat acc-brand"><div class="lbl">Not finished yet</div><div class="val">${(t.open || []).length}</div><div class="meta">batches still moving</div></div></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Time of each step</h3><div class="sub">Average (bar), median and longest, from one sign-off to the next</div></div></div>
+      <div class="card-b">${steps.map(s => `<div style="margin-bottom:14px" title="${esc(s.label)}: average ${hrs(s.avg_h)}, median ${hrs(s.median_h)}, longest ${hrs(s.max_h)} (${s.n} batches)">
+        <div class="row between"><div class="small strong">${esc(s.label)}</div><div class="small"><b class="tnum">${hrs(s.avg_h)}</b> <span class="muted">median ${hrs(s.median_h)} - longest ${hrs(s.max_h)} - ${s.n} batches</span></div></div>
+        <div class="bar" style="margin-top:6px"><i style="width:${clamp((Number(s.avg_h) || 0) / max * 100, 2, 100)}%"></i></div></div>`).join('')}</div></div>
+    <div class="grid g2" style="align-items:start">
+      <div class="card"><div class="card-h"><div><h3>Month by month</h3><div class="sub">Average whole cycle and QC receipt to release</div></div></div>
+        ${(t.by_month || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Month</th><th>Batches</th><th>Whole cycle</th><th>QC receipt to release</th></tr></thead><tbody>
+          ${t.by_month.map(m => `<tr><td>${esc(m.month)}</td><td class="tnum">${m.n}</td><td class="tnum">${hrs(m.avg_total_h)}</td><td class="tnum">${hrs(m.avg_release_h)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="card-b">${emptyState('chart', 'No finished batches yet', '')}</div>`}</div>
+      <div class="card"><div class="card-h"><div><h3>Slowest batches</h3><div class="sub">Whole cycle, longest first</div></div></div>
+        ${(t.slowest || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Request</th><th>Product / batch</th><th>Whole cycle</th><th>Slowest step</th></tr></thead><tbody>
+          ${t.slowest.map(x => { const st = Object.entries(x.steps || {}).filter(([k]) => k !== 'total').sort((a, b) => b[1] - a[1])[0];
+            const lab = st ? ((t.steps || []).find(s => s.key === st[0]) || {}).label : '';
+            return `<tr class="clickable" onclick="go('/sheet/${x.request_id}')"><td class="req-no">${esc(x.request_no)}</td><td>${esc(x.product)}<div class="tiny muted mono">${esc(x.batch_no)} - ${esc(x.stage)}</div></td>
+              <td class="tnum strong">${hrs(x.total_h)}</td><td class="small">${st ? esc(lab) + ': ' + hrs(st[1]) : '--'}</td></tr>`; }).join('')}</tbody></table></div>` : `<div class="card-b">${emptyState('chart', 'No finished batches yet', '')}</div>`}</div></div>
+    ${(t.open || []).length ? `<div class="card" style="margin-top:16px"><div class="card-h"><div><h3>Waiting now</h3><div class="sub">Batches not finished, and how long since their last step</div></div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Request</th><th>Product / batch</th><th>Where</th><th>Waiting</th></tr></thead><tbody>
+      ${t.open.slice().sort((a, b) => b.waiting_h - a.waiting_h).slice(0, 25).map(x => `<tr class="clickable" onclick="go('/sheet/${x.request_id}')"><td class="req-no">${esc(x.request_no)}</td>
+        <td>${esc(x.product)}<div class="tiny muted mono">${esc(x.batch_no)} - ${esc(x.stage)}</div></td><td class="small">${esc((STATUS[x.status] || {}).label || ((typeof LAB_STATUS !== 'undefined' && LAB_STATUS[x.status]) || {}).label || x.status)}</td>
+        <td class="tnum">${hrs(x.waiting_h)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+}
+// one parameter over the batches: the values (line + points), the limits as dashed lines; hover a point for the batch
+function trendChartSvg(pts, lo, hi, unit){
+  const W = 720, H = 240, L = 48, R = 16, T = 14, B = 30;
+  const vals = pts.map(p => Number(p.value)).concat([lo, hi].filter(v => v != null && v !== '').map(Number));
+  let mn = Math.min(...vals), mx = Math.max(...vals); if (mn === mx){ mn -= 1; mx += 1; }
+  const pad = (mx - mn) * 0.08; mn -= pad; mx += pad;
+  const x = i => L + (pts.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (pts.length - 1)), y = v => T + (mx - v) * (H - T - B) / (mx - mn);
+  const ticks = [0, 1, 2, 3, 4].map(k => mn + k * (mx - mn) / 4);
+  const ref = (v, lab) => v == null || v === '' ? '' : `<line x1="${L}" x2="${W - R}" y1="${y(Number(v))}" y2="${y(Number(v))}" stroke="var(--text-2, #565E6B)" stroke-dasharray="5 4" stroke-width="1"/>
+    <text x="${W - R}" y="${y(Number(v)) - 4}" text-anchor="end" font-size="11" fill="var(--text-2, #565E6B)">${esc(lab)} ${esc(v)}</text>`;
+  const fmt = v => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Trend of the values per batch" style="width:100%;height:auto;display:block">
+    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line, #E4E7EA)" stroke-width="1"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--text-2, #565E6B)">${fmt(v)}</text>`).join('')}
+    ${ref(lo, 'min')}${ref(hi, 'max')}
+    <polyline points="${pts.map((p, i) => `${x(i)},${y(Number(p.value))}`).join(' ')}" fill="none" stroke="var(--brand, #ED6B1F)" stroke-width="2" stroke-linejoin="round"/>
+    ${pts.map((p, i) => `<g><title>${esc(p.batch_no)}${p.sample && p.sample !== p.batch_no ? ' (' + esc(p.sample) + ')' : ''} - ${esc(fmtDate(p.at))}: ${fmt(p.value)} ${esc(unit || '')} - ${p.pass === false ? 'OUT OF SPEC' : 'pass'}</title>
+      <circle cx="${x(i)}" cy="${y(Number(p.value))}" r="10" fill="transparent"/>
+      ${p.pass === false ? `<path d="M${x(i) - 5},${y(Number(p.value)) - 5}L${x(i) + 5},${y(Number(p.value)) + 5}M${x(i) + 5},${y(Number(p.value)) - 5}L${x(i) - 5},${y(Number(p.value)) + 5}" stroke="var(--danger, #C0392B)" stroke-width="2.5"/>`
+        : `<circle cx="${x(i)}" cy="${y(Number(p.value))}" r="4" fill="var(--brand, #ED6B1F)" stroke="var(--surface, #fff)" stroke-width="2"/>`}</g>`).join('')}
+    <text x="${L}" y="${H - 8}" font-size="11" fill="var(--text-2, #565E6B)">${esc(fmtDate(pts[0].at))}</text>
+    <text x="${W - R}" y="${H - 8}" text-anchor="end" font-size="11" fill="var(--text-2, #565E6B)">${esc(fmtDate(pts[pts.length - 1].at))}</text></svg>`;
+}
+function reportsTrendsHtml(d){
+  const series = (d.ipqa_series || []).map(s => ({ key: 'i|' + s.product + '|' + s.stage + '|' + s.parameter, label: `${s.product} - ${s.stage} - ${s.parameter} (IPQA)`,
+      unit: s.unit, lo: s.spec_min, hi: s.spec_max, limit: s.spec_min != null || s.spec_max != null ? `${s.spec_min ?? ''} to ${s.spec_max ?? ''} ${s.unit || ''}` : '', points: s.points }))
+    .concat((d.qc_series || []).map(s => ({ key: 'q|' + s.product + '|' + s.test + '|' + s.api, label: `${s.product} - ${s.api} ${String(s.test).replace(/_/g, ' ')} (QC)`,
+      unit: s.unit, lo: null, hi: null, limit: s.limit_text, points: s.points })))
+    .filter(s => (s.points || []).length);
+  const cur = series.find(s => s.key === trendsSeries) || series[0];
+  const pts = cur ? cur.points.slice(-60) : [];
+  const fails = pts.filter(p => p.pass === false).length;
+  return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Parameter trend</h3><div class="sub">One parameter across the batches (the last 60). A cross is out of specification; hover a point for the batch.</div></div></div>
+      <div class="card-b">${series.length ? `<div class="field" style="max-width:560px"><label for="trendSeries">Parameter</label><select class="inp" id="trendSeries">${series.map(s => `<option value="${esc(s.key)}" ${cur && s.key === cur.key ? 'selected' : ''}>${esc(s.label)} - ${s.points.length} batches</option>`).join('')}</select></div>
+        <div class="small muted" style="margin:4px 0 10px">${cur.limit ? 'Limit: ' + esc(cur.limit) + ' - ' : ''}${pts.length} values, ${fails} out of specification${cur.unit ? ' - unit ' + esc(cur.unit) : ''}</div>
+        ${trendChartSvg(pts, cur.lo, cur.hi, cur.unit)}
+        <details style="margin-top:10px"><summary class="small">Show the values as a table</summary><div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Batch</th><th>Date</th><th>Value</th><th></th></tr></thead><tbody>
+          ${pts.slice().reverse().map(p => `<tr><td class="mono small">${esc(p.batch_no)}${p.sample && p.sample !== p.batch_no ? ' (' + esc(p.sample) + ')' : ''}</td><td class="small">${fmtDate(p.at)}</td><td class="tnum">${esc(p.value)} ${esc(cur.unit || '')}</td>
+            <td>${p.pass === false ? '<span class="badge b-danger">Out of spec</span>' : '<span class="badge b-ok">Pass</span>'}</td></tr>`).join('')}</tbody></table></div></details>`
+        : emptyState('chart', 'No values yet', 'Values appear as batches are tested.')}</div></div>
+    <div class="card"><div class="card-h"><div><h3>Product performance</h3><div class="sub">IPQA first pass, QC results, out-of-specification entries and the time QC takes to release</div></div></div>
+      ${(d.products || []).length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product</th><th>Requests</th><th>IPQA first pass</th><th>QC results passed</th><th>OOS</th><th>Released / not</th><th>QC receipt to release</th></tr></thead><tbody>
+        ${d.products.map(p => { const ip = p.ipqa_tested ? Math.round(p.ipqa_first_pass / p.ipqa_tested * 100) : null, qc = p.qc_results ? Math.round(p.qc_pass / p.qc_results * 100) : null;
+          const barc = r => `<div class="row" style="gap:8px"><div class="bar ${r >= 95 ? 'ok' : r >= 80 ? 'warn' : 'danger'}" style="width:66px"><i style="width:${r}%"></i></div><span class="tnum small strong">${r}%</span></div>`;
+          return `<tr><td class="strong">${esc(p.product)}</td><td class="tnum">${p.requests}</td><td>${ip == null ? '<span class="muted">--</span>' : barc(ip) + `<div class="tiny muted">${p.ipqa_first_pass} of ${p.ipqa_tested}</div>`}</td>
+            <td>${qc == null ? '<span class="muted">--</span>' : barc(qc) + `<div class="tiny muted">${p.qc_pass} of ${p.qc_results}</div>`}</td><td class="tnum">${p.oos ? `<span class="badge b-danger">${p.oos}</span>` : '0'}</td>
+            <td class="tnum">${p.released} / ${p.not_released}</td><td class="tnum">${hrs(p.avg_release_h)}</td></tr>`; }).join('')}</tbody></table></div>` : `<div class="card-b">${emptyState('chart', 'No data', '')}</div>`}</div>`;
 }
 function reportsFilterBarHtml(){
   const years = yearsFromDates(S.requests, 'createdAt');
@@ -778,7 +889,7 @@ function viewReports(){
     title:'Reports and trends', crumb:'Records',
     html: `
     ${pageHead('Reports and trends', 'Performance of the digital workflow: turnaround, first pass rate, and where time is being spent.',
-      `<button class="btn btn-ghost" onclick="reportsCache=null;render()">${I.play} Refresh</button>`)}
+      `<button class="btn btn-ghost" onclick="reportsCache=null;trendsCache=null;render()">${I.play} Refresh</button>`)}
 
     ${reportsFilterBarHtml()}
 
@@ -793,6 +904,8 @@ function viewReports(){
         <div class="val">${nfmt(d.kpis.paperSaved)}</div><div class="meta">pages, at 68 per paper analysis</div></div>
     </div>
 
+    ${reportsTabsHtml()}
+    ${reportsTab !== 'overview' ? reportsTabBody() : `
     <div class="card" style="margin-bottom:16px">
       <div class="card-h"><div><h3>Where the time goes</h3><div class="sub">Average duration of each step</div></div></div>
       <div class="card-b">${(d.timeSpent||[]).map(s => `
@@ -814,7 +927,7 @@ function viewReports(){
             <div class="row" style="gap:8px"><div class="bar ${p.rate>=95?'ok':(p.rate>=80?'warn':'danger')}" style="width:66px"><i style="width:${p.rate}%"></i></div>
             <span class="tnum small strong">${p.rate}%</span></div>`}</td></tr>`).join('')}
         </tbody></table></div>
-    </div>`,
+    </div>`}`,
     bind: bindReportsFilters
   };
 }
@@ -1079,7 +1192,7 @@ function viewSignoff(kind, no){
   const url = API_BASE + '/webhook/test-request/' + (isQa ? 'qa' : 'ipqa') + (isNew ? '?new=compression' : '?request_no=' + encodeURIComponent(no || ''));
   const title = isQa ? 'QA review - ' + no : isNew ? 'New Compression request (IPQA)' : 'IPQA sheet - ' + no;
   return { title, crumb:'Workspace',
-    html: `${pageHead(title, isQa ? 'Review the IPQA results, then approve or send back. You sign by typing your name.' : 'Record the IPQA results. You sign by typing your name.', `<a class="btn btn-ghost" href="#/my-approvals">Back to My approvals</a>`)}
+    html: `${pageHead(title, isQa ? 'Review the IPQA results, then approve or send back. You sign by ticking your name.' : 'Record the IPQA results. You sign by ticking your name.', `<a class="btn btn-ghost" href="#/my-approvals">Back to My approvals</a>`)}
       <div class="card"><div class="card-b" style="padding:0"><div id="soNote" class="small muted" style="padding:14px">Loading the page...</div>
       <iframe id="soFrame" title="${esc(title)}" style="width:100%;border:0;min-height:480px;display:none;background:#fff"></iframe></div></div>`,
     bind(){
@@ -1092,7 +1205,7 @@ function viewSignoff(kind, no){
       }).catch(() => { note.textContent = 'Could not reach the server. Check your connection and try again.'; });
     } };
 }
-route('/ipqa/:no', p => viewSignoff('ipqa', p.no));
+route('/ipqa/*no', p => viewSignoff('ipqa', p.no));
 route('/ipqa-new', () => viewSignoff('ipqa-new'));
-route('/qa/:no', p => viewSignoff('qa', p.no));
+route('/qa/*no', p => viewSignoff('qa', p.no));
 

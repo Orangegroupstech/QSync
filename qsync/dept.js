@@ -12,7 +12,7 @@ function deptCfg(d, extra){
   return Object.assign({ api: API_BASE, department: dept, flow: 'dept', requester: d.me || (S.me && S.me.name) || '', icons: I,
     departments: d.departments || [], onDept: v => { deptState.dept = v; render(); },
     people: ((d.roster || {})[dept] || []).map(e => ({ enroll_id: e.enroll_id, name: e.name })),
-    toast, onSent: () => { labCache = {}; render(); } }, extra || {});
+    toast, onSent: () => { labClear(); render(); } }, extra || {});
 }
 function viewDept(kind){
   const T = kind === 'overtime' ? 'Submit overtime' : 'Make a procurement request';
@@ -48,19 +48,40 @@ const QSYNC_HELP = [
     'Open the link from the WhatsApp or e-mail (or <b>My approvals</b>). It opens in the console: sign in with your e-mail and password if asked.',
     'Enter the sample quantity, the tests QC must do, then each check.',
     'A check marked <b>optional</b> (e.g. Mintacid pH while the probe is faulty) may be left blank: it is saved as "Not tested".',
-    'Sign by <b>typing your full name</b> (no password: you are already signed in), then <b>Submit</b>. The QA Supervisor is told.']],
+    'Sign by <b>ticking the box with your name</b> (no password, no typing: you are already signed in), then <b>Submit</b>. The QA Supervisor is told.']],
   ['check', 'QA Supervisor: review an IPQA sheet', [
-    'The e-mail now shows every check: the specification, what IPQA recorded (each reading too) and PASS / FAIL.',
-    'Tap <b>Review and Approve</b> (it opens in the console), look at the same table, then <b>Approve</b>, or <b>Reject</b> with a comment to send it back to IPQA.',
-    'Sign by typing your full name. It must be the name on your own account.']],
+    'The e-mail shows every check: the specification, what IPQA recorded (each reading too) and PASS / FAIL.',
+    'Open it from <b>My approvals</b>, the request\'s sheet (<b>Review and approve</b>) or the e-mail. Look at the table, then <b>Approve</b>, or <b>Reject</b> with a comment to send it back to IPQA.',
+    'Sign by ticking the box with your name.']],
   ['inbox', 'QC inbox: samples and tests', [
-    'QC inbox is for samples only. <b>Waiting for receipt</b>: the QC Supervisor taps <b>Receive</b> and assigns the tests to analysts.',
-    'Analysts work in <b>My analyses</b>; the QC Supervisor checks the worksheets; the QC Manager decides; the QA Manager acknowledges.']],
+    'QC inbox is for samples only. <b>With IPQA</b>: samples still with IPQA or waiting for the QA Supervisor, so you see what is coming. IPQA can tap <b>Fill the sheet</b> there.',
+    '<b>Waiting for receipt</b>: the QC Supervisor taps <b>Receive</b> and assigns the tests to analysts.',
+    'Analysts work in <b>My analyses</b>; the QC Supervisor checks the worksheets; the QC Manager decides; the QA Manager acknowledges.',
+    'The batch page shows each step on one line and a <b>History</b> of the whole life of the batch, from the request to the end.']],
+  ['undo', 'Recall something you sent', [
+    'Sent something by mistake? Open it and tap <b>Recall</b>, say why (and enter your password in the lab).',
+    'It comes back to you to correct, and the person who was waiting gets an e-mail.',
+    'You can recall only until the next person signs: IPQA sheet (until QA reviews), QA approval (until QC receives), receipt (until an analyst starts), worksheet (until it is checked), check (until the QC Manager decides), decision (until QA acknowledges), a change or method (until the QC Manager acts).',
+    'If you were about to sign something that was just recalled, nothing is signed and you are told who recalled it and why.']],
+  ['layers', 'One standard for several tests', [
+    'Several batches, same test: in <b>My analyses</b> tick them all, then <b>Start worksheet</b>. One worksheet, the standard entered once, a sample section per batch.',
+    'Another test with the same standard solution (e.g. assay and content uniformity): on the new worksheet, under the standard, pick <b>Reuse a standard already run</b>. It lists worksheets of the last 7 days that used the same working standard, with the product and batch.',
+    'Nothing is typed again: its weight, dilution and injections are used. If that worksheet is corrected, yours recalculates.']],
+  ['box', 'QC tests: pH, weight variation, changing a limit', [
+    'Weight variation and pH are QC tests now. They need an approved method for the product (Method templates: New template). A new pH method takes its limits from the product\'s IPQA pH spec.',
+    'Mintacid only: <b>QC also tests pH</b> (Products and specs, Mintacid). While it is on, every Mintacid sample received gets a pH test. Switching it is a change request.',
+    'To change a QC limit: Products and specs, the product, <b>QC tests</b>, <b>Change</b>. A new version opens filled in; change only what is different and send it.',
+    'UV methods with a fixed A1% (e.g. Cypron assay and CU): put the A1% value in the method; no standard is weighed or read.',
+    'Reagent / mobile phase lots: type them separated by commas.']],
+  ['chart', 'Reports and trends', [
+    'The cards stay on top. <b>Overview</b> as before; <b>Timing and durations</b>: how long each step takes, month by month, the slowest batches and what is waiting now.',
+    '<b>Parameter trends and product performance</b>: pick a parameter (IPQA or QC) to see its values batch after batch against the limits; and each product\'s pass rates, OOS and release time.']],
   ['box', 'Change a product\'s IPQA checks', [
     'Lab master data > <b>Products and specs</b> (first tab). Tap the product.',
     'Change limits or make a check optional: <b>Request change</b> on that check. Remove it: <b>Remove</b>. New check: <b>Add a check</b>.',
     'Say why, enter your password. A QC Supervisor or QA Supervisor starts it.',
-    'The QC Manager reviews, then the QA Manager approves (Lab master data > <b>Changes</b>). The IPQA sheet changes only after that.']],
+    'The QC Manager reviews, then the QA Manager approves (Lab master data > <b>Changes</b>). The IPQA sheet changes only after that.',
+    'Lab master data > Changes starts with <b>Waiting for approval</b>: every change and method template not finished yet, and where it waits.']],
   ['settings', 'Method templates and working standards', [
     'Lab master data > <b>Method templates</b>: a QC or QA Supervisor drafts (one template per API), then <b>Send for approval</b>.',
     'The QC Manager approves it or returns it with a reason. Working standards: same, on their tab.']],

@@ -15,8 +15,10 @@ const LAB_STATUS = {
   qa_acknowledged:   { label:'Closed (QA acknowledged)', badge:'b-slate' },
 };
 const WS_STATUS = { in_progress:['In progress','b-warn'], submitted:['Waiting for check','b-info'], returned:['Returned for correction','b-danger'], checked:['Checked','b-ok'] };
-const TEST_TYPES = { assay:'Assay', dissolution:'Dissolution', content_uniformity:'Content uniformity', identification:'Identification', microbiology:'Microbiology' };
-const CALCULATED_TESTS = Object.keys(TEST_TYPES);   // every test type has a calculation (engine 1.1)
+const TEST_TYPES = { assay:'Assay', dissolution:'Dissolution', content_uniformity:'Content uniformity', identification:'Identification', microbiology:'Microbiology',
+                     weight_variation:'Weight variation', ph:'pH' };   // weight variation and pH: 058, engine 1.5.0
+const CALCULATED_TESTS = Object.keys(TEST_TYPES);   // every test type has a calculation
+const NEW_TESTS = ['weight_variation', 'ph'];       // offered only for a product that has an approved method for them
 
 function labRoles(){ return (S && S.lab && S.lab.roles) || (S && S.signRoles) || []; }
 // who may start a method template or a change (042): a QC Supervisor or a QA Supervisor
@@ -34,17 +36,24 @@ const fmtDate = d => (d ? fmtDateTime(d).split(',')[0] : '--');
 const num1 = v => (v === null || v === undefined || v === '' ? '--' : Number(v).toFixed(1));
 
 /* ---- data: one cached GET per path; actions clear the cache ---- */
-let labCache = {}, labLoading = {};
+// labGen: an answer that left before the cache was cleared (an action, Refresh) is dropped, never shown as the new state:
+// QC inbox kept showing the list from before an action until the whole page was reloaded (suggestion of 9 Nov 2026)
+let labCache = {}, labLoading = {}, labGen = 0;
 function labGet(path){
   if (labCache[path]) return labCache[path];
   if (!labLoading[path]){
-    labLoading[path] = true;
-    api(LAB + path).then(d => { labCache[path] = d; if (d && d.pending) S.pending = d.pending; }).catch(e => { labCache[path] = { error: e.message }; })
-      .finally(() => { delete labLoading[path]; render(); });
+    const gen = labGen;
+    labLoading[path] = gen + 1;
+    api(LAB + path).then(d => { if (gen !== labGen) return; labCache[path] = d; if (d && d.pending) S.pending = d.pending; })
+      .catch(e => { if (gen === labGen) labCache[path] = { error: e.message }; })
+      .finally(() => { if (labLoading[path] === gen + 1) delete labLoading[path]; render(); });
   }
   return null;
 }
-function labRefresh(){ labCache = {}; if (typeof refreshPending === 'function') refreshPending();
+function labClear(){ labGen++; labCache = {}; labLoading = {}; }
+// the server time a page's data was read: sent with a sign-off, so one on a page opened before a recall is refused (058)
+function labSeen(path){ return ((labCache[path] || {}).now) || ''; }
+function labRefresh(){ labClear(); if (typeof refreshPending === 'function') refreshPending();
   if (currentPath().startsWith('/lab/master')) api('/webhook/admin/api/bootstrap').then(b => { S.products = b.products || S.products; render(); }).catch(() => {});
   render(); }
 // a tab's number: brand colour when something there waits for this person (042)
@@ -88,19 +97,24 @@ function signDialog(o){
 }
 
 function testTypesFromRequest(r){
-  const t = String(r.test_required || '').toLowerCase(), out = [];
+  const t = String(r.test_required || '').toLowerCase(), out = [], has = x => (r.methods || []).includes(x);
   if (/assay/.test(t)) out.push('assay');
   if (/dissol/.test(t)) out.push('dissolution');
   if (/uniform/.test(t)) out.push('content_uniformity');
   if (/ident/.test(t)) out.push('identification');
   if (/micro/.test(t)) out.push('microbiology');
+  if (/weight/.test(t) && has('weight_variation')) out.push('weight_variation');
+  if (r.qc_ph && !out.includes('ph')) out.push('ph');   // Mintacid: "QC also tests pH" is on (Products and specs)
   return out.length ? out : ['assay'];
 }
 function analystOptions(analysts, sel){ return analysts.map(a => `<option value="${a.id}" ${String(sel) === String(a.id) ? 'selected' : ''}>${esc(a.name)}</option>`).join(''); }
-function testOptions(sel){ return Object.entries(TEST_TYPES).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${esc(v)}${CALCULATED_TESTS.includes(k) ? '' : ' (no calculation yet)'}</option>`).join(''); }
-function testRowHtml(analysts, test, analyst){
+function testOptions(sel, methods){
+  return Object.entries(TEST_TYPES).filter(([k]) => !NEW_TESTS.includes(k) || k === sel || (methods || []).includes(k))
+    .map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${esc(v)}</option>`).join('');
+}
+function testRowHtml(analysts, test, analyst, methods){
   return `<div class="row lab-test-row" style="gap:8px;margin-bottom:8px;flex-wrap:nowrap">
-    <select class="inp" data-f="test_type" style="flex:1.2">${testOptions(test)}</select>
+    <select class="inp" data-f="test_type" style="flex:1.2">${testOptions(test, methods)}</select>
     <select class="inp" data-f="analyst_id" style="flex:1.2"><option value="">Analyst...</option>${analystOptions(analysts, analyst)}</select>
     <input class="inp" data-f="due_date" type="date" style="flex:0.9" title="Due date (optional)">
     <button class="btn-icon" type="button" data-rm title="Remove">${I.x}</button></div>`;
@@ -109,16 +123,51 @@ function readTestRows(w){
   return $$('.lab-test-row', w).map(r => ({ test_type: $('[data-f=test_type]', r).value, analyst_id: Number($('[data-f=analyst_id]', r).value) || null,
                                              due_date: $('[data-f=due_date]', r).value }));
 }
-function bindTestRows(w, analysts){
+function bindTestRows(w, analysts, methods){
   const box = $('#rcTests', w);
   const wire = () => $$('[data-rm]', box).forEach(b => b.onclick = () => { b.closest('.lab-test-row').remove(); });
-  $('#rcAdd', w).onclick = () => { box.insertAdjacentHTML('beforeend', testRowHtml(analysts, 'assay', '')); wire(); };
+  $('#rcAdd', w).onclick = () => { box.insertAdjacentHTML('beforeend', testRowHtml(analysts, 'assay', '', methods)); wire(); };
   wire();
 }
 
 /* ============================================================ QC inbox ============================================================ */
+/* ---- Recall (058): the person who sent something takes it back, with a reason, until the next person signs. The server decides
+   who may and when; a sign-off on a page opened before the recall is refused. IPQA and QA Supervisor steps need no password. ---- */
+const RECALL_WHAT = { ipqa:'your IPQA sheet', qa_review:'your QA approval', receipt:'your receipt of this sample', approval:'your approval for production',
+  worksheet:'this worksheet', check:'your check of this worksheet', decision:'your decision', change:'this change request', template:'this method template' };
+function labRecall(kind, id, label, after){
+  const pw = !['ipqa', 'qa_review'].includes(kind);
+  openModal({ title: 'Recall ' + (RECALL_WHAT[kind] || ''), sub: label || '', size: 'narrow',
+    body: `<div class="notice" style="margin-bottom:12px">${I.info} It comes back to you to correct, and the person who was waiting is told by e-mail. You can recall only until they sign.</div>
+      <div class="field"><label for="rcWhy">Why are you recalling it?</label><textarea class="inp" id="rcWhy" rows="3" placeholder="e.g. wrong dilution entered"></textarea></div>
+      ${pw ? `<div class="field"><label for="rcPw">Your password</label><input class="inp" id="rcPw" type="password" autocomplete="current-password"></div>` : ''}
+      <div class="err-msg hide" id="rcErr" style="color:var(--danger);font-size:12.5px"></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-danger" id="rcOk">Recall</button>`,
+    onMount: (w, close) => {
+      setTimeout(() => $('#rcWhy', w).focus(), 30);
+      $('#rcOk', w).onclick = async () => {
+        const err = $('#rcErr', w), btn = $('#rcOk', w), why = $('#rcWhy', w).value.trim(), p = pw ? $('#rcPw', w).value : '';
+        err.classList.add('hide');
+        if (!why){ err.textContent = 'Say why you are recalling it.'; err.classList.remove('hide'); return; }
+        if (pw && !p){ err.textContent = 'Enter your password.'; err.classList.remove('hide'); return; }
+        btn.disabled = true;
+        try {
+          await labPost('/recall', { kind, id, reason: why, password: p });
+          close(); toast('Recalled', 'It is back with you. The person who was waiting has been told.', 'ok');
+          labRefresh();
+          if (after) go(after);   // e.g. straight to the IPQA sheet to correct it
+        } catch (e) { err.textContent = e.message; err.classList.remove('hide'); btn.disabled = false; }
+      };
+    } });
+}
+function recallBtn(kind, id, label, small, after){
+  return `<button class="btn btn-ghost${small ? ' btn-sm' : ''}" onclick="event.stopPropagation();labRecall('${kind}', ${Number(id)}, ${esc(JSON.stringify(label || ''))}, ${esc(JSON.stringify(after || ''))})">${I.undo || I.chevL} Recall</button>`;
+}
+
 let inboxTab = 'waiting', inboxQ = '';
+const IPQA_STATUS = { pending_ipqa: ['With IPQA', 'b-info'], returned_to_ipqa: ['Returned to IPQA', 'b-danger'], pending_qa_review: ['Waiting for QA review', 'b-warn'] };
 const INBOX_TABS = [
+  ['ipqa', 'With IPQA', null],   // 058: what is coming; IPQA opens the sheet from here
   ['waiting', 'Waiting for receipt', r => ['pending_qc_notify', 'sent_to_qc'].includes(r.status)],
   ['lab', 'In the lab', r => r.status === 'qc_received'],
   ['check', 'Worksheets to check', r => r.status === 'qc_received' && (r.assignments || []).some(a => !a.cancelled && a.analysis_status === 'submitted')],
@@ -142,10 +191,28 @@ function viewLabInbox(){
   if (!d) return labWait('QC inbox', 'QC Laboratory');
   if (d.error) return labFail('QC inbox', 'QC Laboratory', d.error);
   const q = inboxQ.trim().toLowerCase();
-  const tab = INBOX_TABS.find(t => t[0] === inboxTab) || INBOX_TABS[0];
-  const rows = d.requests.filter(tab[2]).filter(r => !q || [r.request_no, r.batch_no, r.product_name].join(' ').toLowerCase().includes(q));
+  const tab = INBOX_TABS.find(t => t[0] === inboxTab) || INBOX_TABS[1];
+  const match = r => !q || [r.request_no, r.batch_no, r.product_name].join(' ').toLowerCase().includes(q);
+  const rows = tab[2] ? d.requests.filter(tab[2]).filter(match) : [];
   const isSup = hasLabRole('qc_supervisor');
-  const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
+  const me = S && S.me ? S.me.id : null;
+  // With IPQA (058): samples IPQA still has, or waiting for the QA Supervisor. IPQA fills the sheet from here; the QA Supervisor reviews.
+  const ipqaRows = (d.ipqa || []).filter(match);
+  const ipqaBody = ipqaRows.length ? `<div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Tests for QC</th><th>Status</th><th></th></tr></thead>
+      <tbody>${ipqaRows.map(r => { const st = IPQA_STATUS[r.status] || [r.status, 'b-slate'];
+        const act = (d.ipqa_role && ['pending_ipqa', 'returned_to_ipqa'].includes(r.status)) ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();go('/ipqa/${esc(r.request_no)}')">${r.status === 'returned_to_ipqa' ? 'Correct the sheet' : 'Fill the sheet'}</button>`
+          : (d.qas_role && r.status === 'pending_qa_review') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();go('/qa/${esc(r.request_no)}')">Review</button>` : '';
+        const rec = r.status === 'pending_qa_review' && String(r.ipqa_signed_by_id) === String(me) ? recallBtn('ipqa', r.id, r.request_no, true, '/ipqa/' + r.request_no) : '';
+        return `<tr class="clickable" onclick="go('/sheet/${r.id}')">
+        <td data-label="Request"><div class="req-no">${esc(r.request_no)}</div><div class="tiny muted">raised ${relTime(r.created_at)}${r.requested_by ? ' by ' + esc(r.requested_by) : ''}</div></td>
+        <td data-label="Product / Batch"><div class="strong">${esc(r.product_name)}</div><div class="tiny muted mono">${esc(r.batch_no)}</div></td>
+        <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
+        <td data-label="Tests for QC" class="small">${esc(r.test_required || '--')}</td>
+        <td data-label="Status"><span class="badge ${st[1]}">${esc(st[0])}</span>${r.ipqa_signed_at ? `<div class="tiny muted" style="margin-top:3px">IPQA signed: ${esc(r.ipqa_signed_by || '')}, ${fmtDateTime(r.ipqa_signed_at)}</div>` : ''}${r.returns ? `<div class="tiny" style="color:var(--danger)">returned ${r.returns}x</div>` : ''}</td>
+        <td style="text-align:right;white-space:nowrap">${act} ${rec}</td></tr>`; }).join('')}</tbody></table></div>`
+    : `<div class="card-b">${emptyState('inbox', 'Nothing with IPQA', 'Samples appear here from the moment they are raised until the QA Supervisor approves them.')}</div>`;
+  const body = !tab[2] ? ipqaBody : rows.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Tests</th><th>OOS</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.map(r => `<tr class="clickable" onclick="go('/lab/request/${r.id}')">
         <td data-label="Request"><div class="req-no">${esc(r.request_no)}</div><div class="tiny muted">${r.qa_signed_at ? 'QA approved ' + relTime(r.qa_signed_at) : r.ipqa_signed_at ? 'IPQA sampled ' + relTime(r.ipqa_signed_at) + ', no QA review (' + esc(r.stage) + ')' : 'sent straight to QC (' + esc(r.stage) + ')'}</div></td>
@@ -170,7 +237,7 @@ function viewLabInbox(){
     title:'QC inbox', crumb:'QC Laboratory',
     html: `${pageHead('QC inbox', 'Batches QA approved for QC: receive the sample, assign the tests, follow them to release.',
               `<button class="btn btn-ghost" onclick="labRefresh()">${I.play} Refresh</button>`)}
-      <div class="tabs">${INBOX_TABS.map(t => { const all = d.requests.filter(t[2]).length, mine = Number((((S.pending || {}).inbox) || {})[t[0]] || 0);
+      <div class="tabs">${INBOX_TABS.map(t => { const all = t[2] ? d.requests.filter(t[2]).length : (d.ipqa || []).length, mine = Number((((S.pending || {}).inbox) || {})[t[0]] || 0);
         return `<div class="tab ${t[0] === inboxTab ? 'active' : ''}" onclick="inboxTab='${t[0]}';render()">${esc(t[1])}${tabCount(all, mine)}</div>`; }).join('')}</div>
       <div class="card">
         <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row">
@@ -205,15 +272,16 @@ function labReceive(id){
     ok: noTest ? 'Sign as received' : 'Sign as received and assigned', meaning: noTest ? 'You sign as "Received by" (QC Supervisor). QC does not test this stage.' : 'You sign as "Received by" and "Assigned by" (QC Supervisor).',
     body: `<div class="small muted" style="margin-bottom:10px">Sample sent by IPQA: <b>${r.sample_qty ? esc(r.sample_qty + ' ' + (r.sample_qty_unit || '')) : '--'}</b></div>
       ${noTest ? `<div class="notice">${I.info} QC does not test ${esc(r.stage)}. Sign to confirm the sample is received; the QC Manager then releases it.</div>`
-      : `<div class="field"><label>Tests to assign</label><div id="rcTests">${testTypesFromRequest(r).map(t => testRowHtml(analysts, t, '')).join('')}</div>
+      : `<div class="field"><label>Tests to assign</label><div id="rcTests">${testTypesFromRequest(r).map(t => testRowHtml(analysts, t, '', r.methods)).join('')}</div>
+        ${r.qc_ph ? `<div class="tiny muted" style="margin:-2px 0 8px">${I.info} pH is added because "QC also tests pH" is on for ${esc(r.product_name)} (Lab master data).</div>` : ''}
         <button class="btn btn-ghost btn-sm" type="button" id="rcAdd">${I.plus} Add a test</button>
         ${analysts.length ? '' : `<div class="hint">${I.alert}<span>No one has the analyst sign-off yet: give it in the Users console.</span></div>`}</div>`}`,
-    onMount: w => { if (!noTest) bindTestRows(w, analysts); },
+    onMount: w => { if (!noTest) bindTestRows(w, analysts, r.methods); },
     submit: async ({ password, wrap }) => {
       const tests = noTest ? [] : readTestRows(wrap);
       if (!noTest && !tests.length) throw new Error('Assign at least one test.');
       if (tests.some(t => !t.analyst_id)) throw new Error('Choose an analyst for every test.');
-      await labPost('/receive', { request_id: id, password, assignments: tests });
+      await labPost('/receive', { request_id: id, password, assignments: tests, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
       toast('Received', noTest ? `${r.request_no}: received, no tests.` : `${r.request_no}: ${tests.length} test(s) assigned.`, 'ok');
       labRefresh();
     }
@@ -278,23 +346,31 @@ function viewLabRequest(id){
     acts.push(`<button class="btn btn-ghost" onclick="labApproveFloor(${r.id})">Send to the shop floor again</button>`);
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
+  // Recall (058): only the person who signed, only until the next person signs (the server checks again)
+  const me = S && S.me ? String(S.me.id) : '', ids = r.ids || {}, mine = k => ids[k] != null && String(ids[k]) === me;
+  const label = `${r.request_no} - ${r.product_name} ${r.batch_no}`;
+  if (mine('received') && st === 'qc_received' && !r.qc_approved_at && !r.assignments.some(a => !a.cancelled && a.analysis_id)) acts.push(recallBtn('receipt', r.id, label));
+  if (mine('approved') && r.qc_approved_at && !['ok', 'already_passed', 'partial'].includes(r.floor_status)) acts.push(recallBtn('approval', r.id, label));
+  if (mine('decided') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(recallBtn('decision', r.id, label));
+  if (mine('qa') && ['pending_qc_notify', 'sent_to_qc'].includes(st)) acts.push(recallBtn('qa_review', r.id, label));
 
   const live = r.assignments.filter(a => !a.cancelled), cancelled = r.assignments.filter(a => a.cancelled);
   const results = r.results || [];
+  // one line per step: "Name, 07 Nov 2026 06:29" (suggestion of 9 Nov 2026: the IPQA log date sits with the others)
+  const one = (k, who, at, extra) => `<div class="kv-item"><div class="k">${k}</div><div class="v" style="font-size:13.5px">${who ? esc(who) + (at ? `<span class="muted">, ${fmtDateTime(at)}</span>` : '') : '--'}</div>${extra || ''}</div>`;
+  const dec = r.qc_decision ? (r.qc_decision === 'released' ? 'Released' : 'Not released') + ': ' : '';
   return {
     title: r.request_no, crumb:'QC Laboratory',
     html: `${pageHead(`${r.request_no} - QC lab view`, `${esc(r.product_name)} - batch <span class="mono">${esc(r.batch_no)}</span> - ${esc(r.stage)}`, batchNav(r.id, 'lab') + acts.join(''))}
       <div class="card" style="margin-bottom:16px"><div class="card-b"><div class="kv-grid">
         <div class="kv-item"><div class="k">Status</div><div class="v">${labStatusBadge(st)}</div></div>
-        <div class="kv-item"><div class="k">Received by</div><div class="v">${esc(r.qc_received_by || '--')}</div><div class="tiny muted">${r.qc_received_at ? fmtDateTime(r.qc_received_at) : ''}</div></div>
-        <div class="kv-item"><div class="k">Sample (IPQA)</div><div class="v">${r.sample_qty ? esc(r.sample_qty) + ' ' + esc(r.sample_qty_unit || '') : r.qc_received_qty != null ? esc(r.qc_received_qty) + ' ' + esc(r.qc_received_qty_unit || '') : '--'}</div></div>
-        <div class="kv-item"><div class="k">QC approval (production)</div><div class="v">${r.qc_approved_at ? 'Approved - ' + esc(r.qc_approved_by) : '--'}</div>
-          <div class="tiny muted">${r.qc_approved_at ? fmtDateTime(r.qc_approved_at) : ''}${r.qc_approval_comments ? ' - ' + esc(r.qc_approval_comments) : ''}</div>
-          ${r.floor_note ? `<div class="tiny" style="margin-top:2px;color:${['ok', 'already_passed'].includes(r.floor_status) ? 'var(--ok, #16794C)' : r.floor_status === 'no_floor_stage' ? 'inherit' : 'var(--danger)'}">${esc(r.floor_note)}</div>` : ''}</div>
-        <div class="kv-item"><div class="k">QC Manager</div><div class="v">${r.qc_decision ? (r.qc_decision === 'released' ? 'Released' : 'Not released') + ' - ' + esc(r.qc_manager) : '--'}</div>
-          <div class="tiny muted">${r.qc_manager_signed_at ? fmtDateTime(r.qc_manager_signed_at) : ''}${r.qc_comments ? ' - ' + esc(r.qc_comments) : ''}</div></div>
-        <div class="kv-item"><div class="k">QA Manager</div><div class="v">${esc(r.qa_manager || '--')}</div>
-          <div class="tiny muted">${r.qa_manager_signed_at ? fmtDateTime(r.qa_manager_signed_at) : ''}${r.qa_manager_comments ? ' - ' + esc(r.qa_manager_comments) : ''}</div></div>
+        ${one('Logged by IPQA', r.ipqa_signed_by, r.ipqa_signed_at, `<div class="tiny muted">Sample: ${r.sample_qty ? esc(r.sample_qty) + ' ' + esc(r.sample_qty_unit || '') : r.qc_received_qty != null ? esc(r.qc_received_qty) + ' ' + esc(r.qc_received_qty_unit || '') : '--'}</div>`)}
+        ${one('QA Supervisor approved', r.qa_supervisor_signed_by, r.qa_supervisor_signed_at || r.qa_signed_at)}
+        ${one('Received by QC', r.qc_received_by, r.qc_received_at)}
+        ${one('Approved for production', r.qc_approved_by, r.qc_approved_at, (r.qc_approval_comments ? `<div class="tiny muted">${esc(r.qc_approval_comments)}</div>` : '')
+          + (r.floor_note ? `<div class="tiny" style="margin-top:2px;color:${['ok', 'already_passed'].includes(r.floor_status) ? 'var(--ok, #16794C)' : r.floor_status === 'no_floor_stage' ? 'inherit' : 'var(--danger)'}">${esc(r.floor_note)}</div>` : ''))}
+        ${one('QC Manager (release)', r.qc_decision ? dec + r.qc_manager : '', r.qc_manager_signed_at, r.qc_comments ? `<div class="tiny muted">${esc(r.qc_comments)}</div>` : '')}
+        ${one('QA Manager acknowledged', r.qa_manager, r.qa_manager_signed_at, r.qa_manager_comments ? `<div class="tiny muted">${esc(r.qa_manager_comments)}</div>` : '')}
       </div>${r.open_oos ? `<div class="notice" style="margin-top:14px;color:var(--danger)">${I.alert} ${r.open_oos} open OOS entr${r.open_oos === 1 ? 'y' : 'ies'}: the QC Manager must close ${r.open_oos === 1 ? 'it' : 'them'} (OOS log) before deciding.</div>` : ''}
       </div></div>
       ${labNextSteps(r)}
@@ -317,7 +393,11 @@ function viewLabRequest(id){
         <thead><tr><th>Parameter</th><th>Observed</th><th>Specification</th><th>Status</th></tr></thead><tbody>
         ${d.ipqa.map(p => `<tr><td>${esc(p.parameter)}</td><td>${p.readings && p.readings.length && p.average != null && !/weights/.test(p.value || '') ? esc(p.average) + ' ' + esc(p.unit || '') + `<div class="tiny muted">average of ${p.readings.length}: ${esc(p.readings.join(', '))}</div>` : esc(p.value) + ' ' + esc(p.unit || '')}</td><td class="small">${esc(ipqaSpec(p))}</td><td>${esc(String(p.status || '').toUpperCase())}</td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
-      <div class="card"><div class="card-h"><h3>History</h3><div class="sub">Every change, who made it, when and why (written by the database)</div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>History</h3><div class="sub">The life of this batch, from the request to the end: one line per step</div></div>
+        <div class="card-b">${(d.history || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><tbody>
+          ${d.history.map(h => `<tr><td class="small muted" style="white-space:nowrap;width:1%">${fmtDateTime(h.at)}</td><td><span class="strong">${esc(h.what)}</span>${h.who ? ` <span class="muted">- ${esc(h.who)}</span>` : ''}${h.note ? `<div class="tiny muted">${esc(h.note)}</div>` : ''}</td></tr>`).join('')}
+          </tbody></table></div>` : emptyState('activity', 'No history yet', '')}</div></div>
+      <div class="card"><div class="card-h"><h3>Audit trail</h3><div class="sub">Every change, who made it, when and why (written by the database)</div></div>
         <div class="card-b">${d.audit.length ? `<div class="timeline">${d.audit.slice().reverse().map(e => `<div class="tl-item ${e.action === 'insert' ? 'done' : ''}">
           <div class="tl-dot">${e.action === 'insert' ? I.plus : I.edit}</div>
           <div class="tl-t">${auditLine(e)}</div>
@@ -372,7 +452,7 @@ function labDecide(id){
     submit: async ({ password, wrap }) => {
       const dec = ($('input[name=dec]:checked', wrap) || {}).value;
       if (!dec) throw new Error('Choose released or not released.');
-      await labPost('/decide', { request_id: id, password, decision: dec, comments: $('#dcCom', wrap).value });
+      await labPost('/decide', { request_id: id, password, decision: dec, comments: $('#dcCom', wrap).value, seen: labSeen('/request?id=' + id) });
       toast('Decision signed', `${r.request_no}: ${dec === 'released' ? 'released' : 'not released'}.`, 'ok'); labRefresh();
     }
   });
@@ -389,7 +469,7 @@ function labApprove(id){
     body: `<div class="small" style="margin-bottom:12px">${(r.results || []).length} result(s) so far${fails ? `, <b style="color:var(--danger)">${fails} out of specification</b>` : ''}${open ? `; ${open} test(s) not finished yet` : ''}.</div>
       <div class="notice" style="margin-bottom:12px">${I.info} ${floor ? `The batch is marked <b>Quality Passed</b> at ${floor} on the shop floor (cleared for the next stage), and` : 'The'} supervisors' WhatsApp group gets "QC approved", with Daniel tagged.</div>`,
     submit: async ({ password, reason }) => {
-      const res = await labPost('/approve', { request_id: id, password, comments: reason });
+      const res = await labPost('/approve', { request_id: id, password, comments: reason, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
       const f = res.floor || {};
       toast('Approved', f.status === 'ok' || f.status === 'already_passed' || f.status === 'no_floor_stage' ? `${r.request_no}: approved.`
         : `${r.request_no}: approved, but the shop floor was not updated: ${f.message || 'unknown reason'}`, f.status === 'not_found' || f.status === 'error' ? 'warn' : 'ok');
@@ -412,7 +492,7 @@ function labQaAck(id){
     title: 'QA acknowledgement', sub: `${r.request_no} - QC decision: ${r.qc_decision === 'released' ? 'Released' : 'Not released'} by ${r.qc_manager}`,
     ok: 'Sign acknowledgement', reason: 'Comments (optional)', meaning: 'You sign as QA Manager that you have reviewed and documented the QC decision. It does not change it.',
     submit: async ({ password, reason }) => {
-      await labPost('/qa-ack', { request_id: id, password, comments: reason });
+      await labPost('/qa-ack', { request_id: id, password, comments: reason, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
       toast('Acknowledged', r.request_no, 'ok'); labRefresh();
     }
   });
@@ -453,7 +533,7 @@ function viewLabMy(){
       $$('[data-sel]').forEach(c => c.onchange = () => { const v = Number(c.dataset.sel); if (c.checked) mySel.add(v); else mySel.delete(v); render(); });
       const b = $('#myStart'); if (b) b.onclick = async () => {
         b.disabled = true;
-        try { const res = await labPost('/worksheet/create', { assignment_ids: [...mySel] }); mySel.clear(); labCache = {}; go('/lab/worksheet/' + res.analysis_id); }
+        try { const res = await labPost('/worksheet/create', { assignment_ids: [...mySel] }); mySel.clear(); labClear(); go('/lab/worksheet/' + res.analysis_id); }
         catch (e) { toast('Could not start the worksheet', e.message, 'err'); b.disabled = false; }
       };
     }
@@ -478,7 +558,7 @@ function wsEnsure(){
   const hplc = ['assay', 'dissolution', 'content_uniformity'].includes(test);
   for (const t of ws.ctx.templates){
     const P = t.parameters || {}, a = inp.apis[t.id] = inp.apis[t.id] || {};
-    if (hplc && !Array.isArray(a.std_areas)) a.std_areas = Array(((P.std_injections || {}).max) || 6).fill('');
+    if (hplc && !P.a1pct && !Array.isArray(a.std_areas)) a.std_areas = Array(((P.std_injections || {}).max) || 6).fill('');   // UV fixed A1%: no standard
   }
   for (const s of inp.samples){
     const v = inp.values[s.key] = inp.values[s.key] || {};
@@ -490,8 +570,15 @@ function wsEnsure(){
     if (test === 'dissolution' || test === 'content_uniformity'){ if (!v.units || Array.isArray(v.units)) v.units = {}; }
     if (test === 'identification'){ if (!v.rt || Array.isArray(v.rt)) v.rt = {}; if (!v.verdict || Array.isArray(v.verdict)) v.verdict = {}; }
     if (test === 'microbiology'){ if (!v.micro || Array.isArray(v.micro)) v.micro = {}; }
+    if (test === 'weight_variation'){ if (!v.weights || Array.isArray(v.weights)) v.weights = {}; }
+    if (test === 'ph'){ if (!v.ph || Array.isArray(v.ph)) v.ph = {}; }
     for (const t of ws.ctx.templates){
       const P = t.parameters || {};
+      if (test === 'weight_variation'){   // 058: the number of units from the method (10 if it does not say)
+        const w = v.weights[t.id] = Array.isArray(v.weights[t.id]) ? v.weights[t.id] : [];
+        while (w.length < (Number((P.limits || {}).units) || 10)) w.push('');
+      }
+      if (test === 'ph'){ const r = v.ph[t.id] = Array.isArray(v.ph[t.id]) ? v.ph[t.id] : []; while (r.length < (Number(P.readings) || 1)) r.push(''); }
       if (test === 'assay'){
         const list = v.preps[t.id] = Array.isArray(v.preps[t.id]) ? v.preps[t.id] : [];
         while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: [''] });   // 1 injection; each preparation can get a 2nd
@@ -534,9 +621,42 @@ function stepsText(steps, firstUnit){
   return (steps || []).map((s, i) => (i === 0 ? (['caplet', 'tablet'].includes(firstUnit) ? `${s[0] || 1} ${firstUnit} in ${s[1]} mL` : `weighed (${firstUnit}) to ${s[1]} mL`)
     : (s[0] === 1 && s[1] === 1 ? null : `${s[0]} mL to ${s[1]} mL`))).filter(Boolean).join(', then ');
 }
+// the standards of other worksheets this one may reuse (058): same working standard, offered by the server (same API, last 7 days)
+function wsStdSources(t){
+  return Object.values(ws.ctx.std_sources || {}).filter(x => String(x.api || '').trim().toLowerCase() === String(t.api || '').trim().toLowerCase());
+}
+function wsUseStd(tid, key){
+  const a = ws.inputs.apis[tid], src = (ws.ctx.std_sources || {})[key];
+  if (src){
+    a.std_from = { analysis_id: src.analysis_id, template_id: src.template_id };
+    a.ws_id = src.ws_id; a.std_weight = src.std_weight; a.std_areas = (src.std_areas || []).slice();   // shown as they are; the server uses the source's stored values
+    ['sst_tailing', 'sst_resolution', 'sst_justification'].forEach(k => { if (src[k] != null) a[k] = src[k]; else delete a[k]; });
+  } else {
+    delete a.std_from; a.std_weight = ''; a.std_areas = Array((((ws.ctx.templates.find(x => x.id === Number(tid)) || {}).parameters || {}).std_injections || {}).max || 6).fill('');
+  }
+  ws.dirty = true; render(); wsCalcSoon(0);
+}
 function wsStandardCard(t, extraSub){
   const P = t.parameters || {}, tid = t.id, a = ws.inputs.apis[tid];
+  // UV with a fixed specific absorbance (e.g. Cypron, A1% 355): nothing to measure for the standard (058)
+  if (P.a1pct) return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - UV, fixed A1% ${esc(P.a1pct)}</h3>
+      <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - label claim ${esc(P.label_claim_mg)} mg${extraSub ? ' - ' + esc(extraSub) : ''}</div></div></div>
+    <div class="card-b"><div class="notice">${I.info} This method uses the specific absorbance A(1%, 1 cm) = <b>${esc(P.a1pct)}</b> instead of a measured standard: no standard to weigh or read. Enter the sample absorbances below.</div></div></div>`;
   const ro = wsEditable() ? '' : 'disabled';
+  const offers = wsStdSources(t), from = a.std_from;
+  if (from){
+    const src = (ws.ctx.std_sources || {})[from.analysis_id + ':' + from.template_id];
+    return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - standard (reused)</h3>
+        <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - label claim ${esc(P.label_claim_mg)} mg${extraSub ? ' - ' + esc(extraSub) : ''}</div></div>
+        ${wsEditable() ? `<button class="btn btn-ghost btn-sm" onclick="wsUseStd(${tid}, '')">Enter my own standard</button>` : ''}</div>
+      <div class="card-b">
+        <div class="notice" style="margin-bottom:12px">${I.info} The standard of <b>${esc(src ? src.label : 'worksheet #' + from.analysis_id)}</b>${src ? ` (${esc(src.analyst || '')}, ${esc(src.status || '')})` : ''}: the same solution, weight, dilution and injections. If that worksheet is corrected, this one recalculates.</div>
+        ${src ? `<div class="grid g3"><div class="kv-item"><div class="k">Working standard</div><div class="v">${esc(src.ws_no)}</div></div>
+          <div class="kv-item"><div class="k">Standard weight</div><div class="v">${esc(src.std_weight)} mg</div></div>
+          <div class="field"><label>System suitability</label><div id="sst-${tid}" class="small" style="padding-top:8px">--</div></div></div>
+          <div class="small muted">Injection areas: ${(src.std_areas || []).map(x => esc(x)).join(', ')}</div>` : `<div class="notice" style="color:var(--danger)">${I.alert} That worksheet's standard cannot be used any more. Enter your own standard.</div>`}
+      </div></div>`;
+  }
   const stds = ws.ctx.standards.filter(w => !t.api || String(w.substance).toLowerCase() === String(t.api).toLowerCase());
   const stdList = stds.length ? stds : ws.ctx.standards;
   const inj = P.std_injections || {};
@@ -545,6 +665,10 @@ function wsStandardCard(t, extraSub){
   return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - standard</h3>
       <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - label claim ${esc(P.label_claim_mg)} mg - ${esc(limTxt)}${extraSub ? ' - ' + esc(extraSub) : ''}</div></div></div>
     <div class="card-b">
+      ${wsEditable() && offers.length ? `<div class="field"><label>Reuse a standard already run (same working standard)</label>
+        <select class="inp" onchange="wsUseStd(${tid}, this.value)"><option value="">No: I enter this worksheet's own standard</option>
+          ${offers.map(o => `<option value="${esc(o.analysis_id + ':' + o.template_id)}">${esc(o.label)}${o.started_on ? ' - ' + esc(fmtDate(o.started_on)) : ''}</option>`).join('')}</select>
+        <div class="hint">${I.info}<span>Pick it when this test was run with the same standard solution as that worksheet: its weight, dilution and injection areas are used, nothing is typed again.</span></div></div>` : ''}
       <div class="grid g3">
         <div class="field"><label>Working standard</label><select class="inp${wsMiss(a.ws_id)}" data-ws="${tid}" ${ro}><option value="">Choose...</option>
           ${stdList.map(w => `<option value="${w.id}" ${String(a.ws_id) === String(w.id) ? 'selected' : ''} ${w.usable ? '' : 'disabled'}>${esc(w.ws_no)} - ${esc(w.substance)} - ${esc(w.potency_pct)}%${w.usable ? ' (exp ' + fmtDate(w.expiry_date) + ')' : ' (cannot be used: ' + (w.expiry_date ? 'expired' : 'no expiry date') + ')'}</option>`).join('')}</select></div>
@@ -641,6 +765,24 @@ function wsApiPanel(t){
           ${[['', 'Awaiting result'], ['absent', 'Absent'], ['present', 'Present']].map(([k, l]) => `<option value="${k}" ${(ws.inputs.values[s.key].micro || {})[o.key] === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')}
       </div></div></div>`).join('');
   }
+  if (test === 'weight_variation'){   // 058: each unit's weight; the server gives the average, each unit's difference and pass / fail
+    const L = P.limits || {}, unit = P.unit || 'g';
+    return samples.map((s, si) => { const w = ws.inputs.values[s.key].weights[tid] || [];
+      return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Weight variation - sample ${esc(s.label)}</h3>
+        <div class="sub">Template v${esc(t.version)} - ${esc(w.length)} units, each within ±${esc(L.limit_pct)}% of the average${L.allowed_out ? ` (${esc(L.allowed_out)} may be outside)` : ''}${L.target && L.target.weight ? `; average ${esc(L.target.weight)} ${esc(unit)} ±${esc(L.target.pct)}%` : ''}</div></div>
+        <div id="mean-${tid}-${si}" class="strong" style="text-align:right">--</div></div>
+      <div class="card-b"><div class="lab-units" data-group="values.${s.key}.weights.${tid}">${w.map((x, ui) => `<div class="lab-unit"><div class="tiny muted">Unit ${ui + 1} (${esc(unit)})</div>
+          ${inpNum(`values.${s.key}.weights.${tid}.${ui}`, 'placeholder="weight"')}<div class="tiny tnum strong" id="u-${tid}-${si}-${ui}">--</div></div>`).join('')}</div>
+        <div class="hint" style="margin-top:8px">${I.info}<span>Tip: paste the column of weights from the balance printout into the first box.</span></div></div></div>`; }).join('');
+  }
+  if (test === 'ph'){   // 058: the pH reading(s) against the method's limits
+    const L = P.limits || {};
+    return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>pH</h3>
+        <div class="sub">Template v${esc(t.version)} - limit ${esc(L.min != null && L.min !== '' ? L.min : '')}${L.max != null && L.max !== '' ? ' to ' + esc(L.max) : ''}</div></div></div>
+      <div class="card-b"><div class="grid g3">${samples.map((s, si) => `<div class="field"><label>Sample ${esc(s.label)}: pH</label>
+        ${(ws.inputs.values[s.key].ph[tid] || []).map((x, ri) => inpNum(`values.${s.key}.ph.${tid}.${ri}`, 'placeholder="e.g. 8.2"')).join('')}
+        <div class="small" id="mean-${tid}-${si}" style="margin-top:6px">--</div></div>`).join('')}</div></div></div>`;
+  }
   return emptyState('alert', 'Unknown test', '');
 }
 function viewLabWorksheet(id){
@@ -664,6 +806,9 @@ function viewLabWorksheet(id){
     acts.push(`<button class="btn btn-primary" id="wsSubmit">${I.send} Submit</button>`);
   }
   if (hasLabRole('qc_supervisor') && a.status === 'submitted' && !a.is_mine) acts.push(`<button class="btn btn-primary" onclick="wsCheck()">Check / return</button>`);
+  // Recall (058): the analyst until the QC Supervisor checks; the checker until the QC Manager decides (the server checks again)
+  if (a.is_mine && a.status === 'submitted') acts.push(recallBtn('worksheet', a.id, `Worksheet #${a.id} - ${a.product_name}`));
+  if (a.status === 'checked' && a.checked_by && S.me && a.checked_by === S.me.name && !d.samples.some(b => b.decided)) acts.push(recallBtn('check', a.id, `Worksheet #${a.id} - ${a.product_name}`));
   acts.push(`<a class="btn btn-ghost" href="#/lab/print/${a.id}">${I.print} Printable copy</a>`);
   if (hasLabRole('qc_manager') && a.status === 'checked') acts.push(`<button class="btn btn-ghost" onclick="wsSendBack()">Send back</button>`);
   return {
@@ -675,7 +820,8 @@ function viewLabWorksheet(id){
         <div class="card"><div class="card-h"><div><h3>Run details</h3><div class="sub">Every field on this worksheet is required to submit</div></div></div><div class="card-b"><div class="grid g2">
           <div class="field"><label>${a.test_type === 'microbiology' ? 'Instrument / incubator' : 'Instrument'}</label><select class="inp${wsMiss(ws.run.equipment_id)}" data-r="equipment_id" ${edit ? '' : 'disabled'}><option value="">Choose...</option>
             ${d.equipment.map(q => `<option value="${q.id}" ${String(ws.run.equipment_id) === String(q.id) ? 'selected' : ''}>${esc(q.eq_no)} ${esc(q.eq_type || '')}</option>`).join('')}</select></div>
-          <div class="field"><label>${a.test_type === 'microbiology' ? 'Media / reagent lots' : 'Mobile phase / reagent lots'}</label><input class="inp${wsMiss(ws.run.reagents)}" data-r="reagents" value="${esc(ws.run.reagents)}" ${edit ? '' : 'disabled'}></div>
+          <div class="field"><label>${a.test_type === 'microbiology' ? 'Media / reagent lots' : 'Mobile phase / reagent lots'}</label><input class="inp${wsMiss(ws.run.reagents)}" data-r="reagents" value="${esc(ws.run.reagents)}" ${edit ? '' : 'disabled'} placeholder="separate them with commas">
+            <div id="wsReagents" style="margin-top:6px">${reagentChips(ws.run.reagents)}</div></div>
           <div class="field"><label>Analysis started</label><input class="inp${wsMiss(ws.run.started_on)}" type="date" data-r="started_on" value="${esc(ws.run.started_on || '')}" ${edit ? '' : 'disabled'}></div>
           <div class="field"><label>Analysis ended</label><input class="inp${wsMiss(ws.run.ended_on)}" type="date" data-r="ended_on" value="${esc(ws.run.ended_on || '')}" ${edit ? '' : 'disabled'}></div>
         </div></div></div>
@@ -706,7 +852,8 @@ function viewLabWorksheet(id){
         const ev = el.tagName === 'SELECT' ? 'change' : 'input';
         el.addEventListener(ev, () => { wsSet(el.dataset.k, el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || /label$/.test(el.dataset.k) ? el.value : el.value.replace(/,/g, '').trim()); ws.dirty = true; wsUnmark(el); wsCalcSoon(); });
       });
-      $$('[data-r]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { ws.run[el.dataset.r] = el.value; ws.dirty = true; wsUnmark(el); }));
+      $$('[data-r]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { ws.run[el.dataset.r] = el.value; ws.dirty = true; wsUnmark(el);
+        if (el.dataset.r === 'reagents'){ const box = $('#wsReagents'); if (box) box.innerHTML = reagentChips(el.value); } }));
       $$('[data-ws]').forEach(el => el.addEventListener('change', () => wsStdChange(el)));
       $$('.lab-areas, .lab-units').forEach(g => g.addEventListener('paste', e => {
         const text = (e.clipboardData || window.clipboardData).getData('text');
@@ -725,6 +872,9 @@ function viewLabWorksheet(id){
     }
   };
 }
+// reagents / mobile phase lots: typed with commas, shown one per item (058); stored as typed
+const reagentList = s => String(s || '').split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
+function reagentChips(s){ return reagentList(s).map(x => `<span class="chip" style="margin:0 4px 4px 0">${esc(x)}</span>`).join(''); }
 function wsTab(tid){ ws.tab = tid; render(); }
 function wsUnmark(el){ if (String(el.value).trim() !== '') el.classList.remove('err'); }
 function wsSplInj(si, tid, delta, pi){
@@ -828,6 +978,16 @@ function wsPaint(){
           el.textContent = val == null ? '--' : num1(val) + '%';
           el.style.color = below.includes(ui + 1) ? 'var(--danger)' : '';
         });
+      } else if (test === 'weight_variation'){
+        if (m) m.innerHTML = rs ? `average <span class="tnum">${esc(rs.mean_reported)} ${esc(rs.unit)}</span> - largest difference <b class="tnum">${esc(rs.max_dev)}%</b> ${verdictBadge(rs.pass)}` : '--';
+        (((v.weights || {})[t.id]) || []).forEach((u, ui) => {
+          const el = $(`#u-${t.id}-${si}-${ui}`); if (!el) return;
+          const d = rs ? rs.deviations_reported[ui] : null;
+          el.textContent = d == null ? '--' : (d > 0 ? '+' : '') + d.toFixed(2) + '%';
+          el.style.color = rs && rs.out_units.includes(ui + 1) ? 'var(--danger)' : '';
+        });
+      } else if (test === 'ph'){
+        if (m) m.innerHTML = rs ? `pH <b class="tnum">${Number(rs.reported).toFixed(2)}</b> ${verdictBadge(rs.pass)}` : '--';
       } else if (test === 'identification'){
         if (m) m.innerHTML = rs ? verdictBadge(rs.pass) : '--';
       } else if (test === 'microbiology'){
@@ -839,7 +999,7 @@ function wsPaint(){
   const blocked = (c.blocked || []).length ? `<div class="notice" style="color:var(--danger);margin-bottom:10px">${I.alert} System suitability failed for ${esc(c.blocked.join(', '))}: results are blocked until the run is repeated or a justification is entered.</div>` : '';
   box.innerHTML = `${blocked}${errs ? `<div class="small" style="margin-bottom:10px"><b>To complete:</b><ul style="margin:6px 0 0 18px">${errs}</ul></div>` : ''}
     ${(c.results || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0" data-nosort><thead><tr><th>API</th><th>Sample</th><th style="text-align:right">Reported</th><th>Limit</th><th></th></tr></thead><tbody>
-      ${c.results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="tnum strong" style="text-align:right">${num1(x.value_reported)}%</td>
+      ${c.results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="tnum strong" style="text-align:right">${esc(resText(x))}</td>
         <td class="small muted">${esc(x.limit_text)}</td><td>${verdictBadge(x.pass)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
 }
 function wsBody(extra){
@@ -881,7 +1041,7 @@ function wsSubmit(){
     submit: async ({ password, reason }) => {
       const res = await labPost('/worksheet/submit', wsBody({ password, reason }));
       toast('Submitted', res.oos ? `${res.oos} result(s) out of specification: OOS entries opened.` : 'All results within specification.', res.oos ? 'err' : 'ok', 7000);
-      labCache = {}; go('/lab/my');
+      labClear(); go('/lab/my');
     }
   });
 }
@@ -895,7 +1055,7 @@ function wsCheck(){
     submit: async ({ password, reason, wrap }) => {
       const act = $('input[name=ck]:checked', wrap).value;
       if (act === 'return' && !reason) throw new Error('Say why it is returned.');
-      await labPost('/worksheet/check', { analysis_id: ws.id, password, action: act, reason });
+      await labPost('/worksheet/check', { analysis_id: ws.id, password, action: act, reason, seen: labSeen('/worksheet?id=' + ws.id) });
       toast(act === 'check' ? 'Checked' : 'Returned to the analyst', `Worksheet #${ws.id}`, 'ok'); labRefresh();
     }
   });
@@ -1039,10 +1199,25 @@ function viewLabMaster(){
             <button class="btn btn-primary btn-sm" onclick="mdTplSubmit(${t.id})">Send for review</button>` : ''}
           ${t.status !== 'draft' && qcs ? `<button class="btn btn-ghost btn-sm" onclick="mdTemplate(${t.id},'copy')">New version</button>` : ''}
           ${t.stage_of_change === 'in_review' && qcm && t.drafted_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="mdTplReview(${t.id})">Approve</button>` : ''}
+          ${t.stage_of_change === 'in_review' && t.drafted_by_id === d.me ? recallBtn('template', t.id, `${t.api} v${t.version}`, true) : ''}
           ${t.stage_of_change === 'reviewed' && qam && t.drafted_by_id !== d.me && t.reviewed_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="mdApprove(${t.id})">Approve</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
   } else {
     const rows = d.changes || [];
-    body = `<div class="card"><div class="card-h"><div><h3>Changes</h3><div class="sub">Working standards and products: a QC or QA Supervisor starts, the QC Manager approves (products: reviews, then the QA Manager approves). Method templates are on their own tab.</div></div>
+    // everything still waiting, changes AND method templates, in one list (suggestion of 10 Nov 2026: "5 open changes, not showing")
+    const openChg = rows.filter(c => ['submitted', 'reviewed', 'returned'].includes(c.status)).map(c => ({ what: c.title, kind: c.kind === 'standard' ? 'Working standard' : 'Product',
+      who: c.initiated_by, at: c.initiated_at, where: CHG_STATUS[c.status][0](c), badge: CHG_STATUS[c.status][1], view: `chgView(${c.id})`,
+      recall: c.status === 'submitted' && c.initiated_by_id === d.me ? recallBtn('change', c.id, c.title, true) : '' }));
+    const openTpl = (d.templates || []).filter(t => ['in_review', 'reviewed', 'returned'].includes(t.stage_of_change)).map(t => ({
+      what: `${t.product_name} - ${TEST_TYPES[t.test_type] || t.test_type} - ${t.api} v${t.version}`, kind: 'Method template', who: t.drafted_by, at: t.submitted_at || t.drafted_at,
+      where: TPL_STAGE[t.stage_of_change], badge: t.stage_of_change === 'returned' ? 'b-danger' : 'b-warn', view: `mdTemplateView(${t.id})`,
+      recall: t.stage_of_change === 'in_review' && t.drafted_by_id === d.me ? recallBtn('template', t.id, `${t.api} v${t.version}`, true) : '' }));
+    const open = openChg.concat(openTpl);
+    const openCard = `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Waiting for approval (${open.length})</h3><div class="sub">Every change and method template that is not finished yet, wherever it waits</div></div></div>
+      ${open.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>What</th><th>Kind</th><th>Started</th><th>Where it is</th><th></th></tr></thead><tbody>
+        ${open.map(o => `<tr><td><b>${esc(o.what)}</b></td><td class="small">${esc(o.kind)}</td><td class="small">${esc(o.who || '')}<div class="tiny muted">${fmtDate(o.at)}</div></td>
+          <td><span class="badge ${o.badge}">${esc(o.where)}</span></td><td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="${o.view}">View</button> ${o.recall}</td></tr>`).join('')}
+        </tbody></table></div>` : `<div class="card-b">${emptyState('checkCircle', 'Nothing waiting', '')}</div>`}</div>`;
+    body = openCard + `<div class="card"><div class="card-h"><div><h3>Changes</h3><div class="sub">Working standards and products: a QC or QA Supervisor starts, the QC Manager approves (products: reviews, then the QA Manager approves). Method templates are on their own tab.</div></div>
         ${qcs ? `<button class="btn btn-primary btn-sm" onclick="productDialog()">${I.plus} New product</button>` : ''}</div>
       ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Change</th><th>Why</th><th>Started</th><th>Status</th><th></th></tr></thead><tbody>
       ${rows.map(c => `<tr><td><b>${esc(c.title)}</b></td><td class="small">${esc(c.reason || '')}</td>
@@ -1054,7 +1229,8 @@ function viewLabMaster(){
         <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="chgView(${c.id})">View</button>
           ${c.status === 'submitted' && qcm && c.initiated_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="chgDecide(${c.id})">${c.kind === 'standard' ? 'Approve' : 'Review'}</button>` : ''}
           ${c.status === 'reviewed' && qam && c.initiated_by_id !== d.me && c.reviewed_by_id !== d.me ? `<button class="btn btn-primary btn-sm" onclick="chgDecide(${c.id})">Approve</button>` : ''}
-          ${c.status === 'returned' && c.initiated_by_id === d.me && qcs ? `<button class="btn btn-primary btn-sm" onclick="chgResend(${c.id})">${I.edit} Correct and send again</button>` : ''}</td></tr>`).join('')}
+          ${c.status === 'returned' && c.initiated_by_id === d.me && qcs ? `<button class="btn btn-primary btn-sm" onclick="chgResend(${c.id})">${I.edit} Correct and send again</button>` : ''}
+          ${c.status === 'submitted' && c.initiated_by_id === d.me ? recallBtn('change', c.id, c.title, true) : ''}</td></tr>`).join('')}
       </tbody></table></div>` : `<div class="card-b">${emptyState('checkCircle', 'No changes waiting', 'Nothing has been started in the last 90 days.')}</div>`}</div>`;
   }
   return {
@@ -1082,10 +1258,27 @@ function mdProductsBody(qcs){
       return `<tr class="clickable" onclick="mdProduct=${x.id};render()"><td class="strong">${esc(x.name)}</td><td><span class="badge b-brand">${esc(x.type)}</span></td><td class="mono">${esc(x.prefix)}</td>
         <td>${esc(x.shelfLifeMonths)} months</td><td class="small">${esc(st.join(', ') || '--')}</td><td style="text-align:right">${I.chevR}</td></tr>`; }).join('')}</tbody></table></div></div>`;
   const stages = [...new Set((p.specs || []).map(y => y.stage))];
+  const md = labCache['/masterdata'] || {};
+  // QC tests of this product (058): each approved method with its limits; "Change" opens a new version with everything filled in
+  const qcT = (md.templates || []).filter(t => t.product_name === p.name && t.status === 'approved').sort((a, b) => String(a.test_type).localeCompare(b.test_type) || String(a.api).localeCompare(b.api));
+  const pending = t => (md.templates || []).some(x => x.product_name === t.product_name && x.test_type === t.test_type && x.api === t.api && x.status === 'draft');
+  const qcCard = `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>QC tests</h3><div class="sub">The approved method of each QC test and its limits. To change a limit, press Change: a new version opens with everything filled in, you change only what is different, and the QC Manager approves it.</div></div></div>
+    ${qcT.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Test</th><th>API</th><th>Version</th><th>Limits</th><th></th></tr></thead><tbody>
+      ${qcT.map(t => `<tr><td class="strong">${esc(TEST_TYPES[t.test_type] || t.test_type)}</td><td>${esc(t.api)}</td><td class="tnum">v${esc(t.version)}</td><td class="small">${esc(tplLimitText(t))}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="mdTemplateView(${t.id})">View</button>
+          ${qcs ? (pending(t) ? '<span class="tiny muted">a new version is waiting</span>' : `<button class="btn btn-ghost btn-sm" onclick="mdTemplate(${t.id},'copy')">${I.edit} Change</button>`) : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="card-b">${emptyState('doc', 'No approved QC methods yet', 'Method templates tab: New template.')}</div>`}</div>`;
+  // Mintacid only (058): QC also tests pH while the IPQA probe is faulty; switched through a change request
+  const phOn = !!(((md.product_flags || {})[p.name]) || {}).qc_ph;
+  const phCard = p.name === 'Mintacid' ? `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>QC also tests pH: ${phOn ? '<span class="badge b-ok">On</span>' : '<span class="badge b-slate">Off</span>'}</h3>
+      <div class="sub">While on, every ${esc(p.name)} sample QC receives gets a pH test (the QC Supervisor can take it off). It needs an approved pH method (QC tests above).</div></div>
+      ${qcs ? `<button class="btn btn-ghost btn-sm" onclick="mdQcPh(${p.id}, ${phOn ? 'false' : 'true'})">${I.edit} Request: switch ${phOn ? 'off' : 'on'}</button>` : ''}</div></div>` : '';
   return `<div class="row" style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="mdProduct=null;render()">${I.chevL} All products</button></div>
     <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(p.name)}</h3><div class="sub">${esc(p.type)} - prefix <b>${esc(p.prefix)}</b> - shelf life ${esc(p.shelfLifeMonths)} months</div></div>
       <div class="row" style="gap:8px">${qcs ? `<button class="btn btn-ghost btn-sm" onclick="editShelfLife(${p.id})">${I.edit} Change shelf life</button>
         <button class="btn btn-primary btn-sm" onclick="mdSpecAdd(${p.id})">${I.plus} Add a check</button>` : ''}</div></div></div>
+    ${phCard}${qcCard}
+    <h3 style="margin:6px 0 10px">IPQA checks</h3>
     ${stages.length ? stages.map(stage => `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(stage)}</h3><div class="sub">On the IPQA sheet at this stage</div></div></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Parameter</th><th>Acceptance criteria</th><th>Type</th><th>On the IPQA sheet</th><th></th></tr></thead><tbody>
       ${(p.specs || []).filter(y => y.stage === stage).map(y => `<tr><td class="strong">${esc(y.parameterName)}</td><td class="small">${esc(mdSpecText(y))}</td>
@@ -1094,6 +1287,27 @@ function mdProductsBody(qcs){
         <td style="text-align:right;white-space:nowrap">${qcs ? `<button class="btn btn-ghost btn-sm" onclick='editSpec(${y.id})'>${I.edit} Request change</button>
           <button class="btn btn-ghost btn-sm" onclick='mdSpecRemove(${y.id})'>${I.x} Remove</button>` : '<span class="tiny muted">View only</span>'}</td></tr>`).join('')}</tbody></table></div></div>`).join('')
       : `<div class="card"><div class="card-b">${emptyState('box', 'No IPQA checks yet', 'Add a check to put it on the IPQA sheet.')}</div></div>`}`;
+}
+// a method's limits in one line (058: the QC tests list of a product)
+function tplLimitText(t){
+  const P = t.parameters || {}, L = P.limits || {};
+  if (t.test_type === 'assay') return `${L.min}% to ${L.max}% of label claim${P.a1pct ? ` (UV, A1% ${P.a1pct})` : ''}`;
+  if (t.test_type === 'dissolution') return `NLT ${L.min}% dissolved${P.a1pct ? ` (UV, A1% ${P.a1pct})` : ''}`;
+  if (t.test_type === 'content_uniformity') return `AV NMT ${P.l1 ?? 15}${P.a1pct ? ` (UV, A1% ${P.a1pct})` : ''}`;
+  if (t.test_type === 'weight_variation') return `${L.units || '?'} units, each within ±${L.limit_pct}% of the average` + (L.target && L.target.weight ? `; average ${L.target.weight} ${P.unit || 'g'} ±${L.target.pct}%` : '');
+  if (t.test_type === 'ph') return `pH ${L.min ?? '--'} to ${L.max ?? '--'}`;
+  if (t.test_type === 'microbiology') return (L.counts || []).map(c => `${c.label} NMT ${c.max}`).join(', ') + ((L.absent || []).length ? '; ' + L.absent.length + ' organisms absent' : '');
+  return 'Matches the standard (analyst)';
+}
+// Mintacid: switch "QC also tests pH" on or off (a change request: QC Manager reviews, QA Manager approves)
+function mdQcPh(productId, on){
+  const p = (S.products || []).find(x => Number(x.id) === Number(productId)); if (!p) return;
+  signDialog({ title: `QC tests pH: switch ${on ? 'on' : 'off'} - ${p.name}`, sub: on ? 'Every sample QC receives then gets a pH test.' : 'QC stops adding a pH test to new samples.', ok: 'Sign and send',
+    meaning: `You start this change as ${starterTitle()}. Nothing changes until the QA Manager approves.`, reason: 'Why?', reasonRequired: true,
+    submit: async ({ password, reason }) => {
+      await labPost('/change/submit', { kind: 'product', action: 'edit', target_id: p.id, reason, password, payload: { qc_ph: on } });
+      toast('Sent to the QC Manager', `${p.name}: QC tests pH ${on ? 'on' : 'off'}`, 'ok'); labRefresh();
+    } });
 }
 function mdSpecAdd(productId){
   const p = (S.products || []).find(x => Number(x.id) === Number(productId)); if (!p) return;
@@ -1204,9 +1418,9 @@ function mdTplReview(id){
     body: mdParamsHtml(t.parameters, t.test_type) + `<div class="tiny muted" style="margin:8px 0">Started by ${esc(t.drafted_by || '')}${t.change_note ? ' - ' + esc(t.change_note) : ''}</div>`
       + `<button class="btn btn-ghost btn-sm" id="tpReturn" type="button">Return to the QC Supervisor instead</button>`,
     onMount: w => { $('#tpReturn', w).onclick = () => { closeModalOf(w); decisionDialog({ title: 'Return method template', sub: `${t.api} v${t.version}`, role: 'QC Manager',
-      submit: async ({ password, reason }) => { await labPost('/template/review', { id, password, decision: 'returned', comments: reason }); toast('Returned', `${t.api} v${t.version}`, 'ok'); labRefresh(); } }); }; },
+      submit: async ({ password, reason }) => { await labPost('/template/review', { id, password, decision: 'returned', comments: reason, seen: labSeen('/masterdata') }); toast('Returned', `${t.api} v${t.version}`, 'ok'); labRefresh(); } }); }; },
     reason: 'Comment (optional)',
-    submit: async ({ password, reason }) => { await labPost('/template/review', { id, password, decision: 'reviewed', comments: reason }); toast('Method approved', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
+    submit: async ({ password, reason }) => { await labPost('/template/review', { id, password, decision: 'reviewed', comments: reason, seen: labSeen('/masterdata') }); toast('Method approved', `${t.api} v${t.version}`, 'ok'); labRefresh(); } });
 }
 // ---- changes to standards and products
 const limitText = x => esc(x.spec_text || [x.spec_min, x.spec_max].map(v => (v === '' || v == null ? '--' : v)).join(' to '));
@@ -1220,7 +1434,8 @@ function chgText(c){
   const chg = (P.spec_changes || []).map(x => `<tr>${x.parameter_name ? `<td>${esc(x.stage || '')}</td><td>${esc(x.parameter_name)} (changed)</td>` : `<td colspan="2">Specification #${esc(x.id)} (changed)</td>`}
     <td>${x.spec_min != null || x.spec_max != null ? limitText(x) : 'limits unchanged'}${esc(optText(x))}</td></tr>`).join('');
   return `<table class="tbl"><tbody>${c.action === 'create' ? [['Name', P.name], ['Prefix', P.prefix], ['Type', P.type], ['Shelf life', P.shelf_life_months + ' months']].map(r => `<tr><th>${r[0]}</th><td colspan="2">${esc(r[1] || '')}</td></tr>`).join('')
-    : P.shelf_life_months != null ? `<tr><th>Shelf life</th><td colspan="2">${esc(P.shelf_life_months)} months</td></tr>` : ''}</tbody></table>
+    : P.shelf_life_months != null ? `<tr><th>Shelf life</th><td colspan="2">${esc(P.shelf_life_months)} months</td></tr>` : ''}
+    ${typeof P.qc_ph === 'boolean' ? `<tr><th>QC also tests pH</th><td colspan="2">switch ${P.qc_ph ? 'ON: every sample received gets a pH test' : 'OFF'}</td></tr>` : ''}</tbody></table>
     ${specs || chg || rem ? `<table class="tbl" style="margin-top:8px"><thead><tr><th>Stage</th><th>Parameter</th><th>Limit</th></tr></thead><tbody>${specs}${chg}${rem}</tbody></table>` : ''}`;
 }
 function chgView(id){
@@ -1235,9 +1450,9 @@ function chgDecide(id){
     meaning: last ? `You approve this as ${role}. It takes effect now.` : `You review this as ${role}. The QA Manager then approves it.`,
     body: `<div class="small" style="margin-bottom:10px"><b>Why:</b> ${esc(c.reason || '')}</div>${chgText(c)}<button class="btn btn-ghost btn-sm" id="chReturn" type="button" style="margin-top:10px">Return to ${esc(c.initiated_by)} instead</button>`,
     onMount: w => { $('#chReturn', w).onclick = () => { closeModalOf(w); decisionDialog({ title: 'Return change', sub: c.title, role,
-      submit: async ({ password, reason }) => { await labPost('/change/decide', { id, password, decision: 'return', comments: reason }); toast('Returned', c.title, 'ok'); labRefresh(); } }); }; },
+      submit: async ({ password, reason }) => { await labPost('/change/decide', { id, password, decision: 'return', comments: reason, seen: labSeen('/masterdata') }); toast('Returned', c.title, 'ok'); labRefresh(); } }); }; },
     reason: 'Comment (optional)',
-    submit: async ({ password, reason }) => { await labPost('/change/decide', { id, password, decision: 'approve', comments: reason });
+    submit: async ({ password, reason }) => { await labPost('/change/decide', { id, password, decision: 'approve', comments: reason, seen: labSeen('/masterdata') });
       toast(last ? 'Change approved' : 'Sent to the QA Manager', c.title, 'ok'); labRefresh(); } });
 }
 function chgResend(id){
@@ -1307,7 +1522,8 @@ function mdParamsHtml(P, test){
   const kv = (k, v) => `<div class="kv-item"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
   const steps = (s, first) => (s || []).map((x, i) => (i === 0 ? `${first} to ${x[1]} mL` : `${x[0]} mL to ${x[1]} mL`)).join(', ');
   const unit = P.dosage_form || 'caplet';
-  const hplc = [kv('Standard', `${(P.std || {}).nominal_mg ?? '--'} mg: ${steps((P.std || {}).steps, 'weight')}`),
+  const hplc = P.a1pct ? [kv('Standard', `none measured: UV, fixed A(1%, 1 cm) = ${P.a1pct}`), kv('Reported to', `${P.dp ?? 1} decimal place(s)`)]   // 058
+    : [kv('Standard', `${(P.std || {}).nominal_mg ?? '--'} mg: ${steps((P.std || {}).steps, 'weight')}`),
     kv('Standard injections', `${(P.std_injections || {}).min} to ${(P.std_injections || {}).max}`),
     kv('System suitability', [`%RSD NMT ${(P.sst || {}).limit_rsd}%`, (P.sst || {}).tailing_max != null ? `tailing factor NMT ${(P.sst || {}).tailing_max}` : '',
       (P.sst || {}).resolution_min != null ? `resolution NLT ${(P.sst || {}).resolution_min}` : ''].filter(Boolean).join(', ')), kv('Reported to', `${P.dp ?? 1} decimal place(s)`)];
@@ -1324,6 +1540,10 @@ function mdParamsHtml(P, test){
   else if (test === 'microbiology') rows = [kv('Unit', (P.limits || {}).unit || 'cfu/g'),
     ...(((P.limits || {}).counts) || []).map(c => kv(c.label, `NMT ${c.max} ${(P.limits || {}).unit || ''}`)),
     kv('Absent', (((P.limits || {}).absent) || []).map(a => a.label).join(', ') || '--'), tail[0]];
+  else if (test === 'weight_variation'){ const L = P.limits || {};   // 058
+    rows = [kv('Units weighed', L.units ?? '--'), kv('Each unit', `within ±${L.limit_pct}% of the average`), kv('Allowed outside', `${L.allowed_out || 0} (none beyond ±${2 * (L.limit_pct || 0)}%)`),
+      kv('Average', L.target && L.target.weight ? `${L.target.weight} ${P.unit || 'g'} ±${L.target.pct}%` : 'no target'), kv('Unit', P.unit || 'g'), tail[0]]; }
+  else if (test === 'ph') rows = [kv('Limit', `${(P.limits || {}).min ?? '--'} to ${(P.limits || {}).max ?? '--'}`), kv('Readings per sample', P.readings || 1), tail[0]];   // 058
   else rows = [kv('Calculation', 'Retention times recorded; the analyst decides whether the sample complies'), ...tail];
   return `<div class="kv-grid" style="margin-bottom:12px">${rows.join('')}</div>`;
 }
@@ -1346,6 +1566,10 @@ function mdTplDefaults(test){
     limits: { unit: 'cfu/g', counts: [{ key: 'tamc', label: 'TAMC', max: 100 }, { key: 'tymc', label: 'TYMC', max: 50 }],
       absent: [{ key: 's_aureus', label: 'Staphylococcus aureus' }, { key: 'salmonella', label: 'Salmonella spp' },
                { key: 'p_aeruginosa', label: 'Pseudomonas aeruginosa' }, { key: 'e_coli', label: 'Escherichia coli' }] } };
+  // 058: weight variation (units weighed, each within +/- limit of the average) and pH (reading against limits)
+  if (test === 'weight_variation') return { unit: 'g', dp: 3, samples: { min: 1, max: 1 }, dosage_form: 'sachet',
+    limits: { units: 10, limit_pct: 5, allowed_out: 0, target: { weight: '', pct: '' } } };
+  if (test === 'ph') return { readings: 1, dp: 2, samples: { min: 1, max: 1 }, limits: { min: '', max: '' } };
   return { samples: base.samples, dosage_form: base.dosage_form };                     // identification: the analyst decides
 }
 // draft editor: the fields follow the test type; anything a field does not show is kept as it was (never dropped)
@@ -1361,7 +1585,7 @@ function mdTemplate(id, mode){
     body: `${isNew ? `<div class="grid g2">
         <div class="field"><label for="tp_product">Product</label><select class="inp" id="tp_product">${(md.products || []).map(p => `<option>${esc(p)}</option>`).join('')}</select></div>
         <div class="field"><label>Stage</label><div class="small" style="padding-top:8px">All stages (a method belongs to the product)</div></div>
-        <div class="field"><label for="tp_test">Test</label><select class="inp" id="tp_test">${testOptions('assay')}</select></div>
+        <div class="field"><label for="tp_test">Test</label><select class="inp" id="tp_test">${testOptions('assay', NEW_TESTS)}</select></div>
         <div class="field"><label for="tp_api">API</label><input class="inp" id="tp_api" placeholder="e.g. Paracetamol (one template per API; microbiology: Microbiology)"></div></div>` : ''}
       <div id="tpParams"></div>
       <div class="grid g3">
@@ -1389,7 +1613,9 @@ function mdTemplate(id, mode){
         const hplcTop = `<div class="grid g4">${f('std_injections.min', 'Std injections min')}${f('std_injections.max', 'Std injections max')}
           ${f('sst.limit_rsd', 'SST %RSD limit (NMT)')}${f('samples.max', 'Samples per batch (max)')}</div>
           <div class="grid g3">${f('sst.tailing_max', 'Tailing factor NMT (optional, e.g. 2.0)')}${f('sst.resolution_min', 'Resolution NLT (optional, e.g. 2.0)')}
-            <div class="hint" style="align-self:center">${I.info}<span>Leave blank when the method does not use it. When set, the analyst types the value in after the standard injections.</span></div></div>`;
+            <div class="hint" style="align-self:center">${I.info}<span>Leave blank when the method does not use it. When set, the analyst types the value in after the standard injections.</span></div></div>
+          <div class="grid g3">${f('a1pct', 'UV: fixed A(1%, 1 cm) (optional, e.g. 355)')}
+            <div class="hint" style="align-self:center;grid-column:span 2">${I.info}<span>Only for a UV method that uses a specific absorbance instead of a measured standard (e.g. Cypron assay and CU). Then no standard is weighed or read, and the standard fields above are not used.</span></div></div>`;
         if (test === 'assay') box.innerHTML = `
           <div class="grid g3">${f('label_claim_mg', 'Label claim (mg)')}${f('avg_weight.theoretical_mg', 'Theoretical average weight (mg)')}${f('std.nominal_mg', 'Standard nominal weight (mg)')}</div>
           <div class="grid g2">${stepRows('std', 'Standard dilution', 'Weigh into')}${stepRows('sample', 'Sample dilution', 'Weigh into')}</div>
@@ -1413,6 +1639,13 @@ function mdTemplate(id, mode){
           <div class="field"><label>Organisms that must be absent (one per line)</label>
             <textarea class="inp" id="tp_absent" rows="4">${esc((((P.limits || {}).absent) || []).map(a => a.label).join('\n'))}</textarea></div>
           <div class="grid g3">${f('samples.max', 'Samples per batch (max)')}</div>`;
+        else if (test === 'weight_variation') box.innerHTML = `
+          <div class="grid g4">${f('limits.units', 'Units weighed')}${f('limits.limit_pct', 'Each unit within ± % of the average')}${f('limits.allowed_out', 'Units allowed outside (none beyond twice)')}
+            <div class="field"><label>Unit of weight</label><select class="inp" data-p="unit">${['g', 'mg'].map(u => `<option ${(P.unit || 'g') === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
+          <div class="grid g3">${f('limits.target.weight', 'Target average weight (optional)')}${f('limits.target.pct', 'Average within ± % of the target')}${formSel()}</div>`;
+        else if (test === 'ph') box.innerHTML = `
+          <div class="grid g3">${f('limits.min', 'Lower limit (pH)')}${f('limits.max', 'Upper limit (pH)')}${f('readings', 'Readings per sample')}</div>
+          <div class="hint">${I.info}<span>For a new pH method the limits are filled in from the product's IPQA pH specification. Change them only if QC's limit is different.</span></div>`;
         else box.innerHTML = `
           <div class="notice" style="margin-bottom:12px">${I.info} Identification has no calculation: the retention times are recorded and the analyst decides whether the sample complies.</div>
           <div class="grid g3">${f('samples.max', 'Samples per batch (max)')}${formSel()}</div>`;
@@ -1422,7 +1655,13 @@ function mdTemplate(id, mode){
       box.addEventListener('click', e => { const b = e.target.closest ? e.target.closest('[data-step]') : null; if (!b) return;
         const [key, d] = b.dataset.step.split(':'); const s = getP(key + '.steps');
         if (d === '1') s.push([1, 1]); else s.pop(); draw(); });
-      if (isNew) $('#tp_test', w).onchange = () => { test = $('#tp_test', w).value; P = mdTplDefaults(test); draw(); };
+      // a new pH method starts from the product's IPQA pH specification (058)
+      const phFromSpec = () => { if (test !== 'ph') return; const prod = (S.products || []).find(x => x.name === $('#tp_product', w).value);
+        const sp = ((prod || {}).specs || []).find(y => /^ph$/i.test(String(y.parameterName || '').trim()) && (y.specMin != null || y.specMax != null));
+        if (sp){ P.limits = { min: sp.specMin ?? '', max: sp.specMax ?? '' }; } if (!$('#tp_api', w).value) $('#tp_api', w).value = 'pH'; };
+      const wvApi = () => { if (test === 'weight_variation' && !$('#tp_api', w).value) $('#tp_api', w).value = 'Weight variation'; };
+      if (isNew){ $('#tp_test', w).onchange = () => { test = $('#tp_test', w).value; P = mdTplDefaults(test); phFromSpec(); wvApi(); draw(); };
+        $('#tp_product', w).onchange = () => { if (test === 'ph'){ phFromSpec(); draw(); } }; }
       draw();
       $('#tpOk', w).onclick = async () => {
         const v = k => $('#tp_' + k, w).value;
@@ -1431,8 +1670,15 @@ function mdTemplate(id, mode){
         const numPaths = { assay: ['label_claim_mg', 'std.nominal_mg', 'sample.nominal_mg', 'avg_weight.theoretical_mg', 'std_injections.min', 'std_injections.max', 'samples.max', 'preparations', 'injections', 'sst.limit_rsd', 'sst.tailing_max', 'sst.resolution_min', 'limits.min', 'limits.max', 'dp'],
           dissolution: ['label_claim_mg', 'std.nominal_mg', 'medium_ml', 'units', 'std_injections.min', 'std_injections.max', 'samples.max', 'sst.limit_rsd', 'sst.tailing_max', 'sst.resolution_min', 'limits.min', 'dp'],
           content_uniformity: ['label_claim_mg', 'std.nominal_mg', 'k1', 'l1', 'std_injections.min', 'std_injections.max', 'samples.max', 'sst.limit_rsd', 'sst.tailing_max', 'sst.resolution_min', 'dp'],
-          identification: ['samples.max'], microbiology: ['samples.max'] }[test] || [];
+          identification: ['samples.max'], microbiology: ['samples.max'],
+          weight_variation: ['limits.units', 'limits.limit_pct', 'limits.allowed_out', 'limits.target.weight', 'limits.target.pct', 'samples.max', 'dp'],
+          ph: ['readings', 'limits.min', 'limits.max', 'samples.max', 'dp'] }[test] || [];
+        if (['assay', 'dissolution', 'content_uniformity'].includes(test)) numPaths.push('a1pct');
         numPaths.forEach(p => { if (getP(p) !== undefined) setP(p, num(getP(p))); });
+        if (P.a1pct == null) delete P.a1pct;                                                            // blank = a measured standard (HPLC)
+        if (test === 'weight_variation' && P.limits && P.limits.target && !P.limits.target.weight) delete P.limits.target;
+        if (test === 'ph' && P.limits && P.limits.min == null && P.limits.max == null) { const er = $('#tpErr', w); er.textContent = 'Enter the pH limits.'; er.classList.remove('hide'); return; }
+        if (test === 'weight_variation' && !(P.limits && P.limits.limit_pct > 0)) { const er = $('#tpErr', w); er.textContent = 'Enter the ± % limit for each unit.'; er.classList.remove('hide'); return; }
         if (P.sst) ['tailing_max', 'resolution_min'].forEach(k => { if (P.sst[k] == null) delete P.sst[k]; });   // blank = the method does not use it
         const unitFirst = test === 'dissolution' || test === 'content_uniformity';
         ['std', 'sample'].forEach(k => { const s = getP(k + '.steps');
@@ -1476,6 +1722,8 @@ function resText(x){
   if (x.unit === 'AV') return 'AV ' + num1(x.value_reported);
   if (x.unit === '% RT diff') return nfix(x.value_reported, 2) + '% RT difference';   // results stored before 23 Oct 2026
   if (x.unit === 'min RT') return 'RT ' + nfix(x.value_reported, 2) + ' min';
+  if (x.unit === 'pH') return 'pH ' + nfix(x.value_reported, 2);                                 // 058
+  if (x.result_name === 'weight_variation') return 'average ' + x.value_reported + ' ' + (x.unit || '');   // 058
   return `${x.value_reported} ${x.unit || ''}`.trim();
 }
 const verdictText = p => (p === true ? 'COMPLIES' : p === false ? 'DOES NOT COMPLY' : '--');
@@ -1493,8 +1741,10 @@ function printWorksheetHtml(d, opt){
     const P = t.parameters || {}, r = (c.apis || {})[t.id] || {}, x = (inp.apis || {})[t.id] || {};
     const ws = d.standards.find(w => String(w.id) === String(x.ws_id));
     let html = `<h4>${esc(t.api)} - template v${esc(t.version)}${t.form_ref ? ' (replaces ' + esc(t.form_ref) + ')' : ''}</h4>`;
-    if (hplc){
+    if (hplc && P.a1pct) html += `<table><tr><td>UV with a fixed specific absorbance: A(1%, 1 cm) = <b>${esc(P.a1pct)}</b>. No standard measured.</td></tr></table>`;
+    else if (hplc){
       const s = r.sst || {};
+      if (x.std_from) html += `<table><tr><td>Standard reused from worksheet #${esc(x.std_from.analysis_id)} (the same solution, weight, dilution and injections).</td></tr></table>`;
       html += `<table><tr><th>Working standard</th><th>Potency</th><th>Weight</th><th>Dilution</th><th>Standard areas</th><th>Mean</th><th>SD</th><th>%RSD</th><th>SST</th></tr>
         <tr><td>${esc(ws ? ws.ws_no : r.ws_no || '--')}</td><td>${esc(ws ? ws.potency_pct + '%' : '--')}</td><td>${esc(x.std_weight || '--')} mg</td>
           <td>${esc(stepsText((P.std || {}).steps, 'mg'))}</td><td class="mono">${esc((x.std_areas || []).filter(v => v !== '').join(', '))}</td>
@@ -1534,6 +1784,21 @@ function printWorksheetHtml(d, opt){
       html += `<table><tr><th>Sample</th><th>Parameter</th><th>Result</th><th>Limit</th><th>Verdict</th></tr>
         ${samples.map((sm, si) => !show(sm) ? '' : ((r.samples || [])[si] || { rows: [] }).rows.map((row, ri) => `<tr>${ri === 0 ? `<td rowspan="${((r.samples || [])[si] || { rows: [] }).rows.length}">${esc(sm.label)}</td>` : ''}
           <td>${esc(row.label)}</td><td>${row.value === null ? 'awaiting' : esc(typeof row.value === 'number' ? row.value + ' ' + (r.unit || 'cfu/g') : row.value)}</td><td>${esc(row.limit_text)}</td><td><b>${verdictText(row.pass)}</b></td></tr>`).join('')).join('')}</table>`;
+    } else if (test === 'weight_variation'){   // 058
+      samples.forEach((sm, si) => {
+        if (!show(sm)) return;
+        const w = (((inp.values || {})[sm.key] || {}).weights || {})[t.id] || [], rs = (r.samples || [])[si] || {};
+        html += `<table><tr><th>Sample ${esc(sm.label)}</th>${w.map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
+          <tr><td>Weight (${esc(rs.unit || P.unit || 'g')})</td>${w.map(u => `<td class="mono">${esc(u)}</td>`).join('')}</tr>
+          <tr><td>Difference from the average</td>${w.map((u, i) => `<td>${rs.deviations_reported ? nfix(rs.deviations_reported[i], 2) + '%' : '--'}</td>`).join('')}</tr></table>
+          <table><tr><th>Average</th><th>Largest difference</th><th>Limit</th><th>Verdict</th></tr>
+          <tr><td><b>${esc(rs.mean_reported != null ? rs.mean_reported + ' ' + (rs.unit || '') : '--')}</b></td><td>${rs.max_dev != null ? nfix(rs.max_dev, 2) + '%' : '--'}</td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr></table>`;
+      });
+    } else if (test === 'ph'){   // 058
+      html += `<table><tr><th>Sample</th><th>Reading(s)</th><th>pH</th><th>Limit</th><th>Verdict</th></tr>
+        ${samples.map((sm, si) => { if (!show(sm)) return ''; const rs = (r.samples || [])[si] || {};
+          return `<tr><td>${esc(sm.label)}</td><td class="mono">${esc(((((inp.values || {})[sm.key] || {}).ph || {})[t.id] || []).join(', '))}</td><td><b>${rs.reported != null ? nfix(rs.reported, 2) : '--'}</b></td>
+            <td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr>`; }).join('')}</table>`;
     }
     return html;
   }).join('');
@@ -1546,7 +1811,7 @@ function printWorksheetHtml(d, opt){
     <h4>Analysis details</h4>
     <table class="kv"><tr><th>Product</th><td>${esc(a.product_name)}</td><th>Stage</th><td>${esc(a.stage)}</td></tr>
       <tr><th>Batch(es)</th><td>${esc(d.samples.map(b => b.batch_no).join(', '))}</td><th>Requests</th><td>${esc(d.samples.map(b => b.request_no).join(', '))}</td></tr>
-      <tr><th>Instrument</th><td>${esc(eq ? eq.eq_no + ' ' + (eq.eq_type || '') : '--')}</td><th>Reagent / mobile phase lots</th><td>${esc(a.reagents || '--')}</td></tr>
+      <tr><th>Instrument</th><td>${esc(eq ? eq.eq_no + ' ' + (eq.eq_type || '') : '--')}</td><th>Reagent / mobile phase lots</th><td>${reagentList(a.reagents).length ? reagentList(a.reagents).map(x => esc(x)).join('<br>') : '--'}</td></tr>
       <tr><th>Started</th><td>${fmtDate(a.started_on)}</td><th>Ended</th><td>${fmtDate(a.ended_on)}</td></tr>
       <tr><th>Method</th><td>${esc([...new Set(d.templates.map(t => t.method_ref).filter(Boolean))].join(', ') || '--')}</td><th>Specification</th><td>${esc([...new Set(d.templates.map(t => t.spec_ref).filter(Boolean))].join(', ') || '--')}</td></tr></table>
     ${parts}
