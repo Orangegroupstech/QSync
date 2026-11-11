@@ -186,6 +186,11 @@ function testsCell(r){
   if (!live.length) return '<span class="muted small">--</span>';
   return live.map(a => `<div class="tiny" style="margin:2px 0">${esc(TEST_TYPES[a.test_type] || a.test_type)} - ${esc(a.analyst)} ${a.analysis_id ? wsBadge(a.analysis_status) : '<span class="muted">(not started)</span>'}</div>`).join('');
 }
+// rows the search hides: say so, with the search and a button to clear it
+function hiddenBySearch(n){
+  return `<div class="card-b">${emptyState('search', 'No match for "' + esc(inboxQ.trim()) + '"', n + ' in this list ' + (n === 1 ? 'is' : 'are') + ' hidden by the search.',
+    `<button class="btn btn-primary" onclick="inboxQ='';render()">Clear the search</button>`)}</div>`;
+}
 function viewLabInbox(){
   const d = labGet('/inbox');
   if (!d) return labWait('QC inbox', 'QC Laboratory');
@@ -211,6 +216,7 @@ function viewLabInbox(){
         <td data-label="Tests for QC" class="small">${esc(r.test_required || '--')}</td>
         <td data-label="Status"><span class="badge ${st[1]}">${esc(st[0])}</span>${r.ipqa_signed_at ? `<div class="tiny muted" style="margin-top:3px">IPQA signed: ${esc(r.ipqa_signed_by || '')}, ${fmtDateTime(r.ipqa_signed_at)}</div>` : ''}${r.returns ? `<div class="tiny" style="color:var(--danger)">returned ${r.returns}x</div>` : ''}</td>
         <td style="text-align:right;white-space:nowrap">${act} ${rec}</td></tr>`; }).join('')}</tbody></table></div>`
+    : (d.ipqa || []).length ? hiddenBySearch((d.ipqa || []).length)
     : `<div class="card-b">${emptyState('inbox', 'Nothing with IPQA', 'Samples appear here from the moment they are raised until the QA Supervisor approves them.')}</div>`;
   const body = !tab[2] ? ipqaBody : rows.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Tests</th><th>OOS</th><th>Status</th><th></th></tr></thead>
@@ -231,6 +237,7 @@ function viewLabInbox(){
               .map(w => `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();go('/lab/worksheet/${w}')">Check #${w}</button>`).join(' ')
           : I.chevR}</td>
       </tr>`).join('')}</tbody></table></div>`
+    : tab[2] && d.requests.filter(tab[2]).length ? hiddenBySearch(d.requests.filter(tab[2]).length)
     : `<div class="card-b">${emptyState('inbox', 'Nothing here', 'No requests in this list.')}</div>`;
   const qcmNote = '';   // method templates and changes are counted on Lab master data (042): the inbox is samples only
   return {

@@ -82,7 +82,7 @@ function meFromAuth(auth, scope){
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 const PAGES = [["/spares", "engineering.spares"], ["/jobs", "engineering.jobs"], ["/floor", "engineering.jobs"],
   ["/rca", "engineering.actions"], ["/actions", "engineering.actions"], ["/pm", "engineering.pm"], ["/overview", "engineering.actions"], ["/outdoor", "engineering.outdoor"],
-  ["/equipment", "engineering.equipment"], ["/settings", "engineering.settings"], ["/ahu", "engineering.ahu"], ["/checks", "engineering.jobs"]];   // route prefix -> page, first match wins
+  ["/equipment", "engineering.equipment"], ["/settings", "engineering.settings"], ["/ahu", "engineering.ahu"], ["/checks", "engineering.checks"]];   // route prefix -> page, first match wins
 // Requests (043: spares and other items to Procurement, overtime to HR): the Engineering Manager and the storekeeper
 const canRequest = () => levelOf('engineering.spares') === 'edit' || levelOf('engineering.jobs') === 'edit';
 function pageOf(path){
@@ -3258,13 +3258,16 @@ function ckDayLabel(iso, today){
 }
 function viewChecks(){
   if (!CK.data) { CK.data = 'loading'; ckLoad(); }
-  if (!JB.board && !JB.loading && !JB.error) jbLoad();     // who "me" is (the board knows)
+  // 060 (11 Nov 2026): Periodic checks has its own page in Users; the owner of a check opens it with no setup (a duty).
+  // People who only own checks have no Calls and jobs: no job board, no Weekend watch for them.
+  const jobs = !!levelOf('engineering.jobs');
+  if (jobs && !JB.board && !JB.loading && !JB.error) jbLoad();     // who "me" is (the board knows)
   JB.backTo = '/checks';
-  const mgr = levelOf('engineering.jobs') === 'edit', d = CK.data;
-  const t0 = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab'), tab = t0 === 'schedules' || t0 === 'watch' ? t0 : 'week';
+  const mgr = levelOf('engineering.checks') === 'edit', d = CK.data;
+  const t0 = (new URLSearchParams(currentPath().split('?')[1] || '')).get('tab'), tab = t0 === 'schedules' || (t0 === 'watch' && jobs) ? t0 : 'week';
   const head = pageHead('Periodic checks', 'Everything due on set days in one place: the periodic checks (like cleaning the AHU pre-filters every Wednesday and Saturday), the PMs due and the weekend watch. The owner of a check gets a WhatsApp reminder at its time and marks it from the link in it.',
-      mgr ? `<button class="btn btn-primary" onclick="ckOpen(null)">${I.plus} New periodic check</button>` : '')
-    + `<div class="tabs" style="margin-bottom:14px"><a class="tab ${tab === 'week' ? 'on' : ''}" href="#/checks">This week</a><a class="tab ${tab === 'watch' ? 'on' : ''}" href="#/checks?tab=watch">Weekend watch</a><a class="tab ${tab === 'schedules' ? 'on' : ''}" href="#/checks?tab=schedules">Schedules${d && d.routines ? ` <span class="badge" style="padding:1px 7px">${d.routines.filter(r => r.active).length}</span>` : ''}</a></div>`;
+      mgr ? `<button class="btn btn-ghost" onclick="ckAssign()">${I.users} Give checks to someone</button> <button class="btn btn-primary" onclick="ckOpen(null)">${I.plus} New periodic check</button>` : '')
+    + `<div class="tabs" style="margin-bottom:14px"><a class="tab ${tab === 'week' ? 'on' : ''}" href="#/checks">This week</a>${jobs ? `<a class="tab ${tab === 'watch' ? 'on' : ''}" href="#/checks?tab=watch">Weekend watch</a>` : ''}<a class="tab ${tab === 'schedules' ? 'on' : ''}" href="#/checks?tab=schedules">Schedules${d && d.routines ? ` <span class="badge" style="padding:1px 7px">${d.routines.filter(r => r.active).length}</span>` : ''}</a></div>`;
   if (tab === 'watch') { const v = viewWatch(head); v.title = 'Periodic checks'; return v; }
   if (d === 'loading') return { title:'Periodic checks', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (d.error) return { title:'Periodic checks', crumb:'Maintenance', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error), `<button class="btn btn-primary" onclick="CK.data = null; render()">Try again</button>`)}</div></div>` };
@@ -3378,6 +3381,40 @@ function ckOpen(id){
     } });
 }
 
+// Give several checks to one person at once (11 Nov 2026): pick the person, tick the checks, Save. Each ticked check gets that
+// person as its owner (one owner per check); the rest of each check stays as it is. Same server call as the check's own Save.
+function ckAssign(){
+  const rs = ((CK.data && CK.data.routines) || []).filter(r => r.active), staff = (CK.data && CK.data.people) || [];
+  if (!rs.length) { toast('No checks yet', 'Add one with "New periodic check".', 'warn'); return; }
+  let who = '';
+  const list = () => rs.map(r => { const owner = ((r.people_names || [])[0] || {}).name || 'nobody';
+    return `<label class="row" style="gap:10px;padding:8px 0;border-bottom:1px solid var(--line-2);align-items:flex-start;cursor:pointer;flex-wrap:nowrap">
+      <input type="checkbox" data-ck-pick="${r.id}" ${who && (r.people || [])[0] === who ? 'checked disabled' : ''} style="margin-top:3px">
+      <span><span class="strong">${esc(r.title)}</span><span class="tiny muted" style="display:block">${esc(ckDays(r))} at ${esc(r.remind_at)}${(r.asset_names || []).length ? ' · ' + esc(r.asset_names.join(', ')) : ''} · now: ${esc(owner)}</span></span></label>`; }).join('');
+  openModal({ title: 'Give checks to someone', size: 'wide', sub: 'Pick the person, tick the checks they will own. They get the WhatsApp reminders and mark them; in Users they need only Console access on.',
+    body: `<div class="field"><span class="lbl">Who?</span><div class="row" style="gap:6px">${staff.map(p => `<button type="button" class="chip big-chip" data-ck-to="${esc(p.enroll_id)}">${esc(p.name)}</button>`).join('')}</div></div>
+      <div class="field"><span class="lbl">Which checks?</span><div id="ckPick">${list()}</div></div><div class="err-msg hide" data-err="ckPick"></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
+    onMount: (w, close) => {
+      $$('[data-ck-to]', w).forEach(b => b.onclick = () => { who = b.dataset.ckTo; $$('[data-ck-to]', w).forEach(x => x.classList.toggle('on', x.dataset.ckTo === who)); $('#ckPick', w).innerHTML = list(); });
+      $('[data-save]', w).onclick = async () => {
+        clearErrors(w);
+        if (!who) return setErr('ckPick', 'Tap the person first.', w);
+        const ids = $$('[data-ck-pick]:checked:not(:disabled)', w).map(x => +x.dataset.ckPick);
+        if (!ids.length) return setErr('ckPick', 'Tick at least one check.', w);
+        const btn = $('[data-save]', w); btn.disabled = true;
+        let done = 0;
+        for (const r of rs.filter(x => ids.includes(x.id))) {
+          const body = { id: r.id, title: r.title, details: r.details || '', assets: r.assets || [], days: r.days, every_weeks: r.every_weeks, remind_at: r.remind_at,
+                         starts_on: r.starts_on, ends_on: r.ends_on || '', people: [who] };
+          try { await api('/webhook/engineering/api/checks/save', { method:'POST', body:{ routine: body } }); done++; }
+          catch (e) { btn.disabled = false; CK.data = null; render(); return setErr('ckPick', `${done} saved; "${r.title}" was not: ${e.message}`, w); }
+        }
+        close(); toast('Saved', `${done} check${done === 1 ? '' : 's'} given to ${(staff.find(p => p.enroll_id === who) || {}).name || who}.`, 'ok'); CK.data = null; render();
+      };
+    } });
+}
+
 /* ---- Requests (the Engineering Manager and the storekeeper): Make a request (to Procurement) and Overtime (to HR), with
    what Engineering sent lately. The forms are the shared ones in ../requests.js (the same design in every console). */
 let RQ = { data: null };
@@ -3435,9 +3472,10 @@ const HELP = [
   ['x', 'Cancelling a job', [
     'Only a job opened by mistake, a double, or one with nothing to fix. Tap <b>Cancel job</b>, pick the reason (and say more if it is "Other"). It goes to History with the reason.']],
   ['check', 'Periodic checks', [
-    'The manager sets a check: what, on which machines, the days, the reminder time and <b>one owner</b>.',
-    'At that time the owner gets a WhatsApp with a link. Open it: <b>Done</b> (with a note if you want) or <b>I could not do it</b> (say why). No sign-in needed.',
-    'Or open Periodic checks in the console and mark it there. Only the owner marks it; others see how it stands.',
+    'The manager sets a check: what, on which machines, the days, the reminder time and <b>one owner</b>. To give several checks to one person at once: Schedules, <b>Give checks to someone</b>, tap the person, tick the checks, Save.',
+    'The owner needs only <b>Console access</b> on in Users, no pages to tick: owning a check opens Periodic checks for them (only their own checks can be marked). It goes when the check is given to someone else.',
+    'At that time the owner gets a WhatsApp with a link. Open it: <b>Done</b> (with a note if you want) or <b>I could not do it</b> (say why). If asked, sign in with your OKL e-mail and password.',
+    'Or open Periodic checks in the console and mark it there (up to 7 days back). Only the owner marks it; others see how it stands.',
     'At 16:00 the manager gets the checks of the day not marked.',
     'The same page lists the PMs due this week and the Weekend watch.']],
   ['layers', 'Weekend watch', [
@@ -3469,9 +3507,12 @@ const HELP = [
     'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
     'It goes to the system team only. It changes nothing in the system.']],
 ];
+// How to use shows a card only to people who can open its page (11 Nov 2026); cards not listed here are for everyone.
+const HELP_PAGE = { 'A call from the floor (live)': '/jobs', 'A fix or a PM without a call': '/jobs', 'Who worked on it': '/jobs', 'Cancelling a job': '/jobs', 'Periodic checks': '/checks', 'Weekend watch': '/jobs', 'Parts: receive, issue, new names': '/spares', 'Requests (manager and storekeeper)': () => canRequest(), 'AHU temperature log': '/ahu' };
+const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return !g || (typeof g === 'function' ? g() : canOpen(g)); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task. Ask the Engineering Manager if something is not clear.')
-    + `<div class="grid g2">${HELP.map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
+    + `<div class="grid g2">${HELP_MINE().map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
         <div class="card-b"><ol class="small" style="margin:0;padding-left:18px;line-height:1.55">${steps.map(x => `<li style="margin-bottom:4px">${x}</li>`).join('')}</ol></div></div>`).join('')}</div>` };
 }
 route('/help', viewHelp);

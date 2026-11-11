@@ -469,7 +469,7 @@ html[data-theme="dark"] .tab.on{color:var(--brand)}
   h1{font-size:20px}
   .topbar{padding:0 14px}
   .topbar .ttl{font-size:14px}
-  .search{display:none}
+  .topbar .search{display:none}   /* only a top-bar search: list searches stay on phones (11 Nov 2026) */
   .sign-grid{grid-template-columns:1fr}
   .sheet{padding:18px}
   .modal-f{flex-direction:column-reverse}

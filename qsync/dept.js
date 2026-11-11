@@ -108,9 +108,12 @@ const QSYNC_HELP = [
     'Set the start and end time, tick the people who worked. Different times or work? <b>Add another group</b>. A person can be in one group per day.',
     '<b>Submit overtime</b>: it goes into HR overtime records, and the HR Manager is told at midday. Anyone already recorded for that day is listed as not saved.']],
 ];
+// How to use shows a card only to people who can open its page (11 Nov 2026); cards not listed here are for everyone.
+const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Change a product\'s IPQA checks': '/lab/master', 'Method templates and working standards': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime' };
+const QSYNC_HELP_MINE = () => QSYNC_HELP.filter(h => { const g = QSYNC_HELP_PAGE[h[1]]; return !g || (typeof g === 'function' ? g() : canOpen(g)); });
 function viewQsyncHelp(){
   return { title: 'How to use', crumb: 'Help', html: pageHead('How to use', 'The short version of each task. Ask the QC or QA Supervisor if something is not clear.')
-    + `<div class="grid g2">${QSYNC_HELP.map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
+    + `<div class="grid g2">${QSYNC_HELP_MINE().map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
         <div class="card-b"><ol class="small" style="margin:0;padding-left:18px;line-height:1.55">${steps.map(x => `<li style="margin-bottom:4px">${x}</li>`).join('')}</ol></div></div>`).join('')}</div>` };
 }
 route('/help', viewQsyncHelp);

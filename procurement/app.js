@@ -75,7 +75,8 @@ function meFromAuth(auth, scope){
 }
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
-const PAGES = [["/my-approvals", "procurement.requests"], ["/help", "procurement.requests"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
+// 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
+const PAGES = [["/my-approvals", "procurement"], ["/help", "procurement"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -733,9 +734,12 @@ const HELP = [
     'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
     'It goes to the system team only. It changes nothing in the system.']],
 ];
+// How to use shows a card only to people who can open its page (11 Nov 2026); cards not listed here are for everyone.
+const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/' };
+const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return !g || (typeof g === 'function' ? g() : canOpen(g)); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')
-    + `<div class="grid g2">${HELP.map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
+    + `<div class="grid g2">${HELP_MINE().map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
         <div class="card-b"><ol class="small" style="margin:0;padding-left:18px;line-height:1.55">${steps.map(x => `<li style="margin-bottom:4px">${x}</li>`).join('')}</ol></div></div>`).join('')}</div>` };
 }
 route('/help', viewHelp);
