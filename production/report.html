@@ -77,7 +77,7 @@
     <div class="card" id="uploadCard">
       <h2>A file did not come by e-mail?</h2>
       <p class="hint">Get the file from OKL or OBC and drop it here (one or both). It then goes in exactly as if the e-mail had
-        arrived: the board above fills in, Ik's list, the Zaiki and Mintacid review, the Google Sheet, and after 11:45 an
+        arrived: the board above fills in, Ik's list, the Zaiki, Mintacid and Cannon PM review, the Google Sheet, and after 11:45 an
         updated draft.</p>
       <label class="drop" id="drop"><input type="file" id="pick" accept=".xlsx,.xlsm" multiple>
         <b>Choose the files</b> or drop them here</label>
@@ -90,7 +90,7 @@
       <h2>Files received so far</h2>
       <table><thead><tr><th>Report</th><th>Last day in</th><th>File</th><th>Came in</th></tr></thead><tbody id="status"></tbody></table>
       <div class="links" style="margin-top:14px">
-        <a class="btn ghost" href="https://orangegroupsai.online/webhook/zaiki-mintacid-dashboard" target="_blank" rel="noopener">Zaiki and Mintacid dashboard</a>
+        <a class="btn ghost" href="https://orangegroupsai.online/webhook/zaiki-mintacid-dashboard" target="_blank" rel="noopener">Zaiki, Mintacid and Cannon PM dashboard</a>
       </div>
     </div>
   </div>
@@ -162,9 +162,9 @@
     else row(st.blank ? 'warn' : 'ok', 'Actions', st.total + ' stop' + (st.total === 1 ? '' : 's') + ' of 30+ minutes, ' + (st.blank ? st.blank + ' without an action yet (they show as [action?] in the draft).' : 'all with an action.')
              + (s.checks && s.checks.blanks_at ? '<small>The 11:30 WhatsApp listed them.</small>' : st.blank ? '<small>At 11:30 you get them on WhatsApp.</small>' : ''));
     // Zaiki and Mintacid
-    if (rv.state === 'waiting') row('warn', 'Zaiki and Mintacid', 'Prefilled from the OKL file for ' + esc(day(rv.day)) + ': check it and save.', '<a class="btn" target="_blank" rel="noopener" href="' + esc(s.review_url + encodeURIComponent(rv.token)) + '">Review and save</a>');
-    else if (rv.state === 'saved') row('ok', 'Zaiki and Mintacid', 'Saved for ' + esc(day(rv.day)) + '.');
-    else row('wait', 'Zaiki and Mintacid', 'Waits for the OKL file.');
+    if (rv.state === 'waiting') row('warn', 'Zaiki, Mintacid and Cannon PM', 'Prefilled from the OKL file for ' + esc(day(rv.day)) + ': check it and save.', '<a class="btn" target="_blank" rel="noopener" href="' + esc(s.review_url + encodeURIComponent(rv.token)) + '">Review and save</a>');
+    else if (rv.state === 'saved') row('ok', 'Zaiki, Mintacid and Cannon PM', 'Saved for ' + esc(day(rv.day)) + '.');
+    else row('wait', 'Zaiki, Mintacid and Cannon PM', 'Waits for the OKL file.');
     // the drafts
     if (s.draft && s.draft.sent_at) row('ok', 'Daily draft', 'E-mailed to you at ' + esc(time(s.draft.sent_at)) + (s.draft.sends > 1 ? ' (updated ' + (s.draft.sends - 1) + ' time' + (s.draft.sends > 2 ? 's' : '') + ' when a file came later)' : '') + '.');
     else row(s.workday && !beforeNoon ? 'warn' : 'wait', 'Daily draft', s.workday ? (beforeNoon ? 'Goes to your e-mail at 11:45.' : 'Not sent today. It goes at 11:45 on working days.') : 'Not today (not a working day).');
@@ -222,7 +222,7 @@
     var e = out.engineering || {};
     if (e.added) lines.push('<div>Engineering: ' + e.added + ' issue' + (e.added === 1 ? '' : 's') + ' to fill in (the Engineering Manager gets a WhatsApp).</div>');
     if (out.draft) lines.push('<div>An updated draft was e-mailed to you.</div>');
-    if (out.review && out.review.link) lines.push('<div>Zaiki and Mintacid for ' + esc(day(out.review.day)) + ': <a href="' + esc(out.review.link) + '" target="_blank" rel="noopener">review and save</a> (also sent to your WhatsApp).</div>');
+    if (out.review && out.review.link) lines.push('<div>Zaiki, Mintacid and Cannon PM for ' + esc(day(out.review.day)) + ': <a href="' + esc(out.review.link) + '" target="_blank" rel="noopener">review and save</a> (also sent to your WhatsApp).</div>');
     $('res').innerHTML = lines.join('');
     files = []; showChosen(); loadStatus(); setTimeout(loadStatus, 6000);   // the Google Sheet is written a few seconds after the answer
   });
