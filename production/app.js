@@ -166,12 +166,12 @@ function setErr(id, msg, scope){
 }
 
 /* ---------------- Idle timeout + logout (server session TTL matches, 10 min) ---------------- */
-const IDLE_LIMIT_MS = 10 * 60 * 1000;
+const IDLE_LIMIT_MS = 30 * 60 * 1000;   // 057: the server session is 30 minutes too
 let idleTimer = null;
 function resetIdleTimer(){
   if (!S) return;
   if (idleTimer) clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { logout('Signed out after 10 minutes of inactivity.'); }, IDLE_LIMIT_MS);
+  idleTimer = setTimeout(() => { logout('Signed out after 30 minutes of inactivity.'); }, IDLE_LIMIT_MS);
 }
 ['click','keydown','mousemove','touchstart'].forEach(evt =>
   document.addEventListener(evt, () => resetIdleTimer(), { passive:true }));

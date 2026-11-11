@@ -149,7 +149,7 @@
   function resetIdle(){
     if (!me) return;
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(function(){ signOut('Signed out after 10 minutes of inactivity.'); }, 10 * 60 * 1000);
+    idleTimer = setTimeout(function(){ signOut('Signed out after 30 minutes of inactivity.'); }, 30 * 60 * 1000);
   }
   ['click','keydown','mousemove','touchstart'].forEach(function(e){ document.addEventListener(e, resetIdle, { passive: true }); });
 

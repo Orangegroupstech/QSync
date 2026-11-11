@@ -119,6 +119,7 @@ async function api(path, opts){
     throw new Error('Could not reach the server. Check your connection and try again.');
   }
   if (res.status === 401){
+    if (/^\/ahu\/record/.test(currentPath())) { try { sessionStorage.setItem('okl.notice', 'Your sign-in timed out. Sign in again: the AHU readings you typed are kept on this device.'); } catch(e) { /* ignore */ } }
     rememberHere(); toLanding();
     throw new Error('Your session has expired. Please log in again.');
   }
@@ -183,12 +184,12 @@ function setErr(id, msg, scope){
 }
 
 /* ---------------- Idle timeout + logout (server session TTL matches, 10 min) ---------------- */
-const IDLE_LIMIT_MS = 10 * 60 * 1000;
+const IDLE_LIMIT_MS = 30 * 60 * 1000;   // 057: the server session is 30 minutes too
 let idleTimer = null;
 function resetIdleTimer(){
   if (!S) return;
   if (idleTimer) clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { logout('Signed out after 10 minutes of inactivity.'); }, IDLE_LIMIT_MS);
+  idleTimer = setTimeout(() => { logout('Signed out after 30 minutes of inactivity.'); }, IDLE_LIMIT_MS);
 }
 ['click','keydown','mousemove','touchstart'].forEach(evt =>
   document.addEventListener(evt, () => resetIdleTimer(), { passive:true }));
@@ -649,6 +650,7 @@ let AHUREC = { key:null, data:null, loading:false, error:'', saving:false, msg:'
 function ahuRecDate(){ const m = /[?&]date=(\d{4}-\d{2}-\d{2})/.exec(currentPath()); return m ? m[1] : ''; }
 async function ahuRecLoad(date){
   AHUREC = { key:date, data:null, loading:true, error:'', saving:false, msg:'', done:null };
+  ahuDraftPrune(); ahuAliveAt = Date.now();
   render();
   try {
     const r = await api('/webhook/engineering/api/ahu/form' + (date ? '?date=' + encodeURIComponent(date) : ''));
@@ -670,6 +672,38 @@ function ahuRecParse(v){
   return { n, text:v };
 }
 function ahuRecRooms(){ return ((AHUREC.data && AHUREC.data.groups) || []).flatMap(g => g.rooms); }
+/* 10 Nov 2026: a sign-in ends after 10 minutes without a call to the server, and walking the 34 rooms takes longer, so Submit
+   came back 401, the page went to the sign-in screen and every typed reading was lost. Now (1) what is typed is kept on the
+   device per account and day until it is saved, and comes back after signing in again; (2) while the form is open and on
+   screen the console tells the server every 4 minutes that the person is still there, so the sign-in does not time out. */
+const AHU_DRAFT = 'okl.ahu.draft.';
+const ahuDraftKey = date => AHU_DRAFT + ((S && S.me && S.me.id) || '') + '.' + date;
+function ahuDraftGet(date){ try { const d = JSON.parse(localStorage.getItem(ahuDraftKey(date)) || 'null'); return d && d.vals ? d : null; } catch(e) { return null; } }
+function ahuDraftPut(date, d){ try { if (d) localStorage.setItem(ahuDraftKey(date), JSON.stringify(d)); else localStorage.removeItem(ahuDraftKey(date)); } catch(e) { /* private window: nothing kept */ } }
+function ahuDraftPrune(){
+  try { Object.keys(localStorage).filter(k => k.startsWith(AHU_DRAFT)).forEach(k => {
+    let d = null; try { d = JSON.parse(localStorage.getItem(k)); } catch(e) { /* broken */ }
+    if (!d || !d.at || Date.now() - d.at > 6 * 86400000) localStorage.removeItem(k); }); } catch(e) { /* ignore */ }
+}
+function ahuDraftSave(pending){
+  const D = AHUREC.data; if (!D || !D.ok || AHUREC.done) return;
+  const vals = {}; let any = false;
+  ahuRecRooms().forEach(r => {
+    const t = document.getElementById('ahuT_' + r.id), n = document.getElementById('ahuN_' + r.id); if (!t) return;
+    if (t.value !== t.defaultValue || (n && n.value !== n.defaultValue)) { vals[r.id] = { t: t.value, n: n ? n.value : '' }; any = true; }
+  });
+  const old = ahuDraftGet(D.date);
+  ahuDraftPut(D.date, any ? { at: Date.now(), pending: pending === undefined ? !!(old && old.pending) : pending, vals } : null);
+}
+let ahuAliveAt = 0;
+function ahuKeepAlive(force){
+  if (!/^\/ahu\/record/.test(currentPath()) || document.hidden || !getToken() || AHUREC.done) return;
+  if (!force && Date.now() - ahuAliveAt < 60000) return;
+  ahuAliveAt = Date.now();
+  api('/webhook/auth/api/me').catch(() => { /* a 401 goes to sign-in; the typed readings are kept */ });
+}
+setInterval(() => ahuKeepAlive(true), 4 * 60000);
+document.addEventListener('visibilitychange', () => ahuKeepAlive(false));   // back from a locked screen: renew, or sign in again now, not at Submit
 function ahuRecRefresh(){
   let logged = 0; const needs = [];
   ahuRecRooms().forEach(r => {
@@ -702,10 +736,12 @@ async function ahuRecSubmit(){
   const late = D.date < D.today;
   if (late && !(await confirmDialog('Record a past day?', `You are recording the readings for <b>${esc(ahuDayLabel(D.date))}</b>, not today. They are marked <b>Backfilled</b> with your name. Only record readings that were really taken that day.`, 'Record ' + ahuDayLabel(D.date)))) return;
   AHUREC.saving = true; AHUREC.msg = ''; ahuRecRefresh();
+  ahuDraftSave(true);                                   // kept as "not sent" until the server says saved
   const btn = document.getElementById('ahuGo'); if (btn) btn.textContent = 'Saving...';
   try {
     const r = await api('/webhook/engineering/api/ahu/record', { method:'POST', body:{ date:D.date, readings } });
     if (!r.ok) throw new Error(r.error || 'Could not save. Try again.');
+    ahuDraftPut(D.date, null);
     AHUREC.done = r; AHU.data = null;                   // the month view reloads with the new readings
     toast('Saved', (r.day ? r.day.logged + ' of ' + r.day.total + ' rooms' : 'Readings') + ' for ' + ahuDayLabel(r.date) + '. The group has been told.', 'ok');
   } catch (e) { AHUREC.msg = e.message; }
@@ -737,22 +773,31 @@ function viewAhuRecord(){
       <button class="btn btn-ghost" onclick="ahuRecLoad(ahuRecDate())">Edit readings</button></div></div></div>`);
   }
   const already = ahuRecRooms().filter(r => r.temp != null).length;
+  const draft = ahuDraftGet(D.date);
+  const draftNote = !draft || AHUREC.msg ? '' : `<div class="card" style="margin-bottom:12px;border-color:${draft.pending ? 'var(--t-bad)' : 'var(--border, #E4E7EA)'}"><div class="card-b"${draft.pending ? ' style="color:var(--t-bad-tx);font-weight:600"' : ''}>${draft.pending
+    ? 'These readings were NOT saved: your sign-in had timed out before Submit. They are filled in again below. Check them and press Submit.'
+    : 'What you typed earlier (not yet submitted) is filled in again below.'}</div></div>`;
   const groups = D.groups.map(g => `<div class="card ahu-rec-group"><div class="card-h"><div><h3>${esc(g.ahu)}</h3><div class="sub">limit ${esc(g.rooms[0].limit)} °C</div></div></div><div class="card-b">
     ${g.rooms.map(r => `<div class="ahu-rec-room"><div class="ahu-rec-row"><label for="ahuT_${r.id}">${esc(r.room)}</label>
         <input class="inp" id="ahuT_${r.id}" inputmode="decimal" autocomplete="off" placeholder="°C" value="${r.temp != null ? esc(fmtT(r.temp)) : ''}" aria-label="${esc(r.room)} temperature in °C">
         <span class="ahu-chip" id="ahuC_${r.id}"></span></div>
       <div id="ahuNB_${r.id}" style="display:none;margin-top:6px"><input class="inp" id="ahuN_${r.id}" maxlength="300" placeholder="Above limit: what was done?" value="${esc(r.note || '')}"></div></div>`).join('')}
     </div></div>`).join('');
-  return page(dayPick
+  return page(dayPick + draftNote
     + (already ? `<div class="small muted" style="margin:-4px 0 10px">${already} rooms already logged for this day${D.name ? ' by ' + esc(D.name) : ''}: change any reading and submit again.</div>` : '')
     + `<div class="ahu-legend"><span class="ahu-chip ok">OK</span><span class="ahu-chip near">Near limit</span><span class="ahu-chip bad">Out of limit</span></div>`
     + groups
     + (AHUREC.msg ? `<div class="card" style="border-color:var(--t-bad)"><div class="card-b" style="color:var(--t-bad-tx);font-weight:600">${esc(AHUREC.msg)}</div></div>` : '')
     + `<div class="ahu-rec-bar"><div id="ahuProg" class="small"></div><button class="btn btn-primary" id="ahuGo" disabled onclick="ahuRecSubmit()">Submit</button></div>`,
     () => {
+      if (draft) Object.keys(draft.vals).forEach(id => {     // typed before a sign-in ran out (or the page was closed): put it back
+        const t = document.getElementById('ahuT_' + id), n = document.getElementById('ahuN_' + id), v = draft.vals[id];
+        if (t) t.value = v.t; if (n) n.value = v.n;
+      });
+      const onType = () => { ahuRecRefresh(); ahuDraftSave(); };
       ahuRecRooms().forEach(r => {
-        document.getElementById('ahuT_' + r.id).addEventListener('input', ahuRecRefresh);
-        document.getElementById('ahuN_' + r.id).addEventListener('input', ahuRecRefresh);
+        document.getElementById('ahuT_' + r.id).addEventListener('input', onType);
+        document.getElementById('ahuN_' + r.id).addEventListener('input', onType);
       });
       setTimeout(ahuRecRefresh, 0);                    // after formkeep has put back anything being typed
     });
