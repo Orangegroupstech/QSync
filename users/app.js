@@ -294,12 +294,17 @@ async function loadPeople(){
   S.roles = roles.roles || []; S.pages = roles.pages || [];
 }
 async function bootstrap(){
-  const auth = await api('/webhook/auth/api/me');
+  // "who am I" and the people lists at the same time (startup.js); the lists are admin-only on the server too
+  S = { me: null, accounts: [], staff: [], defaultPin: '', noApp: 0 };
+  const people0 = loadPeople().then(() => null, e => e);
+  const st = await oklMe.start(api, getToken());
+  const auth = st.auth;
   if (auth.user && auth.user.must_change){ toLandingKeepToken(); throw new Error('Password change required'); }
   if (!auth.user || !auth.user.is_admin){ toLandingKeepToken(); throw new Error('Admins only'); }
-  S = { me: meFromAuth(auth, 'users'), accounts: [], staff: [], defaultPin: '', noApp: 0 };
-  await loadPeople();
+  S.me = meFromAuth(auth, 'users');
+  const err = await people0; if (err) throw err;
   resetIdleTimer();
+  oklMe.follow(st, a => { if (a.user && a.user.must_change || !a.user || !a.user.is_admin){ toLandingKeepToken(); return; } if (S){ S.me = meFromAuth(a, 'users'); render(); } });
 }
 function loadError(err){
   return `<div style="max-width:480px;margin:80px auto;padding:0 16px;text-align:center;font-family:var(--font,system-ui,sans-serif)">

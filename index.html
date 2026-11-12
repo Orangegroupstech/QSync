@@ -120,10 +120,19 @@
       <a class="tile" data-module="production" href="production/">
         <h3>Production</h3>
       </a>
+      <a class="tile" data-module="datacenter" href="datacenter/">
+        <h3>Data center</h3>
+      </a>
+    </div>
+    <!-- admins: the hourly Google Sheets copy at a glance, and "Sync data now" (062) -->
+    <div id="backupBar" class="hidden" style="margin-top:16px;font-size:13px;color:var(--text-2)">
+      Google Sheets backup: <span id="backupLast">...</span>
+      <button class="linkbtn" id="syncNow" type="button">Sync data now</button>
     </div>
   </section>
 </div>
 
+<script src="startup.js"></script>
 <script>
 (function(){
   var API = 'https://orangegroupsai.online/webhook/auth/api/';
@@ -157,7 +166,7 @@
 
   async function signOut(reason){
     try { await call('logout', 'POST'); } catch(e){}
-    setToken(''); me = null; clearTimeout(idleTimer);
+    setToken(''); me = null; clearTimeout(idleTimer); if (window.oklMe) oklMe.clear();
     showLogin(reason);
   }
   function showLogin(msg){
@@ -180,6 +189,7 @@
     });
     $('noConsoles').classList.toggle('hidden', any || !!me.user.is_admin);
     show('homeView'); resetIdle();
+    backupBar();
   }
   function showPassword(force){
     forced = force;
@@ -188,8 +198,33 @@
     $('pwCancel').classList.toggle('hidden', force);
     show('pwView');
   }
+  // admins: when the data was last copied to Google Sheets, and copy it now (the Data center has the details)
+  var OKL_API = API.replace(/auth\/api\/$/, 'okl/api/');
+  async function okl(path, method){
+    var res = await fetch(OKL_API + path, { method: method || 'GET', headers: { 'Content-Type': 'application/json', Authorization: getToken() } });
+    var j = {}; try { j = await res.json(); } catch(e){}
+    if (!res.ok) throw new Error(j.error || 'Something went wrong.');
+    return j;
+  }
+  function lastText(st){
+    var l = st && st.last; if (!l) return 'not run yet';
+    var t = new Date(l.at).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return (l.ok ? 'last copy ' : 'last copy FAILED ') + t;
+  }
+  async function backupBar(){
+    if (!me || !me.user.is_admin) { $('backupBar').classList.add('hidden'); return; }
+    $('backupBar').classList.remove('hidden');
+    try { var d = await okl('datacenter'); $('backupLast').textContent = lastText(d.status); } catch(e){ $('backupLast').textContent = '(could not read: ' + e.message + ')'; }
+  }
+  $('syncNow').addEventListener('click', async function(){
+    var b = $('syncNow'); b.disabled = true; b.textContent = 'Copying...';
+    try { await okl('sheets/sync', 'POST'); $('backupLast').textContent = 'copying now (a minute or two; the Data center shows when it is done)'; }
+    catch(e){ $('backupLast').textContent = e.message; }
+    setTimeout(function(){ b.disabled = false; b.textContent = 'Sync data now'; }, 60000);
+  });
+
   async function load(){
-    try { me = await call('me', 'GET'); }
+    try { me = await call('me', 'GET'); if (window.oklMe) oklMe.save(getToken(), me); }   // startup.js: the console opened next starts at once
     catch(e){ setToken(''); me = null; showLogin(e.status === 401 ? '' : e.message); return; }
     if (me.user.must_change) showPassword(true); else showHome();
   }

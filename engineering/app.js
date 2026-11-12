@@ -384,10 +384,12 @@ function fatalErrorHtml(err){
 
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
-  const auth = await api('/webhook/auth/api/me');
+  const st = await oklMe.start(api, getToken());   // startup.js: the kept "who am I" lets the page load its data at once
+  const auth = st.auth;
   if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
   S = { me: meFromAuth(auth, 'engineering') };
   resetIdleTimer();
+  oklMe.follow(st, a => { if (a.user && a.user.must_change){ rememberHere(); toLandingKeepToken(); return; } if (S){ S.me = meFromAuth(a, 'engineering'); render(); } });
 }
 function render(){
   const app = document.getElementById('app');
@@ -3501,15 +3503,19 @@ const HELP = [
     'Take the readings between 2:00 and 4:00 pm, fill in every room (a note is needed above 25 °C), then <b>Submit</b>. The group is told.',
     'Missed a day? Pick it under <b>Day</b>: today and the last 3 working days can be recorded. A past day is marked <b>Backfilled</b> with your name. After 4:00 pm today is marked late.',
     'Made a mistake? Open the same day again, change the reading and submit again.']],
+  ['layers', 'Long lists', [
+    'A list longer than 80 rows shows its first 50, with <b>Show 50 more</b> and <b>Show all</b> under it. It opens faster, mostly on phones.',
+    'Search, the filters, sorting by a column heading and the Excel / CSV downloads still cover every row, not only the 50 on screen. Printing prints them all.']],
   ['info', 'Phone or laptop', [
     'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
   ['edit', 'Suggestions', [
     'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
     'It goes to the system team only. It changes nothing in the system.']],
 ];
-// How to use shows a card only to people who can open its page (11 Nov 2026); cards not listed here are for everyone.
-const HELP_PAGE = { 'A call from the floor (live)': '/jobs', 'A fix or a PM without a call': '/jobs', 'Who worked on it': '/jobs', 'Cancelling a job': '/jobs', 'Periodic checks': '/checks', 'Weekend watch': '/jobs', 'Parts: receive, issue, new names': '/spares', 'Requests (manager and storekeeper)': () => canRequest(), 'AHU temperature log': '/ahu' };
-const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return !g || (typeof g === 'function' ? g() : canOpen(g)); });
+// How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
+// (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
+const HELP_PAGE = { 'A call from the floor (live)': '/jobs', 'A fix or a PM without a call': '/jobs', 'Who worked on it': '/jobs', 'Cancelling a job': '/jobs', 'Periodic checks': '/checks', 'Weekend watch': '/jobs', 'Parts: receive, issue, new names': '/spares', 'Requests (manager and storekeeper)': () => canRequest(), 'AHU temperature log': '/ahu', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task. Ask the Engineering Manager if something is not clear.')
     + `<div class="grid g2">${HELP_MINE().map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>

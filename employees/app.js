@@ -356,12 +356,17 @@ function fatalErrorHtml(err){
 
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
-  const auth = await api('/webhook/auth/api/me');
-  if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
-  const [data, dep] = await Promise.all([
+  // "who am I" and the staff list at the same time (startup.js); each data call checks the sign-in itself
+  const data0 = Promise.all([
     api('/webhook/employees/api/list'),
     api('/webhook/employees/api/departments').catch(() => ({ departments: [] })),
   ]);
+  data0.catch(() => { /* reported below, or the sign-in check already moved on */ });
+  const st = await oklMe.start(api, getToken());
+  const auth = st.auth;
+  if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
+  const [data, dep] = await data0;
+  oklMe.follow(st, a => { if (a.user && a.user.must_change){ rememberHere(); toLandingKeepToken(); return; } if (S){ S.me = meFromAuth(a, 'employees'); render(); } });
   S = { me: meFromAuth(auth, 'employees'), employees: (data.employees || []).map(e => Object.assign(e, { name: properName(e.name) })).sort(byEnroll), departments: dep.departments || [] };
   resetIdleTimer();
 }
@@ -2699,15 +2704,19 @@ const HELP = [
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
     '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['layers', 'Long lists', [
+    'A list longer than 80 rows shows its first 50, with <b>Show 50 more</b> and <b>Show all</b> under it. It opens faster, mostly on phones.',
+    'Search, the filters, sorting by a column heading and the Excel / CSV downloads still cover every row, not only the 50 on screen. Printing prints them all.']],
   ['info', 'Phone or laptop', [
     'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
   ['edit', 'Suggestions', [
     'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
     'It goes to the system team only. It changes nothing in the system.']],
 ];
-// How to use shows a card only to people who can open its page (11 Nov 2026); cards not listed here are for everyone.
-const HELP_PAGE = { 'Submit overtime': '/overtime/submit', 'Overtime waiting to be confirmed (HR Manager)': '/overtime/records', 'Make a procurement request': '/requests' };
-const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return !g || (typeof g === 'function' ? g() : canOpen(g)); });
+// How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
+// (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
+const HELP_PAGE = { 'Submit overtime': '/overtime/submit', 'Overtime waiting to be confirmed (HR Manager)': '/overtime/records', 'Make a procurement request': '/requests', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')
     + `<div class="grid g2">${HELP_MINE().map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>

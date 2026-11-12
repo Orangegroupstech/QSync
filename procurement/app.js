@@ -76,7 +76,7 @@ function meFromAuth(auth, scope){
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 // 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
-const PAGES = [["/my-approvals", "procurement"], ["/help", "procurement"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "procurement"], ["/help", "procurement"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/stock", "procurement.spares"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -212,6 +212,7 @@ function navModel(){
     { title:'Modules', items:[
       { path:'/items', label:'Procurement Log', icon:'box' },
       { path:'/new-request', label:'Make a procurement request', icon:'plus' },
+      { path:'/stock', label:'Spares stock (Engineering)', icon:'box' },
     ] },
   ];
   groups.push({ title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] });
@@ -297,12 +298,17 @@ function fatalErrorHtml(err){
 
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
-  const auth = await api('/webhook/auth/api/me');
+  // "who am I" and the items at the same time (startup.js); the items call checks the sign-in itself
+  const items0 = api('/webhook/procurement/api/items').then(d => ({ d }), e => ({ e }));
+  const st = await oklMe.start(api, getToken());
+  const auth = st.auth;
   if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
   let data = { items: [] }, limited = false;
-  try { data = await api('/webhook/procurement/api/items'); } catch (e) { if (e && e.status === 403) limited = true; else throw e; }   // an approver without the console's pages still gets My approvals and the approval page
+  const it = await items0;
+  if (it.e) { if (it.e.status === 403) limited = true; else throw it.e; } else data = it.d;   // an approver without the console's pages still gets My approvals and the approval page
   S = { me: meFromAuth(auth, 'procurement'), items: data.items || [], limited };
   resetIdleTimer();
+  oklMe.follow(st, a => { if (a.user && a.user.must_change){ rememberHere(); toLandingKeepToken(); return; } if (S){ S.me = meFromAuth(a, 'procurement'); render(); } });
 }
 function render(){
   const app = document.getElementById('app');
@@ -608,6 +614,53 @@ function viewSparesMoved(){
         `<a class="btn btn-primary" href="../engineering/#/spares">Open Engineering spares</a>`)}</div></div>` };
 }
 route('/spares/inventory', viewSparesMoved);
+
+/* ============================================================
+   Spares stock (12 Nov 2026): the Engineering store's live stock, VIEW ONLY, for Procurement (what is low, what is out)
+   without opening the Engineering console. GET procurement/api/spares (page "Spares stock", procurement.spares).
+   Receiving, issuing and counting stay in the Engineering console.
+   ============================================================ */
+const ST = { data: null, q: '', status: '' };
+async function stLoad(){
+  try { ST.data = await api('/webhook/procurement/api/spares'); } catch (e) { ST.data = { error: e.message }; }
+  render();
+}
+function viewStock(){
+  if (!ST.data) { ST.data = 'loading'; stLoad(); }
+  const d = ST.data;
+  const head = pageHead('Spares stock', 'The Engineering store\'s stock, live. View only: receipts, issues and counts are made in the Engineering console.',
+    `<button class="btn btn-ghost" onclick="ST.data = null; render()">Refresh</button>`);
+  if (d === 'loading') return { title:'Spares stock', crumb:'Procurement', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title:'Spares stock', crumb:'Procurement', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const all = d.spares || [], q = ST.q.trim().toLowerCase();
+  const rows = all.filter(r => (!ST.status || r.status === ST.status) && (!q || [r.sku, r.description, r.part_number, r.brand, r.supplier, r.location].join(' ').toLowerCase().includes(q)));
+  const n = s => all.filter(r => r.status === s).length;
+  const badge = s => s === 'Out of stock' ? '<span class="badge b-danger">Out of stock</span>' : s === 'Reorder' ? '<span class="badge b-warn">Reorder</span>' : '<span class="badge b-ok">OK</span>';
+  const money = v => v == null || v === '' ? '' : Number(v).toLocaleString('en-NG', { maximumFractionDigits: 2 });
+  const opt = (v, l) => `<option value="${v}" ${ST.status === v ? 'selected' : ''}>${l}</option>`;
+  return { title:'Spares stock', crumb:'Procurement', keepScroll: true,
+    html: head + `<div class="card"><div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
+        <div class="search filter-search"><span class="ic">${I.search || ''}</span><input class="inp" id="stQ" style="padding-left:34px;border-radius:20px" placeholder="Search SKU, description, part number, supplier" value="${esc(ST.q)}"></div>
+        <select class="inp" id="stStatus" style="width:auto">${opt('', 'All parts (' + all.length + ')')}${opt('Reorder', 'Reorder (' + n('Reorder') + ')')}${opt('Out of stock', 'Out of stock (' + n('Out of stock') + ')')}${opt('OK', 'OK (' + n('OK') + ')')}</select>
+      </div></div>
+      ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>SKU</th><th>Description</th><th>Location</th><th style="text-align:right">Stock</th><th style="text-align:right">Reorder at</th><th>Status</th><th>Last in</th><th>Last out</th><th style="text-align:right">Unit price (NGN)</th></tr></thead>
+        <tbody>${rows.map(r => `<tr><td class="mono small" data-label="SKU">${esc(r.sku)}</td>
+          <td data-label="Description"><div class="strong">${esc(r.description || '')}</div><div class="tiny muted">${esc([r.part_number, r.brand, r.supplier].filter(Boolean).join(' · '))}</div></td>
+          <td data-label="Location" class="small">${esc(r.location || '')}</td>
+          <td data-label="Stock" class="tnum" style="text-align:right">${esc(r.stock)} <span class="tiny muted">${esc(r.unit || '')}</span></td>
+          <td data-label="Reorder at" class="tnum" style="text-align:right">${esc(r.reorder_level == null ? '' : r.reorder_level)}</td>
+          <td data-label="Status">${badge(r.status)}</td>
+          <td data-label="Last in" class="small">${esc(r.last_in || '')}</td><td data-label="Last out" class="small">${esc(r.last_out || '')}</td>
+          <td data-label="Unit price (NGN)" class="tnum" style="text-align:right">${money(r.unit_price)}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="card-b">${emptyState('search', 'Nothing matches', 'No part matches the search or the status chosen.')}</div>`}
+    </div>`,
+    bind(){
+      const qi = document.getElementById('stQ');
+      if (qi) qi.addEventListener('input', debounce(e => { ST.q = e.target.value; render(); const x = document.getElementById('stQ'); if (x){ x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }, 260));
+      const ss = document.getElementById('stStatus'); if (ss) ss.onchange = e => { ST.status = e.target.value; render(); };
+    } };
+}
+route('/stock', viewStock);
 route('/spares/inbound', viewSparesMoved);
 route('/spares/outbound', viewSparesMoved);
 
@@ -728,15 +781,23 @@ const HELP = [
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
     '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['box', 'Spares stock (Engineering store)', [
+    'Menu > <b>Spares stock (Engineering)</b>: every Engineering spare part with its stock now, the level it is reordered at, and when it last came in and went out.',
+    'Pick <b>Reorder</b> or <b>Out of stock</b> to see what needs buying; search by SKU, description, part number or supplier.',
+    'It is view only. Receiving, issuing and counting stay with the store in the Engineering console.']],
+  ['layers', 'Long lists', [
+    'A list longer than 80 rows shows its first 50, with <b>Show 50 more</b> and <b>Show all</b> under it. It opens faster, mostly on phones.',
+    'Search, the filters, sorting by a column heading and the Excel / CSV downloads still cover every row, not only the 50 on screen. Printing prints them all.']],
   ['info', 'Phone or laptop', [
     'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
   ['edit', 'Suggestions', [
     'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
     'It goes to the system team only. It changes nothing in the system.']],
 ];
-// How to use shows a card only to people who can open its page (11 Nov 2026); cards not listed here are for everyone.
-const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/' };
-const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return !g || (typeof g === 'function' ? g() : canOpen(g)); });
+// How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
+// (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
+const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/', 'Spares stock (Engineering store)': '/stock', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')
     + `<div class="grid g2">${HELP_MINE().map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>

@@ -160,8 +160,11 @@ function meFromAuth(auth, scope){
   const u = (auth && auth.user) || {};
   const editor = !!u.is_admin || ((auth && auth.edit) || []).includes(scope);
   return { id: u.id, name: u.name, role: u.is_admin ? 'admin' : '', is_admin: !!u.is_admin,
-           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change, access: (auth && auth.access) || {} };
+           permission: editor ? 'editor' : 'viewer', must_change: !!u.must_change, access: (auth && auth.access) || {},
+           signoff: (auth && auth.signoff) || [] };
 }
+// Does this person sign as <role> (signoff.ipqa, signoff.qa_supervisor, ...)? Admins count as every role.
+function hasSignoff(role){ return !!(S && S.me && (S.me.is_admin || (S.me.signoff || []).includes('signoff.' + role))); }
 // Access per page (migration 022): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 const PAGES = [['/lab/oos', 'qsync.oos'], ['/lab/master', 'qsync.master'], ['/lab', 'qsync.lab'], ['/dept', 'qsync.dept'],
@@ -449,12 +452,17 @@ function statusBadge(status){
 
 /* ---------------- Boot / bootstrap / render ---------------- */
 async function bootstrap(){
-  const auth = await api('/webhook/auth/api/me');
+  // "who am I", the requests and the lab roles at the same time (startup.js); used to be three trips one after the other
+  const data0 = api('/webhook/admin/api/bootstrap'), lab0 = api('/webhook/qsync/lab/api/my').catch(() => null);
+  data0.catch(() => { /* reported below */ });
+  const st = await oklMe.start(api, getToken());
+  const auth = st.auth;
   if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
-  const data = await api('/webhook/admin/api/bootstrap');
+  const data = await data0;
   S = data;
   S.me = meFromAuth(auth, 'qsync');
-  try { const lab = await api('/webhook/qsync/lab/api/my'); S.lab = { roles: lab.roles || [] }; } catch (e) { S.lab = null; }
+  const lab = await lab0; S.lab = lab ? { roles: lab.roles || [] } : null;
+  oklMe.follow(st, a => { if (a.user && a.user.must_change){ rememberHere(); toLandingKeepToken(); return; } if (S){ S.me = meFromAuth(a, 'qsync'); render(); } });
   // sign-off roles for people without the QC lab pages (e.g. a QC / QA Manager who only has Lab master data): the buttons there need them
   if (!S.lab && canOpen('/lab/master')) { try { const md = await api('/webhook/qsync/lab/api/masterdata'); S.signRoles = md.roles || []; S.pending = md.pending; } catch (e) { S.signRoles = []; } }
   else if (S.lab) refreshPending();
@@ -542,7 +550,7 @@ function viewNewRequest(){
   if (!canRaiseRequest()) return { title:'New test request', crumb:'Workspace', html:`<div class="card"><div class="card-b">${emptyState('lock','View-only access','Raising a test request needs "submit" access to Test requests. Ask an admin to grant it in User Management.')}</div></div>` };
   // the one form shared with the Production console (frontend/testrequest.js)
   const pg = oklTestRequest.page({ api: API_BASE, products: (S && S.products) || [], icons: I, toast, pageHead, cancelHref: '#/requests',
-    onDone: async () => { await bootstrap(); go('/requests'); } });
+    onDone: async () => { await bootstrap(); rqReset(); go('/requests'); } });
   return { title:'New test request', crumb:'Workspace', html: pg.html, bind: pg.bind };
 }
 
@@ -550,23 +558,27 @@ function viewNewRequest(){
    All Requests
    ============================================================ */
 let listState = { q:'', status:'', product:'', stage:'', result:'', year:'', month:'', sort:'updated' };
-function filterRequests(){
-  let out = S.requests.slice();
-  const q = listState.q.trim().toLowerCase();
-  if (q) out = out.filter(r => [r.requestNo, r.batchNo, r.productName].join(' ').toLowerCase().includes(q));
-  if (listState.status) out = out.filter(r => r.status === listState.status);
-  if (listState.product) out = out.filter(r => r.productName === listState.product);
-  if (listState.stage) out = out.filter(r => r.stage === listState.stage);
-  if (listState.result) out = out.filter(r => (overallResult(r) ?? 'untested') === listState.result);
-  if (listState.year) out = out.filter(r => r.createdAt && (watParts(r.createdAt)||{}).y === Number(listState.year));
-  if (listState.month) out = out.filter(r => r.createdAt && (watParts(r.createdAt)||{}).m === Number(listState.month));
-  const sorters = {
-    updated:(a,b)=> new Date(b.updatedAt) - new Date(a.updatedAt),
-    created:(a,b)=> new Date(b.createdAt) - new Date(a.createdAt),
-    oldest:(a,b)=> new Date(a.createdAt) - new Date(b.createdAt),
-  };
-  return out.sort(sorters[listState.sort] || sorters.updated);
+/* All test requests come from the server 50 at a time (061, 12 Nov 2026): the start-up only carries the working set.
+   RQ = { key: the filters it was asked with, rows, total, next, busy, error } */
+let RQ = null;
+function rqParams(extra){
+  const q = new URLSearchParams();
+  Object.entries(listState).forEach(([k, v]) => { if (v) q.set(k, v); });
+  Object.entries(extra || {}).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, v); });
+  return q;
 }
+async function rqLoad(more){
+  const key = rqParams().toString();
+  if (!more) RQ = { key, rows: [], total: null, next: null, busy: true, error: '' }; else RQ.busy = true;
+  render();
+  try {
+    const d = await api('/webhook/admin/api/requests?' + rqParams(more && RQ.next ? { after_t: RQ.next.t, after_id: RQ.next.id } : {}).toString());
+    if (!RQ || RQ.key !== key) return;                    // the filters changed meanwhile: that answer is for an old list
+    RQ.rows = RQ.rows.concat(d.rows || []); RQ.total = d.total; RQ.next = d.next || null; RQ.busy = false;
+  } catch (e) { if (RQ && RQ.key === key) { RQ.busy = false; RQ.error = e.message; } }
+  render();
+}
+function rqReset(){ RQ = null; }
 function overallResult(r){
   if (!r.parameters || !r.parameters.length) return null;
   return r.parameters.some(p => p.status === 'fail') ? 'fail' : 'pass';
@@ -577,16 +589,23 @@ function resultBadge(r){
   return ev === 'pass' ? `<span class="badge b-ok">${I.check} IPQA pass</span>` : `<span class="badge b-danger">${I.x} IPQA out of spec</span>`;   // IPQA checks only: QC results show on the batch pages
 }
 function viewRequests(){
-  const rows = filterRequests();
+  const want = rqParams().toString();
+  if (!RQ || RQ.key !== want) setTimeout(() => { if (!RQ || RQ.key !== rqParams().toString()) rqLoad(false); }, 0);
+  const rows = RQ && RQ.key === want ? RQ.rows : [];
   const productOptions = Object.keys(PRODUCTS_META).map(p => `<option value="${esc(p)}" ${listState.product===p?'selected':''}>${esc(p)}</option>`).join('');
   const statusOptions = Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${listState.status===k?'selected':''}>${esc(v.label)}</option>`).join('');
   const stageOptions = ALL_STAGES.map(s => `<option value="${esc(s)}" ${listState.stage===s?'selected':''}>${esc(s)}</option>`).join('');
   const resultOptions = [['pass','IPQA pass'],['fail','IPQA out of spec'],['untested','Not tested']]
     .map(([k,label]) => `<option value="${k}" ${listState.result===k?'selected':''}>${label}</option>`).join('');
-  const years = yearsFromDates(S.requests, 'createdAt');
+  const years = S.request_years || yearsFromDates(S.requests, 'createdAt');
   const sortOptions = [['updated','Recently updated'],['created','Newest first'],['oldest','Oldest first']]
     .map(([k,label]) => `<option value="${k}" ${listState.sort===k?'selected':''}>${label}</option>`).join('');
-  const body = rows.length ? `<div class="tbl-wrap"><table class="tbl">
+  const loading = !RQ || RQ.key !== want || (RQ.busy && !rows.length);
+  const more = RQ && RQ.next ? `<button class="btn btn-ghost btn-sm" ${RQ.busy ? 'disabled' : ''} onclick="rqLoad(true)">${RQ.busy ? 'Loading...' : 'Show 50 more'}</button>` : '';
+  const foot = RQ && RQ.total != null && rows.length ? `<div class="okl-pager-srv"><span>Showing ${rows.length} of ${RQ.total}</span>${more}</div>` : '';
+  const body = RQ && RQ.error ? `<div class="card-b">${emptyState('alert', 'Could not load the requests', esc(RQ.error), '<button class="btn btn-primary" onclick="rqLoad(false)">Try again</button>')}</div>`
+    : loading ? `<div class="card-b small muted">Loading...</div>`
+    : rows.length ? `<div class="tbl-wrap"><table class="tbl" data-nopage data-nosort>
       <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Status</th><th>IPQA result</th><th>Updated</th><th></th></tr></thead>
       <tbody>${rows.map(r => `
         <tr class="clickable" onclick="go('/sheet/${r.id}')">
@@ -597,10 +616,10 @@ function viewRequests(){
           <td data-label="IPQA result">${resultBadge(r)}</td>
           <td class="small muted" data-label="Updated">${relTime(r.updatedAt)}</td>
           <td style="text-align:right">${I.chevR}</td>
-        </tr>`).join('')}</tbody></table></div>`
+        </tr>`).join('')}</tbody></table></div>${foot}`
     : `<div class="card-b">${emptyState('inbox','Nothing here','No requests match the current filters.')}</div>`;
   return {
-    title:'All test requests', crumb:'Records',
+    title:'All test requests', crumb:'Records', keepScroll: true,
     html: `
     ${pageHead('All test requests', 'Every request raised, with its current status and result.')}
     <div class="card">
@@ -635,9 +654,12 @@ function bindRequestFilters(){
   const mo = $('#listMonth'); if (mo) mo.onchange = e => { listState.month = e.target.value; render(); };
   const so = $('#listSort'); if (so) so.onchange = e => { listState.sort = e.target.value; render(); };
 }
-function exportRequestList(){
+async function exportRequestList(){
   const rows = [['Request No','Product','Batch No','Stage','Status','Result','Updated']];
-  filterRequests().forEach(r => rows.push([r.requestNo, r.productName, r.batchNo, r.stage, (STATUS[r.status]||{}).label||r.status,
+  let all;
+  try { all = (await api('/webhook/admin/api/requests?' + rqParams({ limit: 5000 }).toString())).rows || []; }
+  catch (e) { toast('Could not export', e.message, 'err'); return; }
+  all.forEach(r => rows.push([r.requestNo, r.productName, r.batchNo, r.stage, (STATUS[r.status]||{}).label||r.status,
     overallResult(r)===null?'NOT TESTED':overallResult(r).toUpperCase(), fmtDateTime(r.updatedAt)]));
   download('qsync-requests-'+new Date().toISOString().slice(0,10)+'.csv', toCSV(rows), 'text/csv');
   toast('Export ready','The filtered request list has been downloaded.','ok');
@@ -647,7 +669,16 @@ function exportRequestList(){
 /* ============================================================
    QSync Sheets
    ============================================================ */
-function reqById(id){ return S.requests.find(r => String(r.id) === String(id)); }
+const REQ_FETCH = {};   // id -> 'loading' | 'missing'
+function reqById(id){
+  const r = S.requests.find(x => String(x.id) === String(id));
+  if (r || !S.requests_partial || REQ_FETCH[id]) return r;
+  REQ_FETCH[id] = 'loading';                                 // older than the start-up's working set: fetch it once, then draw again
+  api('/webhook/admin/api/requests?' + new URLSearchParams({ id: String(id), limit: '1' }).toString())
+    .then(d => { const x = (d.rows || [])[0]; if (x) { S.requests.push(x); delete REQ_FETCH[id]; } else REQ_FETCH[id] = 'missing'; render(); })
+    .catch(() => { REQ_FETCH[id] = 'missing'; render(); });
+  return undefined;
+}
 
 function qsyncSheetHtml(r){
   const paramRows = (r.parameters||[]).map(p => {
@@ -705,6 +736,7 @@ function qsyncSheetHtml(r){
 const LAB_STAGE = ['sent_to_qc', 'pending_qc_notify', 'qc_received', 'qc_released', 'qc_not_released', 'qa_acknowledged'];
 function viewSheet(id){
   const r = reqById(id);
+  if (!r && REQ_FETCH[id] === 'loading') return { title:'Loading', crumb:'Records', html: `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (!r) return { title:'Not found', crumb:'Records', html: notFound() };
   // once QC has the batch, the page is the summary report: Phase 1 and QC so far, in one place
   if (S.lab && LAB_STAGE.includes(r.status)){
@@ -854,7 +886,7 @@ function reportsTrendsHtml(d){
             <td class="tnum">${p.released} / ${p.not_released}</td><td class="tnum">${hrs(p.avg_release_h)}</td></tr>`; }).join('')}</tbody></table></div>` : `<div class="card-b">${emptyState('chart', 'No data', '')}</div>`}</div>`;
 }
 function reportsFilterBarHtml(){
-  const years = yearsFromDates(S.requests, 'createdAt');
+  const years = S.request_years || yearsFromDates(S.requests, 'createdAt');
   const productOptions = Object.keys(PRODUCTS_META).map(p => `<option value="${esc(p)}" ${reportsState.product===p?'selected':''}>${esc(p)}</option>`).join('');
   return `<div class="card" style="margin-bottom:16px"><div class="card-b filter-bar" style="padding:14px 18px">
     <div class="row" style="gap:10px">
@@ -958,7 +990,7 @@ function viewProducts(){
   if (productsState.type) products = products.filter(x => x.type === productsState.type);
   const rows = products.map(x => {
     const stages = stagesForProduct(x);
-    const requestsRaised = S.requests.filter(r => r.productName === x.name).length;
+    const requestsRaised = S.request_counts ? (S.request_counts[x.name] || 0) : S.requests.filter(r => r.productName === x.name).length;
     return `<div class="mail-row" onclick="go('/products/${x.id}')">
       <div style="flex:1;min-width:0">
         <div class="ms">${esc(x.name)} <span class="badge b-brand" style="margin-left:6px">${esc(x.type)}</span></div>
@@ -1005,7 +1037,7 @@ function viewProductDetail(id){
   const p = S.products.find(x => String(x.id) === String(id));
   if (!p) return { title:'Not found', crumb:'Administration', html: notFound() };
   const stages = stagesForProduct(p);
-  const requestsRaised = S.requests.filter(r => r.productName === p.name).length;
+  const requestsRaised = S.request_counts ? (S.request_counts[p.name] || 0) : S.requests.filter(r => r.productName === p.name).length;
   return {
     title:p.name, crumb:'Administration',
     html: `

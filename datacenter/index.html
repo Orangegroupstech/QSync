@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="../logo.png">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data center</title>
+<!-- The Data center (062, 12 Nov 2026): the Google Sheets copies of the system's data, view only.
+     Admins: every spreadsheet, the hourly copy's status and "Sync data now". Managers (the Data center page in Users):
+     the spreadsheets of the consoles they can open. The data itself lives in Postgres; the sheets are refreshed every hour. -->
+<style>
+  :root{
+    --brand:#ED6B1F; --brand-600:#D75E15; --green:#0F5132;
+    --bg:#E4EAE5; --surface:#FFFFFF; --line:#BFCAC2; --line-2:#DCE3DE;
+    --text:#16191D; --text-2:#565E6B; --text-3:#8A93A0; --danger:#B3261E; --ok:#16794C; --warn:#8A5A00;
+    --r:12px; --r-lg:16px;
+    --font:"Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  }
+  *,*::before,*::after{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font);padding:24px 16px}
+  .wrap{max-width:960px;margin:0 auto}
+  .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .top img{height:44px;width:auto;vertical-align:middle}
+  .top a{color:var(--text-2);font-size:13px}
+  h1{font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
+  p.sub{color:var(--text-2);font-size:14px;margin:0 0 20px;line-height:1.5}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px 20px;margin-bottom:16px;box-shadow:0 2px 8px rgba(11,59,34,.08)}
+  .card h2{font-size:16px;margin:0 0 10px;color:var(--green)}
+  .dept{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin:18px 0 8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+  .file{background:var(--surface);border:1px solid var(--line);border-top:4px solid var(--brand);border-radius:var(--r);padding:14px 16px}
+  .file h3{margin:0 0 6px;font-size:15px}
+  .file .tabs{font-size:12px;color:var(--text-3);line-height:1.5;margin:0 0 10px}
+  .btn{display:inline-block;border:0;border-radius:8px;background:var(--brand);color:#fff;font:inherit;font-weight:700;font-size:13.5px;padding:9px 14px;cursor:pointer;text-decoration:none}
+  .btn:hover{background:var(--brand-600)} .btn:disabled{opacity:.6;cursor:default}
+  .btn.ghost{background:#fff;color:var(--text);border:1px solid var(--line)}
+  .muted{color:var(--text-3)} .small{font-size:12.5px}
+  .ok{color:var(--ok);font-weight:600} .bad{color:var(--danger);font-weight:600} .warn{color:var(--warn);font-weight:600}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:8px 0 12px}
+  .stat{border:1px solid var(--line-2);border-radius:10px;padding:10px 12px}
+  .stat .l{font-size:11.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em}
+  .stat .v{font-size:15px;margin-top:4px}
+  ol{margin:0;padding-left:18px;font-size:13px;line-height:1.6;color:var(--text-2)}
+  .notice{background:#FFF4EC;border:1px solid #F7D3BB;color:#8A3B0C;border-radius:8px;padding:10px 12px;font-size:13px;margin:0 0 14px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="row"><img src="../logo.png" alt="Orange Kalbe Limited" width="70" height="44"><div><h1>Data center</h1></div></div>
+    <a href="../">Back to the home page</a>
+  </div>
+  <p class="sub">The system's data as Google Sheets, to look at, filter and download. They are <b>view only</b> copies: the data itself is kept
+    in the system and every sheet is written again <b>every hour</b>, so anything typed into a sheet is lost. Change things in the consoles.</p>
+  <div id="notice" class="notice hidden"></div>
+  <div id="status"></div>
+  <div id="files"><div class="card small muted">Loading...</div></div>
+  <div class="card" id="help">
+    <h2>How to use</h2>
+    <ol id="helpList"></ol>
+  </div>
+</div>
+<script>
+(function(){
+  var API = 'https://orangegroupsai.online/webhook/okl/api/';
+  var KEY = 'okl.token';
+  var D = null, busy = false, poll = null;
+  function $(id){ return document.getElementById(id); }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+  function token(){ try { return sessionStorage.getItem(KEY) || ''; } catch(e){ return ''; } }
+  function toSignIn(){ try { sessionStorage.setItem('okl.return', '/datacenter/#/'); } catch(e){} location.href = '../'; }
+  function when(ts){
+    if (!ts) return '--';
+    var d = new Date(ts); if (isNaN(d)) return '--';
+    return d.toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  async function call(path, method){
+    var res;
+    try { res = await fetch(API + path, { method: method || 'GET', headers: { 'Content-Type': 'application/json', Authorization: token() } }); }
+    catch(e){ throw new Error('Could not reach the server. Check your connection and try again.'); }
+    if (res.status === 401) { toSignIn(); throw new Error('Please sign in again.'); }
+    var j = {}; try { j = await res.json(); } catch(e){}
+    if (!res.ok) { var err = new Error(j.error || 'Something went wrong.'); err.status = res.status; throw err; }
+    return j;
+  }
+  function notice(msg){ var n = $('notice'); n.textContent = msg || ''; n.classList.toggle('hidden', !msg); }
+
+  function statusHtml(st){
+    if (!st) return '';
+    var last = st.last, x = st.last_xlsx;
+    var lastTxt = !last ? '<span class="muted">Not run yet</span>'
+      : (last.ok ? '<span class="ok">Done</span>' : '<span class="bad">Failed for ' + (last.failed || []).length + ' spreadsheet(s)</span>') + ' <span class="muted small">' + esc(when(last.at)) + (last.trigger === 'manual' ? ', Sync data now' : '') + '</span>';
+    var fails = last && !last.ok ? '<div class="small bad" style="margin:4px 0 10px">' + (last.failed || []).map(function(f){ return esc(f.file) + ': ' + esc(f.error); }).join('<br>') + '</div>' : '';
+    var retire = st.retire_ready ? '<div class="notice">The hourly copy has run cleanly for ' + esc(st.clean_days) + ' days in a row: the old copy steps inside the workflows can now be removed (ask Claude to "remove the old sheet copy steps").</div>' : '';
+    var notSet = (st.not_set_up || []).length ? '<div class="small warn" style="margin-bottom:10px">Not set up yet: ' + st.not_set_up.map(esc).join(', ') + '. Create the spreadsheet in the OKL Data folder and send its link to be added.</div>' : '';
+    return '<div class="card"><h2>Google Sheets backup (admins)</h2>' + retire + notSet
+      + '<div class="stats"><div class="stat"><div class="l">Last copy</div><div class="v">' + lastTxt + '</div></div>'
+      + '<div class="stat"><div class="l">Last good copy</div><div class="v">' + esc(when(st.last_ok_at)) + '</div></div>'
+      + '<div class="stat"><div class="l">Clean days in a row</div><div class="v">' + esc(st.clean_days) + '</div></div>'
+      + '<div class="stat"><div class="l">Nightly Excel files</div><div class="v">' + (!x ? '<span class="muted">Not run yet</span>' : (x.ok ? '<span class="ok">Saved</span>' : '<span class="bad">Failed</span>') + ' <span class="muted small">' + esc(when(x.at)) + '</span>') + '</div></div></div>'
+      + fails
+      + '<div class="row"><button class="btn" id="syncNow"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Copying... (a minute or two)' : 'Sync data now') + '</button>'
+      + '<span class="small muted">The copy also runs by itself every hour. Use this when you need the sheets up to date now.</span></div></div>';
+  }
+  function filesHtml(files){
+    if (!files.length) return '<div class="card small muted">No spreadsheets for your consoles yet.</div>';
+    var out = '', dept = null;
+    files.forEach(function(f){
+      if (f.department !== dept) { if (dept !== null) out += '</div>'; dept = f.department; out += '<div class="dept">' + esc(dept) + '</div><div class="grid">'; }
+      out += '<div class="file"><h3>' + esc(f.title) + '</h3><p class="tabs">' + (f.tabs || []).map(esc).join(' · ') + '</p>'
+        + (f.url ? '<a class="btn ghost" href="' + esc(f.url) + '" target="_blank" rel="noopener">Open (view only)</a>' : '<span class="small warn">Not set up yet</span>') + '</div>';
+    });
+    return out + '</div>';
+  }
+  function helpHtml(isAdmin){
+    var steps = [
+      '<b>Open (view only)</b> opens the spreadsheet in Google Sheets. You need to be signed in to Google with an e-mail the admin has shared it with.',
+      'Use filters, sorting and <b>File &gt; Download</b> as you like. Do not type into the sheets: every sheet is written again every hour from the system, so typed changes are lost. Change things in the consoles.',
+      'Each sheet shows the time of the last copy at most an hour behind the consoles.'
+    ];
+    if (isAdmin) steps.push('<b>Sync data now</b> (admins) copies everything straight away instead of waiting for the hour. The Last copy box says when it finished and names any spreadsheet that failed.',
+      'Every night each spreadsheet is also saved as an Excel file in the backup storage; the laptop backup pull brings them down (14 days kept).');
+    return steps.map(function(s){ return '<li style="margin-bottom:4px">' + s + '</li>'; }).join('');
+  }
+  function draw(){
+    if (!D) return;
+    $('status').innerHTML = D.is_admin ? statusHtml(D.status) : '';
+    $('files').innerHTML = filesHtml(D.files || []);
+    $('helpList').innerHTML = helpHtml(!!D.is_admin);
+    var b = $('syncNow'); if (b) b.onclick = syncNow;
+  }
+  async function load(){
+    if (!token()) { toSignIn(); return; }
+    try { D = await call('datacenter'); notice(''); }
+    catch(e){ if (e.status === 403) { $('files').innerHTML = ''; $('help').classList.add('hidden'); notice('The Data center is for admins and managers. Ask an admin to give you the Data center page in Users.'); return; } notice(e.message); return; }
+    draw();
+  }
+  async function syncNow(){
+    if (busy) return;
+    var before = D && D.status && D.status.last ? D.status.last.at : null;
+    busy = true; draw();
+    try { await call('sheets/sync', 'POST'); }
+    catch(e){ busy = false; draw(); notice(e.message); return; }
+    var tries = 0;
+    clearInterval(poll);
+    poll = setInterval(async function(){
+      tries++;
+      try { var d = await call('datacenter'); var at = d.status && d.status.last ? d.status.last.at : null;
+            if (at && at !== before) { clearInterval(poll); busy = false; D = d; draw(); notice(d.status.last.ok ? '' : 'The copy finished with failures: see Last copy.'); return; } } catch(e){ /* keep waiting */ }
+      if (tries >= 60) { clearInterval(poll); busy = false; draw(); notice('Still copying after 5 minutes: look again later (Last copy shows when it finishes).'); }
+    }, 5000);
+  }
+  window.__dc = { load: load, syncNow: syncNow, data: function(){ return D; } };
+  load();
+})();
+</script>
+</body>
+</html>

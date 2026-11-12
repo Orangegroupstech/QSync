@@ -93,6 +93,10 @@ const QSYNC_HELP = [
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
     '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['layers', 'Long lists', [
+    'A list longer than 80 rows shows its first 50, with <b>Show 50 more</b> and <b>Show all</b> under it. It opens faster, mostly on phones.',
+    'Search, the filters, sorting by a column heading and the Excel / CSV downloads still cover every row, not only the 50 on screen. Printing prints them all.',
+    '<b>All test requests</b> come from the server 50 at a time, newest first: <b>Show 50 more</b> asks for the next 50. Old requests opened from a link still open.']],
   ['info', 'Phone or laptop', [
     'The small <b>Phone view / Laptop view</b> green button at the top right of the screen switches the layout. It starts from your screen and is remembered on this device.']],
   ['edit', 'Suggestions', [
@@ -108,9 +112,10 @@ const QSYNC_HELP = [
     'Set the start and end time, tick the people who worked. Different times or work? <b>Add another group</b>. A person can be in one group per day.',
     '<b>Submit overtime</b>: it goes into HR overtime records, and the HR Manager is told at midday. Anyone already recorded for that day is listed as not saved.']],
 ];
-// How to use shows a card only to people who can open its page (11 Nov 2026); cards not listed here are for everyone.
-const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Change a product\'s IPQA checks': '/lab/master', 'Method templates and working standards': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime' };
-const QSYNC_HELP_MINE = () => QSYNC_HELP.filter(h => { const g = QSYNC_HELP_PAGE[h[1]]; return !g || (typeof g === 'function' ? g() : canOpen(g)); });
+// How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
+// (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
+const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Change a product\'s IPQA checks': '/lab/master', 'Method templates and working standards': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime', 'What waits for you': true, 'IPQA: fill the in-process sheet': () => hasSignoff('ipqa'), 'QA Supervisor: review an IPQA sheet': () => hasSignoff('qa_supervisor'), 'Recall something you sent': () => canRaiseRequest() || !!S.lab || hasSignoff('ipqa') || hasSignoff('qa_supervisor') || hasSignoff('qa_manager') || hasSignoff('qc_manager'), 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const QSYNC_HELP_MINE = () => QSYNC_HELP.filter(h => { const g = QSYNC_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewQsyncHelp(){
   return { title: 'How to use', crumb: 'Help', html: pageHead('How to use', 'The short version of each task. Ask the QC or QA Supervisor if something is not clear.')
     + `<div class="grid g2">${QSYNC_HELP_MINE().map(([ic, t, steps]) => `<div class="card"><div class="card-h"><div><h3>${I[ic] || ''} ${esc(t)}</h3></div></div>
