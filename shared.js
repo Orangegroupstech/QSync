@@ -8,6 +8,9 @@
         wider than the screen.
      3. The suggestion box under every page: "Suggest an improvement". It posts to its own endpoint (separate table), is
         wrapped so any failure is ignored, and never blocks or changes a page.
+     4. No saved e-mail in a search box (12 Nov 2026): the browser's password manager puts the saved e-mail into the text box
+        nearest a password box (the QC Manager's sign-off dialog filled the QC inbox search). Search boxes get autocomplete off,
+        and a password box with no username box of its own gets a hidden one, so the browser fills that instead.
    Nothing here reads or changes a console's own data. */
 (function () {
   'use strict';
@@ -139,6 +142,33 @@
     });
   }
 
+  /* ---------------- 4. no saved e-mail in a search box ---------------- */
+  const SEARCH = /(^|[^a-z])(q|search)$/i;
+  function guardInputs(root) {
+    (root || document).querySelectorAll('input:not([data-okl-ac])').forEach(el => {
+      const t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'password') {
+        el.setAttribute('data-okl-ac', '1');
+        const box = el.closest('.modal, form, .card, .field') || el.parentElement;
+        const scope = el.closest('.modal, form') || box;
+        if (scope && !scope.querySelector('input[autocomplete="username"], input[type="email"]')) {
+          const u = document.createElement('input');
+          u.type = 'text'; u.autocomplete = 'username'; u.tabIndex = -1; u.setAttribute('aria-hidden', 'true'); u.setAttribute('data-okl-ac', '1');
+          u.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0;margin:0';
+          el.parentNode.insertBefore(u, el);
+        }
+        return;
+      }
+      if (t !== 'text' && t !== 'search') return;
+      el.setAttribute('data-okl-ac', '1');
+      const ph = el.getAttribute('placeholder') || '';
+      if (SEARCH.test(el.id || '') || /^search/i.test(ph) || el.closest('.search, .filter-search')) {
+        el.setAttribute('autocomplete', 'off'); el.setAttribute('autocorrect', 'off'); el.setAttribute('spellcheck', 'false');
+        if (!el.name) el.name = 'okl-search-' + (el.id || 'box');
+      }
+    });
+  }
+
   /* ---------------- start ---------------- */
   function start() {
     const b = document.createElement('button'); b.id = 'oklViewBtn'; b.type = 'button'; b.className = 'no-print';
@@ -149,6 +179,9 @@
     const app = document.getElementById('app') || document.body;
     new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(ensureSug, 60); }).observe(app, { childList: true, subtree: true });
     ensureSug();
+    // search boxes and password boxes anywhere on the page, dialogs included (they are added to <body>), as soon as they appear
+    safe(() => guardInputs(document));
+    new MutationObserver(() => safe(() => guardInputs(document))).observe(document.body, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();

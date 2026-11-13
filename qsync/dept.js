@@ -70,8 +70,7 @@ const QSYNC_HELP = [
   ['box', 'QC tests: pH, weight variation, changing a limit', [
     'Weight variation and pH are QC tests now. They need an approved method for the product (Method templates: New template). A new pH method takes its limits from the product\'s IPQA pH spec.',
     'Mintacid only: <b>QC also tests pH</b> (Products and specs, Mintacid). While it is on, every Mintacid sample received gets a pH test. Switching it is a change request.',
-    'To change a QC limit: Products and specs, the product, <b>QC tests</b>, <b>Change</b>. A new version opens filled in; change only what is different and send it.',
-    'UV methods with a fixed A1% (e.g. Cypron assay and CU): put the A1% value in the method; no standard is weighed or read.',
+    'To change a QC limit: Products and specs, the product, <b>QC tests</b>: click the version (e.g. v1), then <b>New version</b>. It opens filled in; change only what is different and send it.',
     'Reagent / mobile phase lots: type them separated by commas.']],
   ['chart', 'Reports and trends', [
     'The cards stay on top. <b>Overview</b> as before; <b>Timing and durations</b>: how long each step takes, month by month, the slowest batches and what is waiting now.',
@@ -80,11 +79,32 @@ const QSYNC_HELP = [
     'Lab master data > <b>Products and specs</b> (first tab). Tap the product.',
     'Change limits or make a check optional: <b>Request change</b> on that check. Remove it: <b>Remove</b>. New check: <b>Add a check</b>.',
     'Say why, enter your password. A QC Supervisor or QA Supervisor starts it.',
-    'The QC Manager reviews, then the QA Manager approves (Lab master data > <b>Changes</b>). The IPQA sheet changes only after that.',
-    'Lab master data > Changes starts with <b>Waiting for approval</b>: every change and method template not finished yet, and where it waits.']],
+    'The QC Manager reviews, then the QA Manager approves (Lab master data > <b>Approvals</b>). The IPQA sheet changes only after that.']],
+  ['check', 'Approvals and History (Lab master data)', [
+    '<b>Approvals</b> is everything not finished: product and standard changes and method templates, in one list.',
+    '<b>Waiting for you</b> comes first, with the button in the row: Approve, Review, or Correct and send again. No need to look anywhere else.',
+    '<b>Drafts not sent yet</b>: methods you (or the system) drafted: edit, try with Excel numbers, then Send for review. <b>Waiting for someone else</b>: where the rest is.',
+    'A link from <b>My approvals</b> or an e-mail opens that item straight away (the sign dialog when it is yours). Methods to approve are in My approvals too.',
+    '<b>History</b>: what is finished (changes of the last 90 days, every approved method version), with a search.']],
   ['settings', 'Method templates and working standards', [
-    'Lab master data > <b>Method templates</b>: a QC or QA Supervisor drafts (one template per API), then <b>Send for approval</b>.',
+    'Lab master data > <b>Method templates</b>: one card per product group; in each, a grid per product (tests down, APIs across) with the version in use in each cell. Pick a product or group at the top, or search a test or API.',
+    'Click a version (e.g. v2) to see the method, try it, make a <b>New version</b>, or see its older versions. An empty cell with <b>+</b> starts a new method for it.',
+    'A QC or QA Supervisor drafts (one template per API), then <b>Send for review</b>.',
+    'A method that is not complete (no label claim, a dilution step missing ...) is marked <b>not complete</b> and cannot be sent or approved; View lists what is missing.',
     'The QC Manager approves it or returns it with a reason. Working standards: same, on their tab.']],
+  ['settings', 'Set up a method: HPLC or UV', [
+    '<b>New template</b>: pick the product, the test and the API. <b>Start from an existing method</b> fills everything in from any approved method (e.g. Cannon Extra from Medik 55); change only what is different.',
+    'Pick the <b>technique</b> first: <b>HPLC</b> (peak areas, injections), <b>UV with a standard</b> (absorbance, e.g. Cypron dissolution) or <b>UV with a fixed A1%</b> (absorbance, no standard, e.g. Cypron assay and CU). The worksheet then uses those words.',
+    'Readings per tablet or preparation: the same number for least and most (e.g. 2 and 2) shows that many boxes every time (Cypron: reading A and B).',
+    'A new product with the same methods as another (e.g. Cannon Para from Cypron): <b>Copy methods from another product</b>. Every method becomes a draft; edit the label claim and average weight, then send each one.',
+    'Products of the same group (e.g. Mixagrip, Procold, Corhinza) share methods: on <b>New version</b>, tick <b>Same change for the group</b>. Each product gets its own draft and keeps its own label claim, average weight and dosage form. The group is shown on the product (Products and specs).',
+    'Microbiology worksheets ask only for the dates: no instrument and no reagent lots.']],
+  ['chart', 'Try a method with Excel numbers', [
+    'Method templates > <b>Try it</b> (or View > Try it). The worksheet boxes of the method open for one sample.',
+    'Type one run from your Excel calculation sheet (the standard purity too), then the result Excel gives. QSync shows <b>Same</b> or <b>Different</b>.',
+    'On a draft, <b>Save this check</b>: the QC Manager sees the QSync result next to the Excel result when approving. Change the method afterwards and the check must be done again.',
+    'Known Excel errors give a different number: Mixagrip CU (phenylephrine tablet 3 uses the area of tablet 2), Medik 55 and Cannon PM dissolution (divide by the 6th standard injection, not the average).',
+    'On a worksheet, system suitability (%RSD) now shows as soon as the standard readings are in.']],
   ['users', 'Relievers (someone away)', [
     'Administration > <b>Relievers</b>: the QC Manager, QA Manager or an admin sets who signs for whom, and the dates.',
     'The reliever gets the role on the first day and loses it after the last.']],
@@ -114,7 +134,7 @@ const QSYNC_HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Change a product\'s IPQA checks': '/lab/master', 'Method templates and working standards': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime', 'What waits for you': true, 'IPQA: fill the in-process sheet': () => hasSignoff('ipqa'), 'QA Supervisor: review an IPQA sheet': () => hasSignoff('qa_supervisor'), 'Recall something you sent': () => canRaiseRequest() || !!S.lab || hasSignoff('ipqa') || hasSignoff('qa_supervisor') || hasSignoff('qa_manager') || hasSignoff('qc_manager'), 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Change a product\'s IPQA checks': '/lab/master', 'Approvals and History (Lab master data)': '/lab/master', 'Method templates and working standards': '/lab/master', 'Set up a method: HPLC or UV': '/lab/master', 'Try a method with Excel numbers': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime', 'What waits for you': true, 'IPQA: fill the in-process sheet': () => hasSignoff('ipqa'), 'QA Supervisor: review an IPQA sheet': () => hasSignoff('qa_supervisor'), 'Recall something you sent': () => canRaiseRequest() || !!S.lab || hasSignoff('ipqa') || hasSignoff('qa_supervisor') || hasSignoff('qa_manager') || hasSignoff('qc_manager'), 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const QSYNC_HELP_MINE = () => QSYNC_HELP.filter(h => { const g = QSYNC_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewQsyncHelp(){
   return { title: 'How to use', crumb: 'Help', html: pageHead('How to use', 'The short version of each task. Ask the QC or QA Supervisor if something is not clear.')
