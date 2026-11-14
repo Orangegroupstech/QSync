@@ -365,7 +365,7 @@ window.addEventListener('hashchange', render);
    People (User Management) - admins only
    One person = one account = one password, used for the consoles, QSync sign-offs and the machine app.
    ============================================================ */
-const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' }, { key:'engineering', label:'Engineering' }, { key:'production', label:'Daily production' } ];
+const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' }, { key:'engineering', label:'Engineering' }, { key:'production', label:'Production' } ];
 const SIGNOFFS = [ { key:'signoff.production', label:'Production' }, { key:'signoff.ipqa', label:'IPQA' },
                    { key:'signoff.qa_supervisor', label:'QA Supervisor' }, { key:'signoff.qc_supervisor', label:'QC Supervisor' },
                    { key:'signoff.qc_analyst', label:'QC Analyst' }, { key:'signoff.qc_manager', label:'QC Manager' }, { key:'signoff.qa_manager', label:'QA Manager' } ];
@@ -375,6 +375,15 @@ const ROLE_SIGNOFF = { 'Production Supervisor':'signoff.production', 'IPQA Inspe
                        'QA Supervisor':'signoff.qa_supervisor', 'QC Supervisor':'signoff.qc_supervisor',
                        'QC Analyst':'signoff.qc_analyst', 'QC Manager':'signoff.qc_manager', 'QA Manager':'signoff.qa_manager' };
 const LEVELS = [ { key:'', label:'No access' }, { key:'view', label:'View' }, { key:'submit', label:'Submit' }, { key:'edit', label:'Edit' } ];
+// 14 Nov 2026: what View and Edit allow on a page, where it is not obvious (the (i) beside the page in the access tree)
+const PAGE_HINT = {
+  'production.store': "The store's materials and their stock.\nView: see them. Edit: also add a material and change its details.",
+  'production.store_received': 'Deliveries into the store.\nView: see the list. Edit: also receive a delivery and reverse a mistake.',
+  'production.store_issued': 'Materials given out to the lines.\nView: see the list. Edit: also issue materials and reverse a mistake.',
+  'production.store_counts': "The weekly count of the shelf.\nView: see the week's count. Edit: also count.",
+  'production.store_approve': 'Big differences found in a count.\nEdit: approve or reject them (for the Production Manager).',
+  'production.store_settings': "The store's rules and material types.\nView: see them. Edit: change them (for the Production Manager).",
+};
 const LEVEL_HELP = 'View = can open and read. Submit = can also record their own work (for example a technician closing a job). Edit = can change everything on that page.';
 // "Engineering - Spares", or just "Engineering" for a whole console
 function pageLabel(k){
@@ -722,30 +731,70 @@ function accessTree(opts){
   };
   // the lowest level a console row may be set to: what every one of its pages already gets from roles
   const minOf = m => { const ls = leavesOf(m.scope).map(k => (floor[k] || {}).level || ''); return ls.every(Boolean) ? ls.reduce((a, b) => (ACCESS_RANK[a] || 0) <= (ACCESS_RANK[b] || 0) ? a : b) : ''; };
+  // 14 Nov 2026: easier to find a page - a search box, open/close all, and pages that share a prefix ("Store: ...") under a sub-heading
+  let q = '';
+  const norm = t => String(t || '').toLowerCase();
+  const hits = m => !q || norm(m.label).includes(q) || childrenOf(m.scope).some(pg => norm(pg.label).includes(q));
+  // pages that share a prefix ("Store: Stock", "Store: Received" ...) fold under their own heading, with one level box for all of them
+  const openGrp = new Set();
+  const grpOf = pg => { const mt = /^([^:]{2,30}):\s*(.+)$/.exec(pg.label); return mt ? { grp: mt[1], name: mt[2].charAt(0).toUpperCase() + mt[2].slice(1) } : { grp: null, name: pg.label }; };
+  const grpKeys = (mod, grp) => childrenOf(mod).filter(pg => grpOf(pg).grp === grp).map(pg => pg.scope);
+  const keysState = keys => { const vals = keys.map(eff), set = vals.filter(Boolean), same = vals.every(v => v === vals[0]);
+    return { value: same ? vals[0] : 'mixed', note: !set.length ? '' : same ? 'all ' + keys.length : set.length + ' of ' + keys.length }; };
+  const leafRow = (pg, name, inGrp, shut) => {
+    const hide = q && !norm(pg.label).includes(q) && !norm((modulesList().find(x => x.scope === pg.module) || {}).label).includes(q);
+    const hint = PAGE_HINT[pg.scope] && window.oklInfo ? window.oklInfo(PAGE_HINT[pg.scope], 'What View and Edit allow here') : '';
+    return `<div class="tree-row tree-page${inGrp ? ' tree-in' : ''}${hide ? ' tree-hide' : ''}${shut ? ' grp-shut' : ''}"><span class="tree-tog"></span><div class="tree-name"><span>${esc(name)} ${hint}</span></div>
+        <div class="tree-src-cell">${src(pg.scope)}</div>
+        <select class="inp tree-sel" data-leaf="${esc(pg.scope)}" ${locked ? 'disabled' : ''}>${opt(eff(pg.scope), (floor[pg.scope] || {}).level)}</select></div>`;
+  };
+  const pageRows = (mod, kids) => { let last = null; return kids.map(pg => {
+    const { grp, name } = grpOf(pg);
+    const gk = mod + '|' + grp, open = openGrp.has(gk) || (q && grpKeys(mod, grp).some(k => norm((childrenOf(mod).find(x => x.scope === k) || {}).label).includes(q)));
+    let head = '';
+    if (grp && grp !== last) {
+      const st = keysState(grpKeys(mod, grp));
+      head = `<div class="tree-row tree-page tree-sub${open ? ' open' : ''}" data-g="${esc(gk)}">
+        <button type="button" class="tree-tog" data-gtog aria-label="Show the ${esc(grp)} pages">${I.chevR}</button>
+        <div class="tree-name" data-gtog style="cursor:pointer"><span class="strong">${esc(grp)}</span><span class="tiny muted">${esc(st.note)}</span></div><div class="tree-src-cell"></div>
+        <select class="inp tree-sel" data-grp="${esc(gk)}" ${locked ? 'disabled' : ''}>${st.value === 'mixed' ? '<option value="mixed" selected>Mixed</option>' : ''}${opt(st.value === 'mixed' ? null : st.value)}</select></div>`;
+    }
+    last = grp;
+    return head + leafRow(pg, name, !!grp, grp && !open); }).join(''); };
   const body = () => modulesList().map(m => {
-    const kids = childrenOf(m.scope), st = modState(m), open = st.value === 'mixed';
+    const kids = childrenOf(m.scope), st = modState(m), open = st.value === 'mixed' || (q && kids.some(pg => norm(pg.label).includes(q)));
     const modSel = `<select class="inp tree-sel" data-mod="${esc(m.scope)}" ${locked ? 'disabled' : ''}>
         ${st.value === 'mixed' ? '<option value="mixed" selected>Mixed</option>' : ''}${opt(st.value === 'mixed' ? null : st.value, minOf(m))}</select>`;
-    return `<div class="tree-mod${open ? ' open' : ''}" data-m="${esc(m.scope)}">
+    return `<div class="tree-mod${open ? ' open' : ''}${hits(m) ? '' : ' tree-hide'}" data-m="${esc(m.scope)}">
       <div class="tree-row tree-head">
         ${kids.length ? `<button type="button" class="tree-tog" data-tog aria-label="Show the pages">${I.chevR}</button>` : '<span class="tree-tog"></span>'}
-        <div class="tree-name"><span class="strong">${esc(m.label)}</span><span class="tiny muted">${esc(st.note)}</span></div>
+        <div class="tree-name"${kids.length ? ' data-tog style="cursor:pointer"' : ''}><span class="strong">${esc(m.label)}</span><span class="tiny muted">${esc(st.note)}</span></div>
         <div class="tree-src-cell">${kids.length ? modSrc(m) : src(m.scope)}</div>${modSel}
       </div>
-      ${kids.map(pg => `<div class="tree-row tree-page"><span class="tree-tog"></span><div class="tree-name">${esc(pg.label)}</div>
-        <div class="tree-src-cell">${src(pg.scope)}</div>
-        <select class="inp tree-sel" data-leaf="${esc(pg.scope)}" ${locked ? 'disabled' : ''}>${opt(eff(pg.scope), (floor[pg.scope] || {}).level)}</select></div>`).join('')}
+      ${pageRows(m.scope, kids)}
     </div>`;
   }).join('');
   let root = null, onChange = () => {};
   const paint = () => {
     const openNow = new Set(Array.from(root.querySelectorAll('.tree-mod.open')).map(e => e.dataset.m));
     root.innerHTML = body();
-    openNow.forEach(m => { const e = root.querySelector(`.tree-mod[data-m="${m}"]`); if (e) e.classList.add('open'); });
+    if (!q) openNow.forEach(m => { const e = root.querySelector(`.tree-mod[data-m="${m}"]`); if (e) e.classList.add('open'); });
     wire(); onChange();
   };
   const wire = () => {
     root.querySelectorAll('[data-tog]').forEach(b => b.onclick = () => b.closest('.tree-mod').classList.toggle('open'));
+    root.querySelectorAll('[data-gtog]').forEach(b => b.onclick = () => {
+      const row = b.closest('.tree-sub'), gk = row.dataset.g, open = !openGrp.has(gk);
+      if (open) openGrp.add(gk); else openGrp.delete(gk);
+      row.classList.toggle('open', open);
+      for (let n = row.nextElementSibling; n && n.classList.contains('tree-in'); n = n.nextElementSibling) n.classList.toggle('grp-shut', !open);
+    });
+    root.querySelectorAll('select[data-grp]').forEach(s => s.onchange = () => {
+      if (s.value === 'mixed') return;
+      const [mod, grp] = s.dataset.grp.split('|');
+      grpKeys(mod, grp).forEach(k => { own[k] = (ACCESS_RANK[s.value] || 0) <= (ACCESS_RANK[(floor[k] || {}).level] || 0) ? '' : s.value; });
+      paint(); const again = root.querySelector(`.tree-mod[data-m="${mod}"]`); if (again) again.classList.add('open');
+    });
     root.querySelectorAll('select[data-mod]').forEach(s => s.onchange = () => {
       if (s.value === 'mixed') return;
       // a console level sets every page under it (never below what a role gives)
@@ -758,8 +807,13 @@ function accessTree(opts){
     });
   };
   return {
-    html: `<div class="tree${locked ? ' locked' : ''}"></div>`,
-    bind(container, cb){ root = container.querySelector('.tree'); onChange = cb || onChange; root.innerHTML = body(); wire(); onChange(); },
+    html: `<div class="row tree-bar" style="gap:8px;margin-bottom:8px;flex-wrap:wrap"><input class="inp tree-q" type="search" placeholder="Find a page (e.g. store, leave)" style="flex:1 1 200px">
+      <button type="button" class="btn btn-ghost btn-sm" data-all="1">Open all</button><button type="button" class="btn btn-ghost btn-sm" data-all="0">Close all</button></div>
+      <div class="tree${locked ? ' locked' : ''}"></div>`,
+    bind(container, cb){ root = container.querySelector('.tree'); onChange = cb || onChange; root.innerHTML = body(); wire(); onChange();
+      const qi = container.querySelector('.tree-q');
+      if (qi) qi.oninput = () => { q = norm(qi.value).trim(); root.innerHTML = body(); wire(); };
+      container.querySelectorAll('[data-all]').forEach(b => b.onclick = () => root.querySelectorAll('.tree-mod').forEach(e => e.classList.toggle('open', b.dataset.all === '1'))); },
     setFloor(f){ Object.keys(floor).forEach(k => delete floor[k]); Object.assign(floor, f);
       Object.keys(own).forEach(k => { if ((ACCESS_RANK[own[k]] || 0) <= (ACCESS_RANK[(floor[k] || {}).level] || 0)) own[k] = ''; }); if (root) paint(); },
     value(){ const out = {}; Object.keys(own).forEach(k => { if (own[k]) out[k] = own[k]; }); return out; },

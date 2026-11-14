@@ -77,7 +77,7 @@ function meFromAuth(auth, scope){
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 // 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
-const PAGES = [["/my-approvals", "production"], ["/report", "production"], ["/", "production.requests"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "production"], ["/report", "production"], ["/store/settings", "production.store_settings"], ["/store/received", "production.store_received"], ["/store/issued", "production.store_issued"], ["/store/counts", "production.store_counts"], ["/store", "production.store"], ["/", "production.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -215,6 +215,7 @@ function navModel(){
       { path:'/overtime', label:'Submit overtime', icon:'users' },
       { path:'/test', label:'Make a new test request', icon:'plus' },
     ] },
+    { title:'Store', items:[ { path: typeof stFirstTab === 'function' ? stFirstTab() : '/store', label:'Store', icon:'box' } ] },
     { title:'Reports', items:[ { path:'/report', label:'Daily production report', icon:'externalLink' } ] },
     { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ];
@@ -368,7 +369,8 @@ async function rqLoad(){ try { S.rq = await api('/webhook/production/api/request
 function rqCfg(){
   const d = S.rq && !S.rq.error ? S.rq : {};
   return { api: API_BASE, department: PROD_DEPT, flow: 'dept', requester: (S.me && S.me.name) || d.me || '', icons: I,
-           people: d.people || [], toast, onSent: () => { S.rq = null; render(); } };
+           people: d.people || [], toast, onSent: () => { S.rq = null; render(); },
+           store: typeof stStoreForRequests === 'function' ? stStoreForRequests() : [] };   // store.js: materials picked by code (066)
 }
 const RQ_STAGE = { manager: 'Production Manager', plant_head: 'Plant Manager', hr: 'HR' };
 function viewProdRequest(kind){
@@ -415,6 +417,24 @@ const PROD_HELP = [
   ['plus', 'Make a new test request', [
     'Menu > <b>Make a new test request</b> opens the test request form (the same form as QSync). It needs "submit" access to Test requests; ask an admin if it refuses.',
     'Fill in the product, batch and tests, then send. IPQA and QA take it from there.']],
+  ['box', 'Store: stock and what to order', [
+    'Menu > <b>Store</b>. Every material with its stock, use per week, weeks left, reorder level and order quantity. The worst come first.',
+    'The colours: <span class="sb sb-out">Out of stock</span> <span class="sb sb-reorder">Reorder now</span> (at or below the reorder level) <span class="sb sb-soon">Order soon</span> (within a week of it) <span class="sb sb-ok">OK</span> <span class="sb sb-idle">Not moving</span> (nothing issued lately) <span class="sb sb-count">Count needed</span> (stock not known). Tap a colour above the list to see only those.',
+    'Every worked-out number has a small <b>i</b> beside it: tap it for the rule and why. Tap a material to see how its own numbers were worked out, step by step.',
+    'Use per week = what was issued in the last 8 weeks / the weeks it was in stock. Reorder level = use per week x (lead time + safety weeks), never below the minimum set for the material. Order quantity = reorder level x 1.5. The numbers are in Settings.',
+    '<b>Request more</b> (on a material) opens the procurement request with the code and the order quantity filled in. Check and send.']],
+  ['arrowDown', 'Store: receive and issue', [
+    '<b>Receive</b>: the date, then one line per material with its quantity. Pick the <b>procurement request</b> each line delivers; without one, give the supplier and the invoice or delivery note number. Price is optional.',
+    'A material not in the store yet: <b>A material not in the store</b>, its name, type and unit. It gets its code (e.g. CF 008) and is received in the same step.',
+    '<b>Issue</b>: the printer, line or machine it is for, who collected it, then one line per material. Stock cannot go below 0: count it first if the shelf has more.',
+    'A mistake: <b>Received</b> or <b>Issued</b> tab > <b>Reverse</b>, with the reason. Nothing is deleted.']],
+  ['check', 'Store: weekly count', [
+    'Store > <b>Weekly count</b> tab. It checks that the shelf matches the system, so the stock is always right. A few materials each working day; the counter (Settings) gets the list on WhatsApp at 08:00, with what needs ordering.',
+    '<b>Count</b>: the number on the shelf, its location and where it is used. A difference needs a reason; a small one changes the stock at once, a bigger one waits for the Production Manager.',
+    'A material never counted (the Hitachi ones at first) is counted in its first week. Until then its stock is "not known" and it cannot be issued.']],
+  ['settings', 'Store: settings', [
+    'Store > <b>Settings</b> (Production Manager). Each rule shows what it does and why it is set so: weeks looked back, lead time, safety weeks, order quantity, the counter, the approval limit.',
+    '<b>Material types</b>: the two letters that start every code (CF coding fluids, CT cartridges, RB ribbons, CC characters, GC general). Add a type for a new kind of material; its category groups it (Consumable ...).']],
   ['check', 'My approvals', [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
@@ -431,7 +451,7 @@ const PROD_HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const PROD_HELP_PAGE = { 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const PROD_HELP_PAGE = { 'Store: stock and what to order': '/store', 'Store: receive and issue': () => levelOf('production.store_received') === 'edit' || levelOf('production.store_issued') === 'edit', 'Store: weekly count': '/store/counts', 'Store: settings': '/store/settings', 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const PROD_HELP_MINE = () => PROD_HELP.filter(h => { const g = PROD_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewProdHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')

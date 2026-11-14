@@ -76,7 +76,7 @@ function meFromAuth(auth, scope){
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 // 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
-const PAGES = [["/my-approvals", "procurement"], ["/help", "procurement"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/stock", "procurement.spares"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "procurement"], ["/help", "procurement"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/stock", "procurement.spares"], ["/prd-stock", "procurement.prd_store"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -213,6 +213,7 @@ function navModel(){
       { path:'/items', label:'Procurement Log', icon:'box' },
       { path:'/new-request', label:'Make a procurement request', icon:'plus' },
       { path:'/stock', label:'Spares stock (Engineering)', icon:'box' },
+      { path:'/prd-stock', label:'Production store stock', icon:'box' },
     ] },
   ];
   groups.push({ title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] });
@@ -621,45 +622,91 @@ route('/spares/inventory', viewSparesMoved);
    Receiving, issuing and counting stay in the Engineering console.
    ============================================================ */
 const ST = { data: null, q: '', status: '' };
+const PST = { data: null, q: '', status: '' };
+// 067 (13 Nov 2026): both stores work out the reorder level from use; the same statuses and colours as their consoles
+const STOCK_STATUS = [['Count needed', 'count'], ['Out of stock', 'out'], ['Reorder now', 'reorder'], ['Order soon', 'soon'], ['Not moving', 'idle'], ['OK', 'ok']];
+(function stockStyle(){
+  if (document.getElementById('stockStyle')) return;
+  const el = document.createElement('style'); el.id = 'stockStyle';
+  el.textContent = '.sb{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;font-weight:600;white-space:nowrap;border:1px solid}'
+    + '.sb-out{background:#B3261E;color:#fff;border-color:#B3261E}.sb-reorder{background:#FFE4CC;color:#9A3412;border-color:#FB9F5A}'
+    + '.sb-soon{background:#FEF3C0;color:#7A4A06;border-color:#EBC94A}.sb-ok{background:#E3F3E7;color:#1E6B35;border-color:#A9D8B6}'
+    + '.sb-idle{background:#EEF0F2;color:#4B5563;border-color:#D0D5DB}.sb-count{background:#E6EEFB;color:#1B4F9C;border-color:#B5CBF0}';
+  document.head.appendChild(el);
+})();
+const STOCK_RULES = {
+  status: 'Out of stock: nothing left.\nReorder now: at or below the reorder level.\nOrder soon: within one more week of use above it.\n'
+    + 'Not moving: nothing issued lately.\nCount needed: never counted, so the stock is not known yet.\nOK: enough for now.',
+  use: 'How many the store uses in a normal week.\n'
+    + 'Use per week = issued over the last weeks (Engineering 26, Production 8) / the weeks it was in stock.\n'
+    + '"Not enough use" when it was issued on fewer than 3 days.',
+  reorder: 'When the stock is down to this number, the store asks for more.\n'
+    + 'Reorder level = use per week x (lead time + safety weeks), never below the store\'s minimum.',
+  order: 'How many the store usually asks for.\nOrder quantity = reorder level x 1.5.',
+};
+const stockInfo = t => window.oklInfo ? window.oklInfo(t) : '';
+function stockBadge(s){ const c = (STOCK_STATUS.find(x => x[0] === s) || [0, 'ok'])[1]; return `<span class="sb sb-${c}">${esc(s || '')}</span>`; }
 async function stLoad(){
   try { ST.data = await api('/webhook/procurement/api/spares'); } catch (e) { ST.data = { error: e.message }; }
   render();
 }
-function viewStock(){
-  if (!ST.data) { ST.data = 'loading'; stLoad(); }
-  const d = ST.data;
-  const head = pageHead('Spares stock', 'The Engineering store\'s stock, live. View only: receipts, issues and counts are made in the Engineering console.',
-    `<button class="btn btn-ghost" onclick="ST.data = null; render()">Refresh</button>`);
-  if (d === 'loading') return { title:'Spares stock', crumb:'Procurement', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
-  if (d.error) return { title:'Spares stock', crumb:'Procurement', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
-  const all = d.spares || [], q = ST.q.trim().toLowerCase();
-  const rows = all.filter(r => (!ST.status || r.status === ST.status) && (!q || [r.sku, r.description, r.part_number, r.brand, r.supplier, r.location].join(' ').toLowerCase().includes(q)));
+async function pstLoad(){
+  try { PST.data = await api('/webhook/production/api/store/procurement'); } catch (e) { PST.data = { error: e.message }; }
+  render();
+}
+// one page for either store: E = { state, load, title, lede, list(d), code, name }
+function stockPage(E){
+  const T = E.state;
+  if (!T.data) { T.data = 'loading'; E.load(); }
+  const d = T.data;
+  const head = pageHead(E.title, E.lede, `<button class="btn btn-ghost" onclick="${E.refresh}">Refresh</button>`);
+  if (d === 'loading') return { title: E.title, crumb:'Procurement', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title: E.title, crumb:'Procurement', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const mark = window.oklRequestMark ? window.oklRequestMark() : null;
+  const all = E.list(d), q = T.q.trim().toLowerCase(), rank = s => { const i = STOCK_STATUS.findIndex(x => x[0] === s); return i < 0 ? 9 : i; };
+  const rows = all.filter(r => (!T.status || r.status === T.status) && (!q || [E.code(r), E.name(r), r.part_number, r.brand, r.supplier, r.location].join(' ').toLowerCase().includes(q)))
+    .sort((a, b) => (mark ? window.oklRequestFirst(mark, E.code(a)) - window.oklRequestFirst(mark, E.code(b)) : 0) || rank(a.status) - rank(b.status) || String(E.code(a)).localeCompare(String(E.code(b))));
   const n = s => all.filter(r => r.status === s).length;
-  const badge = s => s === 'Out of stock' ? '<span class="badge b-danger">Out of stock</span>' : s === 'Reorder' ? '<span class="badge b-warn">Reorder</span>' : '<span class="badge b-ok">OK</span>';
   const money = v => v == null || v === '' ? '' : Number(v).toLocaleString('en-NG', { maximumFractionDigits: 2 });
-  const opt = (v, l) => `<option value="${v}" ${ST.status === v ? 'selected' : ''}>${l}</option>`;
-  return { title:'Spares stock', crumb:'Procurement', keepScroll: true,
-    html: head + `<div class="card"><div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
-        <div class="search filter-search"><span class="ic">${I.search || ''}</span><input class="inp" id="stQ" style="padding-left:34px;border-radius:20px" placeholder="Search SKU, description, part number, supplier" value="${esc(ST.q)}"></div>
-        <select class="inp" id="stStatus" style="width:auto">${opt('', 'All parts (' + all.length + ')')}${opt('Reorder', 'Reorder (' + n('Reorder') + ')')}${opt('Out of stock', 'Out of stock (' + n('Out of stock') + ')')}${opt('OK', 'OK (' + n('OK') + ')')}</select>
+  const opt = (v, l) => `<option value="${v}" ${T.status === v ? 'selected' : ''}>${l}</option>`;
+  const use = r => r.trusted ? esc(r.use_per_week) + (r.trend === 'up' ? ' ↑' : r.trend === 'down' ? ' ↓' : '') : '<span class="tiny muted">not enough use</span>';
+  return { title: E.title, crumb:'Procurement', keepScroll: true,
+    html: head + (mark ? window.oklRequestBanner(mark) : '') + `<div class="card"><div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
+        <div class="search filter-search"><span class="ic">${I.search || ''}</span><input class="inp" id="stQ" style="padding-left:34px;border-radius:20px" placeholder="Search code, name, part number, supplier" value="${esc(T.q)}"></div>
+        <select class="inp" id="stStatus" style="width:auto">${opt('', 'All (' + all.length + ')')}${STOCK_STATUS.filter(x => n(x[0])).map(x => opt(x[0], x[0] + ' (' + n(x[0]) + ')')).join('')}</select>
       </div></div>
-      ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>SKU</th><th>Description</th><th>Location</th><th style="text-align:right">Stock</th><th style="text-align:right">Reorder at</th><th>Status</th><th>Last in</th><th>Last out</th><th style="text-align:right">Unit price (NGN)</th></tr></thead>
-        <tbody>${rows.map(r => `<tr><td class="mono small" data-label="SKU">${esc(r.sku)}</td>
-          <td data-label="Description"><div class="strong">${esc(r.description || '')}</div><div class="tiny muted">${esc([r.part_number, r.brand, r.supplier].filter(Boolean).join(' · '))}</div></td>
-          <td data-label="Location" class="small">${esc(r.location || '')}</td>
-          <td data-label="Stock" class="tnum" style="text-align:right">${esc(r.stock)} <span class="tiny muted">${esc(r.unit || '')}</span></td>
+      ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Status ${stockInfo(STOCK_RULES.status)}</th><th>Code</th><th>Description</th><th style="text-align:right">Stock</th>
+        <th style="text-align:right">Use / week ${stockInfo(STOCK_RULES.use)}</th><th style="text-align:right">Weeks left</th><th style="text-align:right">Reorder at ${stockInfo(STOCK_RULES.reorder)}</th>
+        <th style="text-align:right">Order qty ${stockInfo(STOCK_RULES.order)}</th><th>Last in</th><th style="text-align:right">Unit price (NGN)</th></tr></thead>
+        <tbody>${rows.map(r => `<tr class="${mark && mark.codes.includes(String(E.code(r)).toUpperCase()) ? 'req-item' : ''}"><td data-label="Status">${stockBadge(r.status)}</td><td class="mono small" data-label="Code">${esc(E.code(r))}</td>
+          <td data-label="Description"><div class="strong">${esc(E.name(r) || '')}</div><div class="tiny muted">${esc([r.part_number, r.brand, r.supplier].filter(Boolean).join(' · '))}</div></td>
+          <td data-label="Stock" class="tnum" style="text-align:right">${r.stock == null ? '<span class="tiny muted">not known</span>' : esc(r.stock) + ' <span class="tiny muted">' + esc(r.unit || '') + '</span>'}</td>
+          <td data-label="Use / week" class="tnum" style="text-align:right">${use(r)}</td>
+          <td data-label="Weeks left" class="tnum" style="text-align:right">${esc(r.weeks_left == null ? '--' : r.weeks_left)}</td>
           <td data-label="Reorder at" class="tnum" style="text-align:right">${esc(r.reorder_level == null ? '' : r.reorder_level)}</td>
-          <td data-label="Status">${badge(r.status)}</td>
-          <td data-label="Last in" class="small">${esc(r.last_in || '')}</td><td data-label="Last out" class="small">${esc(r.last_out || '')}</td>
+          <td data-label="Order qty" class="tnum" style="text-align:right">${+r.order_qty ? esc(r.order_qty) : '--'}</td>
+          <td data-label="Last in" class="small">${esc(r.last_in || '')}</td>
           <td data-label="Unit price (NGN)" class="tnum" style="text-align:right">${money(r.unit_price)}</td></tr>`).join('')}</tbody></table></div>`
-        : `<div class="card-b">${emptyState('search', 'Nothing matches', 'No part matches the search or the status chosen.')}</div>`}
+        : `<div class="card-b">${emptyState('search', 'Nothing matches', 'Nothing matches the search or the status chosen.')}</div>`}
     </div>`,
     bind(){
       const qi = document.getElementById('stQ');
-      if (qi) qi.addEventListener('input', debounce(e => { ST.q = e.target.value; render(); const x = document.getElementById('stQ'); if (x){ x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }, 260));
-      const ss = document.getElementById('stStatus'); if (ss) ss.onchange = e => { ST.status = e.target.value; render(); };
+      if (qi) qi.addEventListener('input', debounce(e => { T.q = e.target.value; render(); const x = document.getElementById('stQ'); if (x){ x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }, 260));
+      const ss = document.getElementById('stStatus'); if (ss) ss.onchange = e => { T.status = e.target.value; render(); };
     } };
 }
+function viewStock(){
+  return stockPage({ state: ST, load: stLoad, refresh: 'ST.data = null; render()', title: 'Spares stock',
+    lede: 'The Engineering store\'s stock, live. View only: receipts, issues and counts are made in the Engineering console.',
+    list: d => d.spares || [], code: r => r.sku, name: r => r.description });
+}
+// Production store (066): what Production keeps (coding fluids, cartridges, ribbons, characters ...), view only
+function viewPrdStock(){
+  return stockPage({ state: PST, load: pstLoad, refresh: 'PST.data = null; render()', title: 'Production store stock',
+    lede: 'The Production store\'s stock, live: coding fluids, cartridges, ribbons and other production materials. View only: Production receives, issues and counts in its console.',
+    list: d => d.items || [], code: r => r.code, name: r => r.name });
+}
+route('/prd-stock', viewPrdStock);
 route('/stock', viewStock);
 route('/spares/inbound', viewSparesMoved);
 route('/spares/outbound', viewSparesMoved);
@@ -738,8 +785,47 @@ async function apSubmit(id){
     if (!res.ok) throw new Error(msg || ('Not accepted (' + res.status + ')'));
     a.done = msg || 'Your decision was recorded.'; toast('Decision recorded', a.done, 'ok', 7000);
     if (window.oklWaiting) oklWaiting.refresh('procurement');
+    const go = apStockLinks(a.data)[0];
+    if (go) { a.busy = false; location.href = go.href; return; }   // the whole store of the request, its items highlighted
   } catch (e) { toast('Not recorded', e.message, 'err', 8000); }
   a.busy = false; render();
+}
+// 068 (14 Nov 2026): the stock of what the request asks for (lines that name a store code), shown before and after the decision
+// where this person can see the stock table of the request's items: their store's own page, else Procurement's view
+function apStockLinks(d){
+  const rows = d.stock || [], dep = String(d.department || '').toLowerCase();
+  const codes = store => rows.filter(r => r.store === store).map(r => r.code);
+  const qs = list => '?req=' + encodeURIComponent(d.batch_id || '') + (list.length ? '&codes=' + encodeURIComponent(list.join(',')) : '');
+  const out = [], prd = codes('Production store'), eng = codes('Engineering spares');
+  if (dep === 'production' || prd.length) {
+    if (levelOf('production.store')) out.push({ label: 'the Production store', href: '../production/#/store' + qs(prd) });
+    else if (levelOf('procurement.prd_store')) out.push({ label: 'the Production store stock', href: '#/prd-stock' + qs(prd) });
+  }
+  if (dep === 'engineering' || eng.length) {
+    if (levelOf('engineering.spares')) out.push({ label: 'Engineering spares', href: '../engineering/#/spares' + qs(eng) });
+    else if (levelOf('procurement.spares')) out.push({ label: 'the spares stock', href: '#/stock' + qs(eng) });
+  }
+  return out;
+}
+function apStockCard(d){
+  const rows = d.stock || [];
+  if (!rows.length) return '';
+  const info = stockInfo('What the store has now of each item on this request, to judge the quantity asked for.\n'
+    + 'Only lines with a store code (like MP 406 or RB 001) are shown; the numbers are the same as on the store\'s own page.');
+  const use = r => r.trusted ? esc(r.use_per_week) + (r.trend === 'up' ? ' ↑' : r.trend === 'down' ? ' ↓' : '') : '<span class="tiny muted">not enough use</span>';
+  const links = apStockLinks(d).map(l => `<a class="btn btn-ghost btn-sm" href="${esc(l.href)}">Open in ${esc(l.label)}</a>`).join(' ');
+  return `<div class="card" style="margin-top:12px"><div class="card-h"><h3>Stock of these items ${info}</h3>${links ? `<div class="row" style="gap:6px;flex-wrap:wrap">${links}</div>` : ''}</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Status ${stockInfo(STOCK_RULES.status)}</th><th>Code</th><th>Item</th><th>Asked for</th>
+      <th style="text-align:right">Stock</th><th style="text-align:right">Use / week ${stockInfo(STOCK_RULES.use)}</th><th style="text-align:right">Weeks left</th>
+      <th style="text-align:right">Reorder at ${stockInfo(STOCK_RULES.reorder)}</th><th style="text-align:right">Order qty ${stockInfo(STOCK_RULES.order)}</th></tr></thead>
+    <tbody>${rows.map(r => `<tr><td data-label="Status">${stockBadge(r.status)}</td><td class="mono small" data-label="Code">${esc(r.code)}</td>
+      <td data-label="Item"><div class="strong">${esc(r.name || '')}</div><div class="tiny muted">${esc(r.store)}</div></td>
+      <td data-label="Asked for" class="small">${esc(r.requested || '')}</td>
+      <td data-label="Stock" class="tnum" style="text-align:right">${r.stock_known === false || r.stock == null ? '<span class="tiny muted">not known</span>' : esc(r.stock) + ' <span class="tiny muted">' + esc(r.unit || '') + '</span>'}</td>
+      <td data-label="Use / week" class="tnum" style="text-align:right">${use(r)}</td>
+      <td data-label="Weeks left" class="tnum" style="text-align:right">${esc(r.weeks_left == null ? '--' : r.weeks_left)}</td>
+      <td data-label="Reorder at" class="tnum" style="text-align:right">${esc(r.reorder_level == null ? '' : r.reorder_level)}</td>
+      <td data-label="Order qty" class="tnum" style="text-align:right">${+r.order_qty ? esc(r.order_qty) : '--'}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 function viewApprove(params){
   const id = params.batch, a = AP[id];
@@ -752,7 +838,7 @@ function viewApprove(params){
   const head = `<div class="card" style="margin-bottom:12px"><div class="card-b"><div class="row between" style="flex-wrap:wrap;gap:8px"><div><div class="strong mono">${esc(d.batch_id)}</div>
       <div class="small muted">${esc(d.requester || '')} · ${esc(d.department || '')} · needed by ${esc(String(d.requirement_date || '').slice(0, 10))}</div></div>
       <span class="badge ${d.status === 'processed' ? 'b-ok' : 'b-warn'}">${d.status === 'processed' ? 'Decided' : 'With the ' + esc(STAGE[d.stage] || d.stage)}</span></div></div></div>`;
-  if (a.done) return frame(head + `<div class="card"><div class="card-b">${emptyState('checkCircle', 'Decision recorded', esc(a.done), '<a class="btn btn-primary" href="#/my-approvals">Back to My approvals</a>')}</div></div>`);
+  if (a.done) return frame(head + `<div class="card"><div class="card-b">${emptyState('checkCircle', 'Decision recorded', esc(a.done), '<a class="btn btn-primary" href="#/my-approvals">Back to My approvals</a>')}</div></div>` + apStockCard(d));
   const items = d.items || [];
   const rows = items.map(it => `<tr><td data-label="Item"><div class="strong">${esc(it.material || '')}</div><div class="tiny muted">${esc(it.detail || '')}</div></td>
       <td data-label="Purpose" class="small">${esc(it.purpose || '')}</td><td data-label="Qty" class="small">${esc(it.qty || '')}</td>
@@ -763,7 +849,7 @@ function viewApprove(params){
       ${rejected ? `<div class="field"><label for="apReason">Why are you rejecting? (one reason for the request)</label><textarea class="inp" id="apReason" rows="3" maxlength="500">${esc(a.reason || '')}</textarea></div>` : ''}
       <div class="row job-actions" style="gap:10px"><button class="btn btn-primary btn-lg" ${a.busy ? 'disabled' : ''} onclick="apSubmit('${esc(id)}')">${I.check} ${a.busy ? 'Sending...' : 'Submit decisions'}</button></div>`
     : `<div class="notice info" style="margin-top:12px">${I.info}<div>${d.status === 'processed' ? 'This request has been decided.' : 'This request is not waiting for you now. Only the approver of its current step can decide it.'}</div></div>`;
-  return frame(head + `<div class="card"><div class="tbl-wrap"><table class="tbl no-stack"><thead><tr><th>Item</th><th>Purpose</th><th>Qty</th><th>${d.can_decide ? 'Decision' : ''}</th></tr></thead><tbody>${rows}</tbody></table></div></div>` + bottom);
+  return frame(head + `<div class="card"><div class="tbl-wrap"><table class="tbl no-stack"><thead><tr><th>Item</th><th>Purpose</th><th>Qty</th><th>${d.can_decide ? 'Decision' : ''}</th></tr></thead><tbody>${rows}</tbody></table></div></div>` + bottom + apStockCard(d));
 }
 route('/approve/:batch', viewApprove);
 
@@ -775,15 +861,21 @@ const HELP = [
     'Engineering requests (with the store parts list) are made in the Engineering console.']],
   ['check', 'Approve a request', [
     'An approval e-mail now links to the request in this console. Sign in with your e-mail and password and you land on it. You can also open it from <b>My approvals</b>.',
-    'Approve or reject each item, then <b>Submit decisions</b>. A reason is needed when any item is rejected. Only the approver of the request\'s current step can decide it.']],
+    'Approve or reject each item, then <b>Submit decisions</b>. A reason is needed when any item is rejected. Only the approver of the request\'s current step can decide it.',
+    '<b>Stock of these items</b> (below the request, before and after you decide): what the store has of each item with a store code, its use per week, weeks left, reorder level and order quantity. Point at the small <b>i</b> for what each one means.',
+    'When you submit, you are taken to the <b>whole store</b> of that request (Production > Store or Engineering > Spares), with its items highlighted at the top, so you see all the stock and its status.']],
   ['check', 'My approvals', [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
     '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+  ['box', 'Production store stock', [
+    'Menu > <b>Production store stock</b>: every Production store material (coding fluids, cartridges, ribbons, characters ...) with its stock, use per week, weeks left, reorder level and order quantity.',
+    'Red and orange first: <b>Out of stock</b> and <b>Reorder now</b> are what Production will ask for. Their requests carry the store code (e.g. CF 001), so you can find the material here.',
+    'View only. Tap the small <b>i</b> beside a heading for how a number is worked out.']],
   ['box', 'Spares stock (Engineering store)', [
-    'Menu > <b>Spares stock (Engineering)</b>: every Engineering spare part with its stock now, the level it is reordered at, and when it last came in and went out.',
-    'Pick <b>Reorder</b> or <b>Out of stock</b> to see what needs buying; search by SKU, description, part number or supplier.',
+    'Menu > <b>Spares stock (Engineering)</b>: every Engineering spare part with its stock now, use per week, weeks left, the level it is reordered at (worked out from use) and the usual order quantity.',
+    'Pick <b>Reorder now</b>, <b>Order soon</b> or <b>Out of stock</b> to see what needs buying; search by SKU, description, part number or supplier.',
     'It is view only. Receiving, issuing and counting stay with the store in the Engineering console.']],
   ['layers', 'Long lists', [
     'A list longer than 80 rows shows its first 50, with <b>Show 50 more</b> and <b>Show all</b> under it. It opens faster, mostly on phones.',
@@ -796,7 +888,7 @@ const HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/', 'Spares stock (Engineering store)': '/stock', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/', 'Spares stock (Engineering store)': '/stock', 'Production store stock': '/prd-stock', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')

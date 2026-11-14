@@ -169,8 +169,84 @@
     });
   }
 
+  /* ---------------- 5. the rule behind a number (13 Nov 2026) ----------------
+     oklInfo(text) gives a small (i) button to put beside a column heading, a title or a setting. Tapping it shows the rule
+     and why it is so, in a bubble; tapping elsewhere, Escape or scrolling closes it. A tap on (i) inside a sortable heading
+     does not sort. Lines in the text become lines in the bubble. */
+  // 14 Nov 2026 (user): approving a request takes the manager to the WHOLE store of that request, so all the stock and its
+  // status stay in mind; the request's own items are highlighted at the top (#/store?req=<request>&codes=A,B)
+  window.oklRequestMark = function () {
+    const q = new URLSearchParams(((location.hash || '').split('?')[1]) || ''), r = q.get('req');
+    return r ? { req: r, codes: String(q.get('codes') || '').split(',').map(x => x.trim().toUpperCase()).filter(Boolean) } : null;
+  };
+  window.oklRequestBanner = function (m) {
+    if (!m) return '';
+    const back = (location.pathname.indexOf('/procurement/') >= 0 ? '' : '../procurement/') + '#/approve/' + encodeURIComponent(m.req);
+    const n = m.codes.length;
+    return '<div class="notice info no-print" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div style="flex:1 1 auto">'
+      + 'Request <b>' + esc(m.req) + '</b>: the whole store is below' + (n ? ', with its ' + n + ' item' + (n === 1 ? '' : 's') + ' highlighted at the top.' : '. It asks for nothing that is kept in this store.')
+      + '</div><a class="btn btn-ghost btn-sm" href="' + back + '">Back to the request</a></div>';
+  };
+  window.oklRequestFirst = function (m, code) { return m && m.codes.includes(String(code || '').toUpperCase()) ? 0 : 1; };
+  window.oklInfo = function (text, label) {
+    return '<button type="button" class="okl-info no-print" data-okl-info="' + esc(text) + '" aria-label="' + esc(label || 'How this is worked out') + '">i</button>';
+  };
+  function infoStyle() {
+    if (document.getElementById('oklInfoStyle')) return;
+    const st = document.createElement('style'); st.id = 'oklInfoStyle';
+    st.textContent = '.okl-info{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;min-height:16px;padding:0;margin:0 0 0 4px;'
+      + 'border-radius:50%;border:1px solid currentColor;background:transparent;color:var(--text-3,#6b7280);font:italic 700 10px/1 Georgia,serif;cursor:pointer;vertical-align:middle;opacity:.8}'
+      + '.okl-info:hover,.okl-info:focus{opacity:1;color:var(--brand,#ED6B1F);outline:none}'
+      + '#oklInfoPop{position:absolute;z-index:3000;max-width:320px;background:#fff;color:#1d2329;border:1px solid #d6dbe0;border-radius:8px;'
+      + 'box-shadow:0 8px 24px rgba(0,0,0,.14);padding:10px 12px;font:13px/1.45 system-ui,-apple-system,Segoe UI,Arial,sans-serif;white-space:pre-line;text-align:left;font-weight:400;text-transform:none;letter-spacing:0}'
+      + '@media print{#oklInfoPop{display:none}}'
+      + '.tbl tr.req-item td{background:#FFF7DB}.tbl tr.req-item td:nth-child(2){font-weight:700}';
+    document.head.appendChild(st);
+  }
+  function infoClose() { const p = document.getElementById('oklInfoPop'); if (p) p.remove(); }
+  function infoOpen(btn) {
+    infoClose();
+    const p = document.createElement('div'); p.id = 'oklInfoPop'; p.setAttribute('role', 'tooltip');
+    p.textContent = btn.getAttribute('data-okl-info') || '';
+    document.body.appendChild(p);
+    const r = btn.getBoundingClientRect(), w = Math.min(320, window.innerWidth - 24);
+    p.style.maxWidth = w + 'px';
+    const left = Math.max(12, Math.min(window.scrollX + r.left - 8, window.scrollX + window.innerWidth - p.offsetWidth - 12));
+    let top = window.scrollY + r.bottom + 6;
+    if (r.bottom + p.offsetHeight + 12 > window.innerHeight && r.top > p.offsetHeight + 12) top = window.scrollY + r.top - p.offsetHeight - 6;
+    p.style.left = left + 'px'; p.style.top = top + 'px';
+  }
+  document.addEventListener('click', e => {
+    const b = e.target && e.target.closest ? e.target.closest('.okl-info') : null;
+    if (b) { e.preventDefault(); e.stopPropagation(); const open = document.getElementById('oklInfoPop'); if (open && open.dataset.for === b.dataset.oklInfo) { if (open.dataset.hover === '1') { delete open.dataset.hover; return; } infoClose(); return; } infoOpen(b); const p = document.getElementById('oklInfoPop'); if (p) p.dataset.for = b.dataset.oklInfo; return; }
+    if (!(e.target && e.target.closest && e.target.closest('#oklInfoPop'))) infoClose();
+  }, true);
+  // hover shows it (mouse only); a click keeps it open (phones have no hover)
+  let infoHoverTimer = 0;
+  document.addEventListener('mouseover', e => {
+    const b = e.target && e.target.closest ? e.target.closest('.okl-info') : null;
+    if (!b) return;
+    clearTimeout(infoHoverTimer);
+    const open = document.getElementById('oklInfoPop');
+    if (open && open.dataset.for === b.dataset.oklInfo) return;
+    infoOpen(b); const p = document.getElementById('oklInfoPop'); if (p) { p.dataset.for = b.dataset.oklInfo; p.dataset.hover = '1'; }
+  });
+  document.addEventListener('mouseout', e => {
+    const b = e.target && e.target.closest ? e.target.closest('.okl-info, #oklInfoPop') : null;
+    if (!b) return;
+    clearTimeout(infoHoverTimer);
+    infoHoverTimer = setTimeout(() => {
+      const p = document.getElementById('oklInfoPop');
+      if (p && p.dataset.hover === '1' && !p.matches(':hover') && !document.querySelector('.okl-info:hover')) infoClose();
+    }, 250);
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') infoClose(); });
+  window.addEventListener('scroll', infoClose, { passive: true });
+  window.addEventListener('hashchange', infoClose);
+
   /* ---------------- start ---------------- */
   function start() {
+    safe(infoStyle);
     const b = document.createElement('button'); b.id = 'oklViewBtn'; b.type = 'button'; b.className = 'no-print';
     b.onclick = () => { view = view === 'phone' ? 'laptop' : 'phone'; store.set('okl.view', view); applyView(); };
     document.body.appendChild(b);

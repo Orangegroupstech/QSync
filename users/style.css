@@ -701,6 +701,12 @@ input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
 .tree-name > *{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tree-page{display:none;border-top:1px dashed var(--line-2)}
 .tree-mod.open .tree-page{display:grid}
+.tree-hide,.tree-mod.open .tree-page.tree-hide{display:none}
+.tree-sub{border-top:1px solid var(--line-2);background:var(--surface-2,#fafbfc)}
+.tree-sub .tree-name{padding-left:16px}
+.tree-sub.open .tree-tog svg{transform:rotate(90deg)}
+.tree-mod.open .tree-page.grp-shut{display:none}
+.tree-in .tree-name{padding-left:36px}
 .tree-page .tree-name{padding-left:4px}
 .tree-tog{width:24px;height:24px;display:grid;place-items:center;border:0;background:none;cursor:pointer;color:var(--text-3);padding:0}
 .tree-tog svg{width:14px;height:14px;transition:transform .15s}

@@ -870,7 +870,7 @@ function viewEquipment(){
           <td style="text-align:right">${a.review ? `<span class="badge b-warn" title="${esc(a.notes)}">To check</span>` : ''}${a.status === 'Inactive' ? ' <span class="badge b-slate">Inactive</span>' : ''}</td>
         </tr>`).join('') : `<tr><td colspan="8" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody>
       </table></div>
-      <div class="small muted" style="padding:12px 18px">${rows.length} of ${all.length} shown${rows.length > shown.length ? ' (first ' + shown.length + ')' : ''}. Mirrored to the Maintenance Google Sheet (Equipment tab).</div>
+      <div class="small muted" style="padding:12px 18px">${rows.length} of ${all.length} shown${rows.length > shown.length ? ' (first ' + shown.length + ')' : ''}.</div>
     </div>`,
     bind(){
       const q = $('#eqQ');
@@ -1458,13 +1458,66 @@ async function spRefresh(){ await Promise.all([spLoad(true), SP.moves.receipt &&
                                                SP.handovers && spLoadHandovers(true), SP.counts && spLoadCounts(true)]); }
 const spBySku = sku => (SP.list || []).find(x => x.sku === sku);
 const spLabel = x => x.sku + ' - ' + x.description;
-const spStatusBadge = st => st === 'OK' ? '<span class="badge b-ok">OK</span>' : st === 'Reorder' ? '<span class="badge b-warn">Reorder</span>' : '<span class="badge b-danger">Out of stock</span>';
+// 067 (13 Nov 2026): the reorder level is worked out from use; five statuses, the same colours as the Production store
+const SP_STATUS = [['Out of stock', 'out', 'Out of stock: nothing left.'], ['Reorder now', 'reorder', 'Reorder now: at or below the reorder level.'],
+  ['Order soon', 'soon', 'Order soon: within one more week of use above the reorder level.'], ['Not moving', 'idle', 'Not moving: on the shelf, nothing issued in the weeks looked back. Check it is still needed.'],
+  ['OK', 'ok', 'OK: enough for now.']];
+const spCls = st => (SP_STATUS.find(x => x[0] === st) || [0, 'ok'])[1];
+const spRank = st => { const i = SP_STATUS.findIndex(x => x[0] === st); return i < 0 ? 9 : i; };
+const spStatusBadge = st => `<span class="sb sb-${spCls(st)}">${esc(st)}</span>`;
+const spInfo = (t, l) => window.oklInfo ? window.oklInfo(t, l) : '';
+(function spStyle(){
+  if (document.getElementById('spStyle')) return;
+  const el = document.createElement('style'); el.id = 'spStyle';
+  el.textContent = '.sb{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;font-weight:600;white-space:nowrap;border:1px solid}'
+    + '.sb-out{background:#B3261E;color:#fff;border-color:#B3261E}.sb-reorder{background:#FFE4CC;color:#9A3412;border-color:#FB9F5A}'
+    + '.sb-soon{background:#FEF3C0;color:#7A4A06;border-color:#EBC94A}.sb-ok{background:#E3F3E7;color:#1E6B35;border-color:#A9D8B6}.sb-idle{background:#EEF0F2;color:#4B5563;border-color:#D0D5DB}'
+    + '.tbl tr.st-out td:first-child{box-shadow:inset 4px 0 0 #B3261E}.tbl tr.st-reorder td:first-child{box-shadow:inset 4px 0 0 #EA6A12}'
+    + '.tbl tr.st-soon td:first-child{box-shadow:inset 4px 0 0 #D9A400}.tbl tr.st-ok td:first-child{box-shadow:inset 4px 0 0 #2E8B4A}.tbl tr.st-idle td:first-child{box-shadow:inset 4px 0 0 #9AA3AD}'
+    + '.wl-out,.wl-reorder{color:#B3261E;font-weight:700}.wl-soon{color:#8A5A00;font-weight:700}.trend{font-weight:700;margin-left:3px}.trend.up{color:#B3261E}.trend.down{color:#2E6DB4}'
+    + '.st-why{background:var(--bg-2,#f6f7f9);border:1px solid var(--line-2,#eef0f2);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.55}';
+  document.head.appendChild(el);
+})();
+// the rules in words, with the numbers in use (the settings come with every part, in its "basis")
+function spRules(){
+  const b = ((SP.list || [])[0] || {}).basis || {}, wk = b.weeks || 26, md = b.min_days || 3, lead = b.lead || 4, sf = b.safety == null ? 1 : b.safety, pct = b.pct || 150, tr = b.trend_pct || 33;
+  return {
+    module: 'The spare parts in the store and how many of each are on the shelf.\n'
+      + 'Nobody types the stock: the system starts from the last count, adds what is received and takes away what is issued.\n'
+      + 'A mistake is reversed with a reason, never deleted.',
+    status: SP_STATUS.map(x => x[2]).join('\n') + '\nThe worst come first.',
+    use: 'How many are used in a normal week.\n'
+      + 'Use per week = issued in the last ' + wk + ' weeks / the weeks the part was in stock (weeks it ran out are left out).\n'
+      + 'It needs issues on ' + md + ' or more days; an arrow shows the last 4 weeks are over ' + tr + '% higher (↑) or lower (↓).',
+    left: 'How many weeks the stock on the shelf will last.\nWeeks left = stock / use per week.',
+    reorder: 'When the stock is down to this number, ask for more.\n'
+      + 'Reorder level = use per week x (lead time ' + lead + ' + safety ' + sf + ' weeks), never below the minimum.\n'
+      + 'With too little use, the minimum is the reorder level.',
+    order: 'How many to ask for on a request.\nOrder quantity = reorder level x ' + pct + '%.',
+    min: 'The lowest the reorder level can ever be (until 13 Nov 2026 this was the reorder level).\nWhen there is too little use to work one out, this is the reorder level.',
+    lead: 'How many weeks a delivery takes, from the request to the store.\nEmpty means the default, ' + lead + ' weeks.',
+  };
+}
+function spWhy(x){
+  const b = x.basis || {}, u = x.unit;
+  if (!(+b.issue_days)) return 'Nothing was issued in the last ' + b.weeks + ' weeks: the reorder level is the typed minimum, ' + num(x.min_level) + ' ' + u + '.';
+  const lines = ['Issued ' + num(b.used) + ' ' + u + ' in the last ' + b.weeks + ' weeks, on ' + b.issue_days + ' different day' + (+b.issue_days === 1 ? '' : 's') + '.',
+    'In stock ' + b.in_stock_weeks + ' of those weeks' + (+b.out_weeks ? ' (out of stock about ' + b.out_weeks + ' weeks, left out)' : '') + '.'];
+  if (!x.trusted) return lines.concat(['Fewer than ' + b.min_days + ' issue days: not enough to trust a rate. The reorder level is the typed minimum, ' + num(x.min_level) + ' ' + u + '.']).join('\n');
+  const raw = Math.ceil(x.use_per_week * (+b.lead + +b.safety) - 1e-9);
+  return lines.concat(['Use per week = ' + num(b.used) + ' / ' + b.in_stock_weeks + ' = ' + x.use_per_week + ' ' + u + '.',
+    'Reorder level = ' + x.use_per_week + ' x (' + b.lead + ' lead + ' + b.safety + ' safety weeks) = about ' + raw + (+x.min_level > raw ? ', below the minimum ' + num(x.min_level) + ', so ' + num(x.reorder_level) : '') + ' ' + u + '.',
+    'Order quantity = ' + num(x.reorder_level) + ' x ' + b.pct + '% = ' + num(x.order_qty) + ' ' + u + '.',
+    'Weeks left = ' + num(x.stock) + ' / ' + x.use_per_week + ' = ' + x.weeks_left + '.']).join('\n');
+}
+const spUseCell = x => x.trusted ? `${esc(x.use_per_week)}${x.trend === 'up' ? '<span class="trend up" title="the last 4 weeks are higher">↑</span>' : x.trend === 'down' ? '<span class="trend down" title="the last 4 weeks are lower">↓</span>' : ''}`
+  : +((x.basis || {}).issue_days) ? '<span class="small muted">not enough use</span>' : '<span class="small muted">--</span>';
 function spTabs(cur){
   const n = (SP.handovers || []).length, tabs = [['/spares', 'Inventory'], ['/spares/inbound', 'Inbound'], ['/spares/outbound', 'Outbound'],
     ['/spares/handovers', 'Hand-overs' + (n ? ' (' + n + ')' : '')], ['/spares/counts', 'Weekly count']];
   return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([h, l]) => `<a class="tab ${h === cur ? 'on' : ''}" href="#${h}">${esc(l)}</a>`).join('')}</div>`;
 }
-function spHead(sub, actions){ return pageHead('Spares', sub, actions); }
+function spHead(sub, actions){ return pageHead('Spares', sub + (sub ? ' ' + spInfo(spRules().module, 'How the stock works') : ''), actions); }
 function spWait(cur){
   if (SP.error) return { title:'Spares', crumb:'Store', html: spHead('') + spTabs(cur) + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the spares', esc(SP.error), `<button class="btn btn-primary" onclick="spLoad(true)">Try again</button>`)}</div></div>` };
   return { title:'Spares', crumb:'Store', html: spHead('') + spTabs(cur) + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
@@ -1487,41 +1540,46 @@ document.addEventListener('tablesort', e => { if (e.detail && /^eng-/.test(e.det
 function viewSpares(){
   if (!SP.list) { spLoad(); return spWait('/spares'); }
   if (!SP.handovers) spLoadHandovers();
-  const all = SP.list.filter(x => x.active), rows = sortedList(spFiltered(), 'eng-spares', [x => x.sku, x => x.description, x => x.location, x => +x.stock, x => +x.reorder_level, x => x.status,
-    x => x.common_use ? 'Common use' : (x.used_on_names || []).join(', ') || x.used_for_old || '', x => x.last_count_at ? x.last_count_at.slice(0, 10) : '']), shown = rows.slice(0, 300);
-  const out = all.filter(x => x.status === 'Out of stock').length, reo = all.filter(x => x.status === 'Reorder').length;
+  const mark = window.oklRequestMark ? window.oklRequestMark() : null;
+  const worst = spFiltered().slice().sort((a, b) => (b.active - a.active) || (mark ? window.oklRequestFirst(mark, a.sku) - window.oklRequestFirst(mark, b.sku) : 0) || spRank(a.status) - spRank(b.status) || a.sku.localeCompare(b.sku));
+  const all = SP.list.filter(x => x.active), rows = sortedList(worst, 'eng-spares', [x => spRank(x.status), x => x.sku, x => x.description, x => +x.stock,
+    x => x.trusted ? +x.use_per_week : -1, x => x.weeks_left == null ? 9999 : +x.weeks_left, x => +x.reorder_level, x => +x.order_qty]), shown = rows.slice(0, 300);
+  const out = all.filter(x => x.status === 'Out of stock').length, reo = all.filter(x => x.status === 'Reorder now').length, soon = all.filter(x => x.status === 'Order soon').length;
+  const R = spRules();
   const value = all.reduce((t, x) => t + (+x.value || 0), 0), noLoc = all.filter(x => !x.location).length, never = all.filter(x => !x.last_count_at).length;
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
   return {
     title:'Spares', crumb:'Store', keepScroll: true,
-    html: spHead('Engineering spare parts with live stock. Stock changes only through receipts, issues and counts.', dlButton("spDownload('inventory')") + spActions()) + spTabs('/spares') + `
+    html: spHead('Engineering spare parts with live stock. Stock changes only through receipts, issues and counts.', dlButton("spDownload('inventory')") + spActions()) + spTabs('/spares')
+      + (mark ? window.oklRequestBanner(mark) : '') + `
     <div class="grid g4" style="margin-bottom:14px">
       <div class="stat"><div class="lbl">Parts</div><div class="val">${all.length}</div><div class="meta">in the catalogue</div></div>
       <div class="stat"><div class="lbl">Stock value</div><div class="val">&#8358;${money(Math.round(value))}</div><div class="meta">where a price is known</div></div>
-      <div class="stat"><div class="lbl">Out of stock / reorder</div><div class="val">${out} / ${reo}</div><div class="meta">at or below the reorder level</div></div>
+      <div class="stat"><div class="lbl">Out of stock / reorder now</div><div class="val">${out} / ${reo}</div><div class="meta">${soon} more to order soon</div></div>
       <div class="stat"><div class="lbl">Up to standard</div><div class="val">${all.filter(x => x.up_to_standard).length} of ${all.length}</div><div class="meta">machines and location known · ${never} never counted</div></div>
     </div>
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
         <div class="search filter-search"><span class="ic">${I.search}</span><input class="inp" id="spQ" style="padding-left:34px;border-radius:20px" placeholder="SKU, part, brand, machine" value="${esc(SP.q)}"></div>
         <select class="inp" id="spType" style="width:auto">${opt('', SP.type, 'All types')}${Object.entries(SP_TYPES).map(([k, v]) => opt(k, SP.type, k + ' ' + v)).join('')}</select>
-        <select class="inp" id="spStatus" style="width:auto">${opt('', SP.status, 'Any stock')}${opt('Out of stock', SP.status, 'Out of stock')}${opt('Reorder', SP.status, 'Reorder')}${opt('OK', SP.status, 'OK')}</select>
+        <select class="inp" id="spStatus" style="width:auto">${opt('', SP.status, 'Any status')}${SP_STATUS.map(x => opt(x[0], SP.status, x[0] + ' (' + all.filter(y => y.status === x[0]).length + ')')).join('')}</select>
         <label class="row small" style="gap:6px"><input type="checkbox" id="spNoLoc" ${SP.noLoc ? 'checked' : ''}> No location</label>
       </div></div>
       <div class="tbl-wrap"><table class="tbl" data-sort-key="eng-spares">
-        <thead><tr><th>SKU</th><th>Part</th><th>Location</th><th style="text-align:right">Stock</th><th style="text-align:right">Reorder at</th><th>Status</th><th>Used on</th><th>Last counted</th></tr></thead>
-        <tbody>${shown.length ? shown.map(x => `<tr class="clickable" onclick="spOpen('${esc(x.sku)}')">
-          <td class="mono small" data-label="SKU">${esc(x.sku)}</td>
-          <td data-label="Part"><div class="strong">${esc(x.description)}</div><div class="tiny muted">${esc([x.part_number, x.brand].filter(Boolean).join(' - '))}</div></td>
-          <td data-label="Location">${x.location ? esc(x.location) : '<span class="badge b-warn">not set</span>'}</td>
-          <td data-label="Stock" style="text-align:right" class="strong">${num(x.stock)} <span class="small muted">${esc(x.unit)}</span>${+x.waiting ? `<div class="tiny muted">${num(x.waiting)} waiting hand-over</div>` : ''}</td>
-          <td data-label="Reorder at" style="text-align:right">${num(x.reorder_level)}</td>
+        <thead><tr><th>Status ${spInfo(R.status)}</th><th>SKU</th><th>Part</th><th style="text-align:right">Stock</th><th style="text-align:right">Use / week ${spInfo(R.use)}</th>
+          <th style="text-align:right">Weeks left ${spInfo(R.left)}</th><th style="text-align:right">Reorder at ${spInfo(R.reorder)}</th><th style="text-align:right">Order qty ${spInfo(R.order)}</th></tr></thead>
+        <tbody>${shown.length ? shown.map(x => `<tr class="clickable st-${spCls(x.status)}${mark && mark.codes.includes(x.sku) ? ' req-item' : ''}" onclick="spOpen('${esc(x.sku)}')">
           <td data-label="Status">${spStatusBadge(x.status)}${x.active ? '' : ' <span class="badge b-slate">Off</span>'}</td>
-          <td data-label="Used on" class="small">${x.common_use ? 'Common use' : esc((x.used_on_names || []).join(', ') || (x.used_for_old ? '(old: ' + x.used_for_old + ')' : '--'))}</td>
-          <td data-label="Last counted" class="small">${x.last_count_at ? esc(x.last_count_at.slice(0, 10)) : '<span class="muted">never</span>'}</td>
+          <td class="mono small" data-label="SKU">${esc(x.sku)}</td>
+          <td data-label="Part"><div class="strong">${esc(x.description)}</div><div class="tiny muted">${esc([x.part_number, x.brand].filter(Boolean).join(' - '))}${x.location ? '' : ' <span class="badge b-warn">location not set</span>'}</div></td>
+          <td data-label="Stock" style="text-align:right" class="strong">${num(x.stock)} <span class="small muted">${esc(x.unit)}</span>${+x.waiting ? `<div class="tiny muted">${num(x.waiting)} waiting hand-over</div>` : ''}</td>
+          <td data-label="Use / week" style="text-align:right">${spUseCell(x)}</td>
+          <td data-label="Weeks left" style="text-align:right">${x.weeks_left == null ? '<span class="small muted">--</span>' : `<span class="wl-${spCls(x.status)}">${esc(x.weeks_left)}</span>`}</td>
+          <td data-label="Reorder at" style="text-align:right">${num(x.reorder_level)}${x.trusted ? '' : ' <span class="tiny muted">min</span>'}</td>
+          <td data-label="Order qty" style="text-align:right">${+x.order_qty ? num(x.order_qty) : '--'}</td>
         </tr>`).join('') : `<tr><td colspan="8" class="muted" style="padding:16px">Nothing matches.</td></tr>`}</tbody>
       </table></div>
-      <div class="small muted" style="padding:12px 18px">${rows.length} of ${SP.list.length} shown${rows.length > shown.length ? ' (first ' + shown.length + ')' : ''}. Mirrored to the Spares Google Sheet.</div>
+      <div class="small muted" style="padding:12px 18px">${rows.length} of ${SP.list.length} shown${rows.length > shown.length ? ' (first ' + shown.length + ')' : ''}.</div>
     </div>`,
     bind(){
       const q = $('#spQ'); if (q) q.addEventListener('input', debounce(e => { SP.q = e.target.value; render(); const el = $('#spQ'); if (el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 200));
@@ -1536,8 +1594,9 @@ route('/spares', viewSpares);
 function spDownload(what){
   const mv = m => [m.entry, m.date, m.sku, m.description, (m.reversal ? -1 : 1) * +m.qty, m.unit];
   const sheets = {
-    inventory: () => [{ name: 'Inventory', head: ['SKU', 'Part', 'Part number', 'Brand', 'Supplier', 'Location', 'Stock', 'Unit', 'Reorder at', 'Status', 'Unit price (NGN)', 'Value (NGN)', 'Used on', 'Last counted', 'Active'],
-      rows: spFiltered().map(x => [x.sku, x.description, x.part_number, x.brand, x.supplier, x.location, +x.stock, x.unit, +x.reorder_level, x.status, x.unit_price == null ? '' : +x.unit_price,
+    inventory: () => [{ name: 'Inventory', head: ['SKU', 'Part', 'Part number', 'Brand', 'Supplier', 'Location', 'Stock', 'Unit', 'Use per week', 'Weeks left', 'Minimum', 'Reorder at', 'Order qty', 'Status', 'Unit price (NGN)', 'Value (NGN)', 'Used on', 'Last counted', 'Active'],
+      rows: spFiltered().map(x => [x.sku, x.description, x.part_number, x.brand, x.supplier, x.location, +x.stock, x.unit, x.trusted ? +x.use_per_week : 'not enough use', x.weeks_left == null ? '' : +x.weeks_left,
+        +x.min_level, +x.reorder_level, +x.order_qty, x.status, x.unit_price == null ? '' : +x.unit_price,
         x.value == null ? '' : +x.value, x.common_use ? 'Common use' : (x.used_on_names || []).join(', '), x.last_count_at ? x.last_count_at.slice(0, 10) : '', x.active ? 'yes' : 'no']) }],
     receipt: () => [{ name: 'Inbound', head: ['Entry', 'Date', 'SKU', 'Part', 'Qty', 'Unit', 'Amount (NGN)', 'Invoice', 'Supplier', 'Received by', 'Note'],
       rows: (SP.moves.receipt || []).map(m => mv(m).concat([m.amount == null ? '' : (m.reversal ? -1 : 1) * +m.amount, m.invoice_no, m.supplier, m.received_by_name, m.reason || m.note])) }],
@@ -1636,12 +1695,15 @@ function plCheck(L, opt){
 
 function spOpen(sku){
   const x = sku ? spBySku(sku) : null, isNew = !x, canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
-  const v = x || { description: '', part_number: '', brand: '', supplier: '', unit: 'pcs', location: '', reorder_level: 0, used_on: [], common_use: false, active: true, notes: '' };
+  const v = x || { description: '', part_number: '', brand: '', supplier: '', unit: 'pcs', location: '', min_level: 0, lead_time_weeks: '', used_on: [], common_use: false, active: true, notes: '' };
+  const R = spRules(), facts = isNew ? '' : `<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">${spStatusBadge(x.status)}
+      <span class="small">Stock <b>${num(x.stock)} ${esc(x.unit)}</b>${x.weeks_left != null ? ' · ' + esc(x.weeks_left) + ' weeks left' : ''} · reorder at <b>${num(x.reorder_level)}</b> · order <b>${+x.order_qty ? num(x.order_qty) : '--'}</b></span></div>
+    <div class="st-why" style="margin-bottom:12px"><b>How these numbers were worked out</b> ${spInfo(R.reorder)}<div style="white-space:pre-line;margin-top:4px">${esc(spWhy(x))}</div></div>`;
   const usedNames = (v.used_on || []).map(c => { const a = (EQ.list || []).find(e => e.code === c); return a ? a.name + ' (' + c + ')' : c; });
   openModal({
     title: isNew ? 'Add a part' : v.sku + ' - ' + v.description, size:'wide',
     sub: isNew ? 'The SKU is given automatically from the type.' : (SP_TYPES[v.sku.slice(0, 2)] + ' - stock ' + num(v.stock) + ' ' + v.unit + (v.unit_price ? ', last price NGN ' + money(v.unit_price) : '')),
-    body: `<form novalidate>
+    body: facts + `<form novalidate>
       <div class="grid g2">
         ${isNew ? `<div class="field"><label for="spPrefix">Type</label><select class="inp" id="spPrefix">${Object.entries(SP_TYPES).map(([k, t]) => `<option value="${k}">${k} - ${t}</option>`).join('')}</select></div>` : ''}
         <div class="field"><label for="spDesc">Part</label><input class="inp" id="spDesc" maxlength="160" value="${esc(v.description)}" ${dis}></div>
@@ -1650,7 +1712,8 @@ function spOpen(sku){
         <div class="field"><label for="spSup">Supplier</label><input class="inp" id="spSup" maxlength="80" value="${esc(v.supplier || '')}" ${dis}></div>
         <div class="field"><label for="spUnit">Unit</label><select class="inp" id="spUnit" ${dis}>${SP_UNITS.map(u => `<option ${u === v.unit ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
         <div class="field"><label for="spLoc">Location</label>${spLocSelect('spLoc', v.location, dis)}</div>
-        <div class="field"><label for="spReo">Reorder level</label><input class="inp" id="spReo" type="number" min="0" step="1" value="${num(v.reorder_level)}" ${dis}></div>
+        <div class="field"><label for="spReo">Minimum (reorder level floor) ${spInfo(R.min)}</label><input class="inp" id="spReo" type="number" min="0" step="1" value="${num(v.min_level)}" ${dis}></div>
+        <div class="field"><label for="spLead">Lead time, weeks ${spInfo(R.lead)}</label><input class="inp" id="spLead" type="number" min="1" max="52" step="1" placeholder="default" value="${esc(v.lead_time_weeks == null ? '' : v.lead_time_weeks)}" ${dis}></div>
       </div>
       <div class="field"><label>Used on</label>
         <label class="row small" style="gap:6px;margin-bottom:6px"><input type="checkbox" id="spCommon" ${v.common_use ? 'checked' : ''} ${dis}> Common use (fits anything)</label>
@@ -1676,14 +1739,15 @@ function spOpen(sku){
         clearErrors(w);
         const spare = { sku: isNew ? '' : v.sku, prefix: isNew ? $('#spPrefix', w).value : '', description: $('#spDesc', w).value.trim(), part_number: $('#spPn', w).value.trim(),
           brand: $('#spBrand', w).value.trim(), supplier: $('#spSup', w).value.trim(), unit: $('#spUnit', w).value, location: $('#spLoc', w).value.trim(),
-          reorder_level: $('#spReo', w).value.trim() || '0', common_use: $('#spCommon', w).checked, used_on: $$('[data-used]', w).map(e => e.dataset.used),
+          min_level: $('#spReo', w).value.trim() || '0', lead_time_weeks: $('#spLead', w).value.trim(), common_use: $('#spCommon', w).checked, used_on: $$('[data-used]', w).map(e => e.dataset.used),
           active: isNew ? true : $('#spActive', w).checked, notes: $('#spNotes', w).value.trim() };
         if (spare.description.length < 2 || letters(spare.description) < 2) return setErr('spDesc', 'Describe the part in words, not only a number.', w);
         if (spare.part_number && !/[A-Za-z0-9]/.test(spare.part_number)) return setErr('spDesc', 'The part number needs letters or digits (leave it empty if there is none).', w);
         if (spare.brand && letters(spare.brand) < 1) return setErr('spDesc', 'The brand needs letters, not only a number (leave it empty if not known).', w);
         if (spare.supplier && letters(spare.supplier) < 2) return setErr('spDesc', 'The supplier needs a name, not only a number (leave it empty if not known).', w);
         if (!spare.location) return setErr('spDesc', 'Choose the location.', w);
-        if (!/^\d+(\.\d{1,2})?$/.test(spare.reorder_level) || +spare.reorder_level > 10000) return setErr('spDesc', 'The reorder level must be a number from 0 to 10 000.', w);
+        if (!/^\d+(\.\d{1,2})?$/.test(spare.min_level) || +spare.min_level > 10000) return setErr('spDesc', 'The minimum must be a number from 0 to 10 000.', w);
+        if (spare.lead_time_weeks && !(/^\d+$/.test(spare.lead_time_weeks) && +spare.lead_time_weeks >= 1 && +spare.lead_time_weeks <= 52)) return setErr('spDesc', 'The lead time is 1 to 52 weeks (empty = the default).', w);
         if (!isNew && v.unit && spare.unit !== v.unit) {
           if (!(await confirmDialog('Change the unit', `Change the unit of <b>${esc(v.sku)}</b> from <b>${esc(v.unit)}</b> to <b>${esc(spare.unit)}</b>? The stock and the past moves keep their numbers (${num(v.stock || 0)} ${esc(v.unit)} becomes ${num(v.stock || 0)} ${esc(spare.unit)}).`, 'Change the unit'))) return;
           spare.confirm_unit = true;
@@ -2719,7 +2783,7 @@ function viewJobsHistory(){
         <td data-label="Work" class="small">${j.failure_category ? `<b>${esc(j.failure_category)}</b>: ` : ''}${esc(j.work_done || j.cancel_reason || '')}</td>
         <td data-label="Technicians" class="small">${esc((j.technicians || []).map(t => t.name).join(', '))}</td><td data-label="Time" class="mono small">${j.labour_minutes != null ? dur(j.labour_minutes) : ''}</td>
         <td data-label="Status">${jbBadge(j)}</td></tr>`).join('') || `<tr><td colspan="7" class="muted" style="padding:16px">No jobs in this period.</td></tr>`}</tbody></table></div>
-      <div class="small muted" style="padding:12px 18px">${jbHistShown().length} of ${h.length} jobs. Mirrored to the Maintenance Google Sheet (Breakdowns tab).</div></div>` };
+      <div class="small muted" style="padding:12px 18px">${jbHistShown().length} of ${h.length} jobs.</div></div>` };
 }
 
 function jbHistoryDownload(){
@@ -3183,8 +3247,7 @@ function viewOutdoor(){
         <td data-label="Superheat" style="text-align:right">${cell(u.superheat, 8, 12)}${u.t1 != null ? `<div class="tiny muted">${num(u.t1)} - ${num(u.evap)}</div>` : ''}</td>
         <td data-label="Subcooling" style="text-align:right">${cell(u.subcooling, 5, 10)}${u.t2 != null ? `<div class="tiny muted">${num(u.cond)} - ${num(u.t2)}</div>` : ''}</td>
         <td data-label="Checked" class="small">${u.checked_on ? esc(u.checked_on) + `<div class="tiny muted">${esc(u.checked_by || '')}${u.timing && u.timing !== 'On time' ? ' · ' + esc(u.timing) : ''}</div>` : ''}</td>
-        <td data-label="Status">${badge(u.status)}</td></tr>`).join('')}</tbody></table></div>
-      <div class="small muted" style="padding:12px 18px">Mirrored to the Maintenance Google Sheet (Outdoor Units tab).</div></div>` };
+        <td data-label="Status">${badge(u.status)}</td></tr>`).join('')}</tbody></table></div></div>` };
 }
 route('/outdoor', viewOutdoor);
 function odDownload(){
@@ -3483,6 +3546,12 @@ const HELP = [
   ['layers', 'Weekend watch', [
     'Every Friday at 11:00 the Engineering Manager gets the machines with the most breakdown trouble that week, ranked, with what to look at over the weekend. The technicians are copied.',
     'Any time: Periodic checks > Weekend watch.']],
+  ['box', 'Spares: use per week and reorder level', [
+    'Spares > <b>Inventory</b> shows each part\'s <b>use per week</b>, <b>weeks left</b>, <b>reorder level</b> and <b>order quantity</b>. Tap the small <b>i</b> beside a heading for the rule and why.',
+    'Use per week = what was issued in the last 26 weeks / the weeks the part was in stock. Fewer than 3 issue days: "not enough use".',
+    'Reorder level = use per week x (lead time + safety weeks), never below the part\'s <b>minimum</b> (the reorder level typed until now). Order quantity = reorder level x 1.5.',
+    'Status: <span class="sb sb-out">Out of stock</span> <span class="sb sb-reorder">Reorder now</span> <span class="sb sb-soon">Order soon</span> <span class="sb sb-ok">OK</span> <span class="sb sb-idle">Not moving</span>. The worst come first.',
+    'Tap a part for how its own numbers were worked out. A part can have its own lead time. The numbers are in Settings.']],
   ['box', 'Parts: receive, issue, new names', [
     'Receive parts: pick the parts from the list. A part not in the catalogue: <b>A part not in the catalogue</b>, type its name, type and unit. It gets the next code (e.g. MP 671), shown before you save: pick it by that code next time.',
     'Issue for equipment not in the list: tick <b>Other</b> and name it. It gets a code (OTH-004...): pick it from the list next time.',
@@ -3514,7 +3583,7 @@ const HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const HELP_PAGE = { 'A call from the floor (live)': '/jobs', 'A fix or a PM without a call': '/jobs', 'Who worked on it': '/jobs', 'Cancelling a job': '/jobs', 'Periodic checks': '/checks', 'Weekend watch': '/jobs', 'Parts: receive, issue, new names': '/spares', 'Requests (manager and storekeeper)': () => canRequest(), 'AHU temperature log': '/ahu', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_PAGE = { 'A call from the floor (live)': '/jobs', 'A fix or a PM without a call': '/jobs', 'Who worked on it': '/jobs', 'Cancelling a job': '/jobs', 'Periodic checks': '/checks', 'Weekend watch': '/jobs', 'Spares: use per week and reorder level': '/spares', 'Parts: receive, issue, new names': '/spares', 'Requests (manager and storekeeper)': () => canRequest(), 'AHU temperature log': '/ahu', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task. Ask the Engineering Manager if something is not clear.')
