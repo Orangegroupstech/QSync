@@ -130,8 +130,8 @@ function stRules(){
     min: 'The lowest the reorder level can ever be.\nWhen there is too little use to work one out, this is the reorder level.',
     lead: 'How many weeks a delivery takes, from the request to the store.\nEmpty means the default, ' + lead + ' weeks.',
     usedOn: 'The printers, lines or machines this material is used on, or Common use.\nEach issue names one, so the use can be seen per line.',
-    receipt: 'Record what arrived, against its procurement request line, so the request shows it was delivered.\n'
-      + 'With no request, give the supplier and the invoice or delivery note number.',
+    receipt: 'Record what arrived in the store, so the stock goes up.\n'
+      + 'Under each material, the open requests it could be for are shown: confirm the right one, and Procurement sees it as received.\nA request comes off the list when it has all arrived, or when you tick "Nothing more is coming".',
   };
 }
 // how one material's numbers were worked out, step by step (the item page)
@@ -173,7 +173,7 @@ const stDl = what => `<button class="btn btn-ghost" onclick="stDownload('${what}
 function stFiltered(){
   const q = ST.q.trim().toLowerCase(), mark = window.oklRequestMark ? window.oklRequestMark() : null;
   return stItems().filter(x => (!ST.status || x.status === ST.status) && (!ST.type || x.type === ST.type)
-    && (!q || [x.code, x.name, x.part_number, x.brand, x.supplier, x.location, stUsedText(x), x.type_name].join(' ').toLowerCase().includes(q)))
+    && (!q || [x.code, x.name, x.part_number, x.brand, x.location, stUsedText(x), x.type_name].join(' ').toLowerCase().includes(q)))
     .sort((a, b) => (b.active - a.active) || (mark ? window.oklRequestFirst(mark, a.code) - window.oklRequestFirst(mark, b.code) : 0)
       || stRank(a.status) - stRank(b.status) || a.code.localeCompare(b.code));
 }
@@ -190,7 +190,6 @@ function viewStore(){
   if (!ST.data) { stLoad(); return stWait('/store'); }
   const R = stRules(), all = stItems().filter(x => x.active), rows = stFiltered(), mark = window.oklRequestMark ? window.oklRequestMark() : null;
   const n = s => all.filter(x => x.status === s).length;
-  const value = all.reduce((t, x) => t + (+x.value || 0), 0);
   const types = (ST.data.types || []).filter(t => t.items > 0);
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
   const chips = `<div class="st-chips">${[['', 'All', all.length]].concat(ST_STATUS.map(s => [s[0], s[0], n(s[0])]).filter(c => c[2] > 0))
@@ -203,7 +202,7 @@ function viewStore(){
       <div class="stat"><div class="lbl">Materials</div><div class="val">${all.length}</div><div class="meta">${types.map(t => esc(t.prefix + ' ' + t.name)).join(' · ')}</div></div>
       <div class="stat"><div class="lbl">To order now</div><div class="val">${n('Out of stock') + n('Reorder now')}</div><div class="meta">${n('Out of stock')} out of stock, ${n('Reorder now')} at the reorder level</div></div>
       <div class="stat"><div class="lbl">Order soon</div><div class="val">${n('Order soon')}</div><div class="meta">within a week of the reorder level</div></div>
-      <div class="stat"><div class="lbl">Stock value</div><div class="val">&#8358;${stMoney(Math.round(value))}</div><div class="meta">where a price is known</div></div>
+      <div class="stat"><div class="lbl">Count needed</div><div class="val">${n('Count needed')}</div><div class="meta">never counted, so the stock is not known yet</div></div>
     </div>
     ${chips}
     <div class="card">
@@ -247,13 +246,13 @@ function stLoadSheetJS(){
 async function stDownload(what){
   const mv = m => [m.entry, m.date, m.code, m.name, (m.reversal ? -1 : 1) * +m.qty, m.unit];
   const sh = {
-    stock: () => ({ name: 'Stock', head: ['Status', 'Code', 'Material', 'Type', 'Part number', 'Brand', 'Unit', 'Stock', 'Use per week', 'Trend', 'Weeks left', 'Minimum', 'Reorder level', 'Order quantity', 'Location', 'Used on', 'Last supplier', 'Unit price (NGN)', 'Last received', 'Last issued', 'Last counted'],
+    stock: () => ({ name: 'Stock', head: ['Status', 'Code', 'Material', 'Type', 'Part number', 'Brand', 'Unit', 'Stock', 'Use per week', 'Trend', 'Weeks left', 'Minimum', 'Reorder level', 'Order quantity', 'Location', 'Used on', 'Last received', 'Last issued', 'Last counted'],
       rows: stFiltered().map(x => [x.status, x.code, x.name, x.type_name, x.part_number, x.brand, x.unit, x.stock_known ? +x.stock : 'not known', x.trusted ? +x.use_per_week : 'not enough use', x.trend || '',
-        x.weeks_left == null ? '' : +x.weeks_left, +x.min_level, +x.reorder_level, +x.order_qty, x.location, stUsedText(x), x.supplier, x.unit_price == null ? '' : +x.unit_price, x.last_in, x.last_out, x.last_count_at ? x.last_count_at.slice(0, 10) : '']) }),
-    receipt: () => ({ name: 'Received', head: ['Entry', 'Date', 'Code', 'Material', 'Qty', 'Unit', 'Request', 'Supplier', 'Invoice / delivery note', 'Received by', 'Note'],
-      rows: (ST.moves.receipt || []).map(m => mv(m).concat([m.request_ref, m.supplier, m.invoice_no, m.received_by_name, m.reason || m.note])) }),
-    issue: () => ({ name: 'Issued', head: ['Entry', 'Date', 'Code', 'Material', 'Qty', 'Unit', 'Used on', 'Collected by', 'Note'],
-      rows: (ST.moves.issue || []).map(m => mv(m).concat([m.used_on_name || m.purpose_text, m.collected_by_name, m.reason || m.note])) }),
+        x.weeks_left == null ? '' : +x.weeks_left, +x.min_level, +x.reorder_level, +x.order_qty, x.location, stUsedText(x), x.last_in, x.last_out, x.last_count_at ? x.last_count_at.slice(0, 10) : '']) }),
+    receipt: () => ({ name: 'Received', head: ['Entry', 'Date', 'Code', 'Material', 'Qty', 'Unit', 'Request', 'Received by', 'Note'],
+      rows: (ST.moves.receipt || []).map(m => mv(m).concat([m.request_ref, m.received_by_name, m.reason || m.note])) }),
+    issue: () => ({ name: 'Issued', head: ['Entry', 'Date', 'Code', 'Material', 'Qty', 'Unit', 'Used on', 'Note'],
+      rows: (ST.moves.issue || []).map(m => mv(m).concat([m.used_on_name || m.purpose_text, m.reason || m.note])) }),
   }[what]();
   try {
     const X = await stLoadSheetJS(), wb = X.utils.book_new(), ws = X.utils.aoa_to_sheet([sh.head].concat(sh.rows.map(r => r.map(v => v == null ? '' : v))));
@@ -294,7 +293,7 @@ function stOpen(code){
       <div class="stat"><div class="lbl">Reorder at</div><div class="val">${stNum(x.reorder_level)}</div><div class="meta">${x.trusted ? 'worked out from use' : 'the typed minimum'}</div></div>
       <div class="stat"><div class="lbl">Order quantity</div><div class="val">${+x.order_qty ? stNum(x.order_qty) : '--'}</div><div class="meta">what "Request more" asks for</div></div></div>
     <div class="st-why" style="margin-bottom:12px"><b>How these numbers were worked out</b> ${stInfo(R.reorder)}<div style="white-space:pre-line;margin-top:4px">${esc(stWhy(x))}</div></div>
-    <div class="small muted" style="margin-bottom:12px">Last supplier ${esc(x.supplier || 'not known')}${x.unit_price ? ' at NGN ' + stMoney(x.unit_price) : ''} · last received ${esc(x.last_in || 'never')} · last issued ${esc(x.last_out || 'never')} · last counted ${esc(x.last_count_at ? x.last_count_at.slice(0, 10) : 'never')}</div>`;
+    <div class="small muted" style="margin-bottom:12px">Last received ${esc(x.last_in || 'never')} · last issued ${esc(x.last_out || 'never')} · last counted ${esc(x.last_count_at ? x.last_count_at.slice(0, 10) : 'never')}</div>`;
   openModal({
     title: isNew ? 'Add a material' : x.code + ' - ' + x.name, size:'wide',
     sub: isNew ? 'The code is given by the system from the type.' : (x.part_number ? 'Part number ' + x.part_number : ''),
@@ -363,27 +362,21 @@ function stStoreForRequests(){
   return stItems().filter(x => x.active).map(x => ({ code: x.code, name: x.name, part_number: x.part_number, brand: x.brand, unit: x.unit, category: x.category, stock: x.stock_known ? x.stock : null, order_qty: x.order_qty }));
 }
 
-/* ---- several materials at once: one line per material (code, quantity, and on a receipt the price and request) */
-const stLnNew = code => { const it = code ? stByCode(code) : null; return { text: it ? stLabel(it) : '', code: it ? it.code : '', qty: '', price: it && it.unit_price ? stNum(it.unit_price) : '', req: '' }; };
+/* ---- several materials at once: one line per material (code and quantity). 14 Nov 2026 (user): no prices, suppliers or requests here */
+const stLnNew = code => { const it = code ? stByCode(code) : null; return { text: it ? stLabel(it) : '', code: it ? it.code : '', qty: '' }; };
 function stDetail(it, typed){
   if (!it) return String(typed || '').trim() ? '<span style="color:var(--danger)">Not in the store: pick it from the list.</span>' : '';
   return `<b>${esc(it.name)}</b>${it.part_number ? ' · ' + esc(it.part_number) : ''} · ${it.stock_known ? 'in stock ' + stNum(it.stock) + ' ' + esc(it.unit) : 'stock not known'}${it.location ? ' · ' + esc(it.location) : ''}`;
 }
-function stReqOptions(code, cur){
-  const rows = (ST.requests || []).filter(r => !code || !r.code || r.code === code);
-  return `<option value="">No request (give the supplier and invoice above)</option>` + rows.map(r => `<option value="${r.id}" ${String(cur) === String(r.id) ? 'selected' : ''}>${esc((r.item_id || 'request') + ' · ' + r.material + ' · ' + (r.qty == null ? '' : r.qty + ' asked') + (+r.received ? ', ' + r.received + ' received' : '') + (r.po_number ? ' · PO ' + r.po_number : '') + (r.vendor ? ' · ' + r.vendor : ''))}</option>`).join('');
-}
 function stLnRows(L, opt){
   return L.map((l, i) => `<div class="pl-row">
     <div class="pl-part"><input class="inp" data-ln-code="${i}" list="${opt.id}Codes" value="${esc(l.text)}" placeholder="Type the code or the material" aria-label="Material ${i + 1}">
-      <div class="tiny muted" data-ln-info="${i}">${stDetail(stByCode(l.code), l.text)}</div>
-      ${opt.receipt ? `<select class="inp" data-ln-req="${i}" style="margin-top:6px" aria-label="Request ${i + 1}">${stReqOptions(l.code, l.req)}</select>` : ''}</div>
+      <div class="tiny muted" data-ln-info="${i}">${stDetail(stByCode(l.code), l.text)}</div>${opt.sug ? opt.sug.slot(l, stSugInfo) : ''}</div>
     <input class="inp pl-qty" type="number" min="0" step="any" data-ln-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
-    ${opt.receipt ? `<input class="inp pl-price" type="number" min="0" step="any" data-ln-price="${i}" value="${esc(l.price)}" placeholder="Unit price" aria-label="Unit price ${i + 1}">` : ''}
     <button type="button" class="btn btn-ghost btn-sm" data-ln-rm="${i}" ${L.length === 1 ? 'disabled' : ''} aria-label="Remove line ${i + 1}">${I.x}</button></div>`).join('');
 }
 function stLnHtml(L, opt){
-  return `<div class="pl" id="${opt.id}"><div class="pl-head tiny muted"><span class="pl-part">Material${opt.receipt ? ' and its request' : ''}</span><span class="pl-qty">Quantity</span>${opt.receipt ? '<span class="pl-price">Unit price (NGN, optional)</span>' : ''}<span style="width:34px"></span></div>
+  return `<div class="pl" id="${opt.id}"><div class="pl-head tiny muted"><span class="pl-part">Material</span><span class="pl-qty">Quantity</span><span style="width:34px"></span></div>
     <div data-ln-rows>${stLnRows(L, opt)}</div>
     <button type="button" class="btn btn-ghost btn-sm" data-ln-add style="margin-top:6px">${I.plus} Add another material</button>
     <datalist id="${opt.id}Codes">${stItems().filter(x => x.active).map(x => `<option value="${esc(stLabel(x))}">`).join('')}</datalist></div>`;
@@ -396,13 +389,10 @@ function stLnBind(root, L, opt){
       const it = stByCode(l.code);
       if (e && e.type === 'change' && it && el.value.trim() !== stLabel(it)) el.value = stLabel(it);
       l.text = el.value;
-      const pr = $(`[data-ln-price="${i}"]`, box); if (it && pr && !pr.value && it.unit_price) { pr.value = stNum(it.unit_price); l.price = pr.value; }
-      const rq = $(`[data-ln-req="${i}"]`, box); if (rq) rq.innerHTML = stReqOptions(l.code, l.req);
-      $(`[data-ln-info="${i}"]`, box).innerHTML = stDetail(it, el.value); }; });
-    $$('[data-ln-qty]', box).forEach(el => { el.oninput = () => { L[+el.dataset.lnQty].qty = el.value; }; });
-    $$('[data-ln-price]', box).forEach(el => { el.oninput = () => { L[+el.dataset.lnPrice].price = el.value; }; });
-    $$('[data-ln-req]', box).forEach(el => { el.onchange = () => { L[+el.dataset.lnReq].req = el.value; }; });
-    $$('[data-ln-rm]', box).forEach(el => { el.onclick = () => { L.splice(+el.dataset.lnRm, 1); rows.innerHTML = stLnRows(L, opt); wire(); }; });
+      $(`[data-ln-info="${i}"]`, box).innerHTML = stDetail(it, el.value);
+      if (opt.sug) opt.sug.refresh(box, l); }; });
+    $$('[data-ln-qty]', box).forEach(el => { el.oninput = () => { const l = L[+el.dataset.lnQty]; l.qty = el.value; if (opt.sug) opt.sug.refresh(box, l); }; });
+    $$('[data-ln-rm]', box).forEach(el => { el.onclick = () => { L.splice(+el.dataset.lnRm, 1); rows.innerHTML = stLnRows(L, opt); wire(); if (opt.sug) opt.sug.refreshAll(); }; });
   };
   $('[data-ln-add]', box).onclick = () => { L.push(stLnNew()); rows.innerHTML = stLnRows(L, opt); wire(); };
   wire();
@@ -420,64 +410,68 @@ function stLnCheck(L, opt){
     if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return { error: n + 'enter a quantity above 0' + (whole ? ', in whole ' + it.unit + '.' : '.') };
     if (opt.stock && !it.stock_known) return { error: n + 'the stock of ' + it.code + ' is not known yet. Count it first (Weekly count).' };
     if (opt.stock && +l.qty > +it.stock) return { error: n + 'only ' + stNum(it.stock) + ' ' + it.unit + ' of ' + it.code + ' in stock. Count it first if the shelf has more.' };
-    if (opt.receipt && l.price !== '' && l.price != null && !(+l.price > 0)) return { error: n + 'the unit price must be more than 0, or empty.' };
-    out.push(Object.assign({ code: it.code, qty: String(l.qty).trim() }, opt.receipt ? { unit_price: String(l.price || '').trim(), request_item_id: l.req || '' } : {}));
+    out.push(Object.assign({ code: it.code, qty: String(l.qty).trim() }, opt.sug ? opt.sug.link(l) : {}));
   }
   if (!out.length && !opt.optional) return { error: 'Add at least one material.' };
   return { lines: out };
 }
 
 /* ---- Receive: one delivery, one line per material; a material not in the store can be typed (added with its code) */
-const stNlNew = () => ({ name: '', prefix: '', unit: 'pcs', qty: '', price: '', req: '', confirm: false });
-function stNlRows(N){
+// 15 Nov 2026 (user): enter what arrived; under each line the open requests that look like it are suggested (shared.js oklReqSuggest)
+function stSugInfo(l){
+  if ('prefix' in l) return { key: '', name: l.name, qty: l.qty, unit: l.unit };
+  const it = stByCode(l.code);
+  return it ? { key: it.code, name: [it.name, it.part_number, it.brand].filter(Boolean).join(' '), qty: l.qty, unit: it.unit } : { key: '', name: l.text, qty: l.qty, unit: '' };
+}
+const stNlNew = () => ({ name: '', prefix: '', unit: 'pcs', qty: '', confirm: false });
+function stNlRows(N, sug){
   const types = ((ST.data && ST.data.types) || []).filter(t => t.active);
   return N.map((l, i) => `<div class="pl-row">
     <div class="pl-part"><input class="inp" data-nl-name="${i}" maxlength="160" value="${esc(l.name)}" placeholder="Name of the new material" aria-label="New material ${i + 1}">
       <div class="row" style="gap:6px;margin-top:6px;flex-wrap:nowrap"><select class="inp" data-nl-prefix="${i}" aria-label="Type ${i + 1}"><option value="">Type...</option>${types.map(t => `<option value="${esc(t.prefix)}" ${l.prefix === t.prefix ? 'selected' : ''}>${esc(t.prefix + ' ' + t.name)}</option>`).join('')}</select>
         <select class="inp" data-nl-unit="${i}" style="width:auto" aria-label="Unit ${i + 1}">${ST_UNITS.map(u => `<option ${l.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
-      <select class="inp" data-nl-req="${i}" style="margin-top:6px" aria-label="Request ${i + 1}">${stReqOptions('', l.req)}</select>
       <div class="tiny muted" data-nl-info="${i}">${l.prefix ? 'New: it gets the code <b>' + esc(stNextCode(l.prefix)) + '</b>.' : 'New: added to the store with the next code of its type.'}</div>
-      <label class="row small" style="gap:6px;margin-top:4px"><input type="checkbox" data-nl-new="${i}" ${l.confirm ? 'checked' : ''}> It is a new material (if the name looks like one already in the store)</label></div>
+      <label class="row small" style="gap:6px;margin-top:4px"><input type="checkbox" data-nl-new="${i}" ${l.confirm ? 'checked' : ''}> It is a new material (if the name looks like one already in the store)</label>${sug ? sug.slot(l, stSugInfo) : ''}</div>
     <input class="inp pl-qty" type="number" min="0" step="any" data-nl-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
-    <input class="inp pl-price" type="number" min="0" step="any" data-nl-price="${i}" value="${esc(l.price)}" placeholder="Unit price" aria-label="Unit price ${i + 1}">
     <button type="button" class="btn btn-ghost btn-sm" data-nl-rm="${i}" aria-label="Remove new material ${i + 1}">${I.x}</button></div>`).join('');
 }
 async function stReceive(code){
-  await stLoadRequests();
-  const people = (ST.data && ST.data.people) || [], L = [stLnNew(code)], opt = { id: 'rcLines', receipt: true }, N = [], R = stRules();
+  const reqs = await stLoadRequests(true);
+  const people = (ST.data && ST.data.people) || [], L = [stLnNew(code)], N = [], R = stRules();
+  const sug = window.oklReqSuggest({ requests: reqs, what: 'material', lines: () => L.concat(N) });
+  const opt = { id: 'rcLines', receipt: true, sug };
   openModal({
-    title:'Receive materials', size:'wide', sub:'A delivery into the store: one line per material, each linked to its procurement request where there is one.',
+    title:'Receive materials', size:'wide', sub:'What arrived in the store: one line per material.',
     body: `<form novalidate><div class="grid g2">
       <div class="field"><label for="rcDate">Received on</label><input class="inp" id="rcDate" type="date" value="${stToday()}" max="${stToday()}"></div>
       <div class="field"><label for="rcBy">Received by</label><select class="inp" id="rcBy"><option value="">${esc(S.me.name)} (me)</option>${people.map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
-      <div class="field"><label for="rcSup">Supplier (if no request)</label><input class="inp" id="rcSup" maxlength="80"></div>
-      <div class="field"><label for="rcInv">Invoice / delivery note no. (if no request)</label><input class="inp" id="rcInv" maxlength="40"></div>
     </div>
-    <div class="field"><span class="lbl">Materials received ${stInfo(R.receipt)}</span>${stLnHtml(L, opt)}
-      <div data-nl-rows>${stNlRows(N)}</div>
+    <div class="field"><span class="lbl">What arrived ${stInfo(R.receipt)}</span>
+      ${sug.count ? `<div class="tiny muted" style="margin-bottom:6px">Under each material, the requests it could be for are shown. Confirm the right one.</div>` : ''}
+      ${stLnHtml(L, opt)}
+      <div data-nl-rows>${stNlRows(N, sug)}</div>
       <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A material not in the store</button></div>
     <div class="field"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
     <div class="err-msg hide" data-err="rcDate"></div></form>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Receive</button>`,
     onMount: (w, close) => {
       stLnBind(w, L, opt);
+      sug.bind($('form', w));
       const nbox = $('[data-nl-rows]', w);
       const wireN = () => {
-        $$('[data-nl-name]', w).forEach(el => { el.oninput = () => { N[+el.dataset.nlName].name = el.value; }; });
+        $$('[data-nl-name]', w).forEach(el => { el.oninput = () => { const l = N[+el.dataset.nlName]; l.name = el.value; sug.refresh(nbox, l); }; });
         $$('[data-nl-prefix]', w).forEach(el => { el.onchange = () => { const l = N[+el.dataset.nlPrefix]; l.prefix = el.value;
           $(`[data-nl-info="${el.dataset.nlPrefix}"]`, w).innerHTML = l.prefix ? 'New: it gets the code <b>' + esc(stNextCode(l.prefix)) + '</b>.' : ''; }; });
-        $$('[data-nl-unit]', w).forEach(el => { el.onchange = () => { N[+el.dataset.nlUnit].unit = el.value; }; });
-        $$('[data-nl-qty]', w).forEach(el => { el.oninput = () => { N[+el.dataset.nlQty].qty = el.value; }; });
-        $$('[data-nl-price]', w).forEach(el => { el.oninput = () => { N[+el.dataset.nlPrice].price = el.value; }; });
-        $$('[data-nl-req]', w).forEach(el => { el.onchange = () => { N[+el.dataset.nlReq].req = el.value; }; });
+        $$('[data-nl-unit]', w).forEach(el => { el.onchange = () => { const l = N[+el.dataset.nlUnit]; l.unit = el.value; sug.refresh(nbox, l); }; });
+        $$('[data-nl-qty]', w).forEach(el => { el.oninput = () => { const l = N[+el.dataset.nlQty]; l.qty = el.value; sug.refresh(nbox, l); }; });
         $$('[data-nl-new]', w).forEach(el => { el.onchange = () => { N[+el.dataset.nlNew].confirm = el.checked; }; });
-        $$('[data-nl-rm]', w).forEach(el => { el.onclick = () => { N.splice(+el.dataset.nlRm, 1); nbox.innerHTML = stNlRows(N); wireN(); }; });
+        $$('[data-nl-rm]', w).forEach(el => { el.onclick = () => { N.splice(+el.dataset.nlRm, 1); nbox.innerHTML = stNlRows(N, sug); wireN(); sug.refreshAll(); }; });
       };
-      $('[data-nl-add]', w).onclick = () => { N.push(stNlNew()); nbox.innerHTML = stNlRows(N); wireN(); };
+      $('[data-nl-add]', w).onclick = () => { N.push(stNlNew()); nbox.innerHTML = stNlRows(N, sug); wireN(); const ins = $$('[data-nl-name]', w); ins[ins.length - 1].focus(); };
       const sv = $('[data-save]', w);
       sv.onclick = async () => {
         clearErrors(w);
-        const chk = stLnCheck(L, Object.assign({}, opt, { optional: N.length > 0 }));
+        const chk = stLnCheck(L, Object.assign({}, opt, { optional: true }));
         if (chk.error) return setErr('rcDate', chk.error, w);
         const newLines = [];
         for (let i = 0; i < N.length; i++) {
@@ -487,15 +481,15 @@ async function stReceive(code){
           if (!l.prefix) return setErr('rcDate', n + 'choose its type (it gives the code).', w);
           const whole = !['m', 'L', 'kg'].includes(l.unit);
           if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return setErr('rcDate', n + 'enter a quantity above 0' + (whole ? ', in whole ' + l.unit + '.' : '.'), w);
-          newLines.push({ new: { name: nm, prefix: l.prefix, unit: l.unit, confirm: !!l.confirm }, qty: String(l.qty).trim(), unit_price: String(l.price || '').trim(), request_item_id: l.req || '' });
+          newLines.push(Object.assign({ new: { name: nm, prefix: l.prefix, unit: l.unit, confirm: !!l.confirm }, qty: String(l.qty).trim() }, sug.link(l)));
         }
-        const receipt = { date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, supplier: $('#rcSup', w).value.trim(), invoice_no: $('#rcInv', w).value.trim(),
-          note: $('#rcNote', w).value.trim(), lines: chk.lines.concat(newLines) };
+        const receipt = { date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim(), lines: chk.lines.concat(newLines) };
         if (!receipt.lines.length) return setErr('rcDate', 'Add at least one material.', w);
-        if (receipt.lines.some(l => !l.request_item_id) && (!receipt.supplier || !receipt.invoice_no)) return setErr('rcDate', 'A line with no request needs the supplier and the invoice or delivery note number above.', w);
         sv.disabled = true;
         try { const r = await api('/webhook/production/api/store/receipt', { method:'POST', body:{ receipt } }); close();
+              const linked = receipt.lines.filter(l => l.request_item_id).length;
               toast('Received ' + receipt.lines.length + ' material' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || []).map(m => m.entry).join(', ')
+                + (linked ? ' · ' + linked + ' on a request' : '')
                 + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ': ' + r.added.map(a => a.code + ' = ' + a.name).join(', ') : ''), 'ok', 9000); await stRefresh(); }
         catch (err) { setErr('rcDate', err.message, w); sv.disabled = false; }
       };
@@ -505,13 +499,12 @@ async function stReceive(code){
 
 /* ---- Issue: materials leaving the store for one printer, line or machine */
 function stIssue(code){
-  const people = (ST.data && ST.data.people) || [], L = [stLnNew(code)], opt = { id: 'isLines', stock: true }, R = stRules();
+  const L = [stLnNew(code)], opt = { id: 'isLines', stock: true }, R = stRules();
   const x = code ? stByCode(code) : null, firstUse = x && !x.common_use && (x.used_on_names || []).length === 1 ? x.used_on_names[0] : null;
   openModal({
     title:'Issue materials', size:'wide', sub:'Materials leaving the store for one printer, line or machine: one line per material.',
     body: `<form novalidate><div class="grid g2">
       <div class="field" style="grid-column:1/-1"><label for="isUsed">For which printer, line or machine ${stInfo(R.usedOn)}</label><input class="inp" id="isUsed" list="isAssets" placeholder="Type a printer, line or machine" value="${firstUse ? esc(firstUse.name + ' (' + firstUse.code + ')') : ''}"><datalist id="isAssets">${stAssetOptions()}</datalist></div>
-      <div class="field"><label for="isWho">Collected by</label><select class="inp" id="isWho"><option value="">Choose...</option>${people.map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
       <div class="field"><label for="isDate">Date</label><input class="inp" id="isDate" type="date" value="${stToday()}" max="${stToday()}"></div>
     </div>
     <div class="field"><span class="lbl">Materials issued</span>${stLnHtml(L, opt)}</div>
@@ -525,9 +518,8 @@ function stIssue(code){
         clearErrors(w);
         const chk = stLnCheck(L, opt);
         if (chk.error) return setErr('isUsed', chk.error, w);
-        const issue = { used_on: stAssetFrom($('#isUsed', w).value), collected_by: $('#isWho', w).value, date: $('#isDate', w).value, note: $('#isNote', w).value.trim(), lines: chk.lines };
+        const issue = { used_on: stAssetFrom($('#isUsed', w).value), date: $('#isDate', w).value, note: $('#isNote', w).value.trim(), lines: chk.lines };
         if (!stAssets().some(a => a.code === issue.used_on)) return setErr('isUsed', 'Pick the printer, line or machine from the list.', w);
-        if (!issue.collected_by) return setErr('isUsed', 'Choose who collected it.', w);
         sv.disabled = true;
         try { const r = await api('/webhook/production/api/store/issue', { method:'POST', body:{ issue } }); close();
               toast('Issued ' + issue.lines.length + ' material' + (issue.lines.length === 1 ? '' : 's'), (r.moves || []).map(m => m.entry).join(', '), 'ok'); await stRefresh(); }
@@ -557,7 +549,7 @@ function stMovesView(kind){
   if (!ST.data) { stLoad(); return stWait(cur); }
   if (!ST.moves[kind]) stLoadMoves(kind);
   const rows = ST.moves[kind], canEdit = kind === 'issue' ? stCanIssue() : stCanReceive(), R = stRules();
-  const head = stHead(kind === 'receipt' ? 'Deliveries into the store, each against its procurement request (or with the supplier and invoice).' : 'Materials leaving the store: which printer, line or machine, and who collected them.',
+  const head = stHead(kind === 'receipt' ? 'What arrived in the store, for which request, and who received it.' : 'Materials leaving the store, and the printer, line or machine each went to.',
       stDl(kind) + stActions()) + stTabs(cur)
     + `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="mvFrom" value="${esc(ST.from)}" style="width:auto"></label>
        <label class="small">to <input class="inp" type="date" id="mvTo" value="${esc(ST.to)}" style="width:auto"></label><span class="small muted">Default: the last 90 days.</span></div>`;
@@ -568,24 +560,22 @@ function stMovesView(kind){
     : m.source === 'import' ? '<span class="badge">Old Excel file</span>' : '<span class="badge b-ok">' + (kind === 'receipt' ? 'Received' : 'Issued') + '</span>';
   const canRev = m => canEdit && !m.reversal && !m.reversed_by && m.source !== 'import';
   const table = kind === 'receipt'
-    ? `<thead><tr><th>Entry</th><th>Date</th><th>Material</th><th style="text-align:right">Qty</th><th>Request ${stInfo(R.receipt)}</th><th>Supplier / invoice</th><th>Received by</th><th>Status</th><th></th></tr></thead>
+    ? `<thead><tr><th>Entry</th><th>Date</th><th>Material</th><th style="text-align:right">Qty</th><th>Request ${stInfo(R.receipt)}</th><th>Received by</th><th>Status</th><th></th></tr></thead>
        <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="small">${esc(m.date)}</td>
          <td><div class="strong">${esc(m.code)}</div><div class="tiny muted">${esc(m.name)}</div></td>
          <td style="text-align:right">${m.reversal ? '-' : ''}${stNum(m.qty)} ${esc(m.unit || '')}</td>
-         <td class="small">${esc(m.request_ref || '--')}${m.request_po ? `<div class="tiny muted">PO ${esc(m.request_po)}</div>` : ''}</td>
-         <td class="small">${esc(m.supplier || '')}<div class="tiny muted">${esc(m.invoice_no || '')}</div></td><td class="small">${esc(m.received_by_name || '')}</td>
+         <td class="small">${esc(m.request_ref || '--')}</td><td class="small">${esc(m.received_by_name || '')}</td>
          <td>${stat(m)}${m.reason || m.note ? `<div class="tiny muted">${esc(m.reason || m.note)}</div>` : ''}</td>
          <td style="text-align:right">${canRev(m) ? `<button class="btn btn-ghost btn-sm" onclick="stReverse(${m.id}, 'receipt')">Reverse</button>` : ''}</td></tr>`).join('')
-         || `<tr><td colspan="9" class="muted" style="padding:16px">Nothing received in this period.</td></tr>`}</tbody>`
-    : `<thead><tr><th>Entry</th><th>Date</th><th>Material</th><th style="text-align:right">Qty</th><th>Used on</th><th>Collected by</th><th>Status</th><th></th></tr></thead>
+         || `<tr><td colspan="8" class="muted" style="padding:16px">Nothing received in this period.</td></tr>`}</tbody>`
+    : `<thead><tr><th>Entry</th><th>Date</th><th>Material</th><th style="text-align:right">Qty</th><th>Used on</th><th>Status</th><th></th></tr></thead>
        <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="small">${esc(m.date)}</td>
          <td><div class="strong">${esc(m.code)}</div><div class="tiny muted">${esc(m.name)}</div></td>
          <td style="text-align:right">${m.reversal ? '-' : ''}${stNum(m.qty)} ${esc(m.unit || '')}</td>
          <td class="small">${esc(m.used_on_name || '')}${!m.used_on && m.purpose_text ? `<div class="tiny muted">Excel: ${esc(m.purpose_text)}</div>` : ''}</td>
-         <td class="small">${esc(m.collected_by_name || '')}</td>
          <td>${stat(m)}${m.reason || (m.source !== 'import' && m.note) ? `<div class="tiny muted">${esc(m.reason || m.note)}</div>` : ''}</td>
          <td style="text-align:right">${canRev(m) ? `<button class="btn btn-ghost btn-sm" onclick="stReverse(${m.id}, 'issue')">Reverse</button>` : ''}</td></tr>`).join('')
-         || `<tr><td colspan="8" class="muted" style="padding:16px">Nothing issued in this period.</td></tr>`}</tbody>`;
+         || `<tr><td colspan="7" class="muted" style="padding:16px">Nothing issued in this period.</td></tr>`}</tbody>`;
   return { title:'Store', crumb:'Store', keepScroll: true, html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">${table}</table></div>
     <div class="small muted" style="padding:12px 18px">${rows.length} entries.</div></div>`, bind };
 }

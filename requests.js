@@ -208,7 +208,7 @@
         <div class="field"><label>From</label><input class="inp" type="time" data-ot="start" data-i="${i}" value="${esc(g.start)}"></div>
         <div class="field"><label>To</label><input class="inp" type="time" data-ot="end" data-i="${i}" value="${esc(g.end)}"><div class="tiny muted" data-ot-h="${i}">${h == null ? 'Earlier than "From"? It ends the next day.' : h + ' h each'}</div></div>
         <div class="field"><label>Work done</label><input class="inp" data-ot="duty" data-i="${i}" maxlength="150" value="${esc(g.duty)}" placeholder="e.g. Weekend PM on Kunlong #2"></div></div>
-      <div class="field"><span class="lbl">Who worked <span class="muted" style="font-weight:500">(${g.ids.length} ticked)</span></span>
+      <div class="field"><span class="lbl">Who worked <span class="muted" style="font-weight:500" data-ot-n="${i}">(${g.ids.length} ticked)</span></span>
         ${(cfg.people || []).length > 12 ? `<input class="inp" type="search" data-ot-find="${i}" placeholder="Find a name..." style="margin-bottom:8px">` : ''}
         <div class="row" data-ot-chips="${i}" style="gap:6px;max-height:260px;overflow:auto">${(cfg.people || []).map(p => { const o = inGroup(st, p.enroll_id, i);
           return `<button type="button" class="chip big-chip ${g.ids.includes(p.enroll_id) ? 'on' : ''}" ${o ? 'disabled style="opacity:.45" title="Already in group ' + o + '"' : ''} data-ot-p="${esc(p.enroll_id)}" data-i="${i}">${esc(p.name)}${o ? ' <span class="tiny">(group ' + o + ')</span>' : ''}</button>`; }).join('')
@@ -234,6 +234,13 @@
       const box = $('#otForm'); if (!box) return;
       const sum = () => { const ppl = st.groups.reduce((n, g) => n + g.ids.length, 0), tot = st.groups.reduce((n, g) => n + (hoursOf(g) || 0) * g.ids.length, 0);
         const e = $('[data-ot-sum]', box); if (e) e.textContent = ppl ? ppl + (ppl === 1 ? ' person, ' : ' people, ') + Math.round(tot * 100) / 100 + ' h in total. Recorded as ' + dayType(st) + '.' : ''; };
+      // 14 Nov 2026: ticking a name updates the chips where they are (the list keeps its scroll and its "Find a name")
+      const chips = () => {
+        $$('[data-ot-p]', box).forEach(c => { const i = +c.dataset.i, k = c.dataset.otP, o = inGroup(st, k, i), p = (cfg.people || []).find(x => x.enroll_id === k);
+          c.classList.toggle('on', st.groups[i].ids.includes(k)); c.disabled = !!o; c.style.opacity = o ? '.45' : ''; c.title = o ? 'Already in group ' + o : '';
+          c.innerHTML = esc(p ? p.name : k) + (o ? ' <span class="tiny">(group ' + o + ')</span>' : ''); });
+        st.groups.forEach((g, i) => { const e = $(`[data-ot-n="${i}"]`, box); if (e) e.textContent = '(' + g.ids.length + ' ticked)'; });
+      };
       const draw = () => { $('[data-ot-groups]', box).innerHTML = st.groups.map((g, i) => groupHtml(cfg, st, g, i, st.groups.length)).join(''); wire(); sum(); };
       const wire = () => {
         $$('[data-ot]', box).forEach(el => { el.oninput = el.onchange = () => { const g = st.groups[+el.dataset.i]; g[el.dataset.ot] = el.value;
@@ -241,7 +248,7 @@
         $$('[data-ot-find]', box).forEach(inp => inp.oninput = () => { const q = inp.value.trim().toLowerCase();
           $$(`[data-ot-chips="${inp.dataset.otFind}"] [data-ot-p]`, box).forEach(c => { c.style.display = !q || c.textContent.toLowerCase().includes(q) || c.classList.contains('on') ? '' : 'none'; }); });
         $$('[data-ot-p]', box).forEach(b => b.onclick = () => { const g = st.groups[+b.dataset.i], k = b.dataset.otP;
-          g.ids = g.ids.includes(k) ? g.ids.filter(x => x !== k) : g.ids.concat(k); draw(); });
+          g.ids = g.ids.includes(k) ? g.ids.filter(x => x !== k) : g.ids.concat(k); chips(); sum(); });   // in place: a redraw jumped back to the top
         $$('[data-ot-rm]', box).forEach(b => b.onclick = () => { st.groups.splice(+b.dataset.otRm, 1); draw(); });
       };
       $('#otDate', box).onchange = e => { st.date = e.target.value; sum(); };

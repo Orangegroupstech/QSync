@@ -424,9 +424,11 @@ const PROD_HELP = [
     'Use per week = what was issued in the last 8 weeks / the weeks it was in stock. Reorder level = use per week x (lead time + safety weeks), never below the minimum set for the material. Order quantity = reorder level x 1.5. The numbers are in Settings.',
     '<b>Request more</b> (on a material) opens the procurement request with the code and the order quantity filled in. Check and send.']],
   ['arrowDown', 'Store: receive and issue', [
-    '<b>Receive</b>: the date, then one line per material with its quantity. Pick the <b>procurement request</b> each line delivers; without one, give the supplier and the invoice or delivery note number. Price is optional.',
+    '<b>Receive</b>: the date, who received it, then one line per material that arrived and its quantity.',
+    'Under each material, the open requests it could be for are shown (the same code is picked for you). Tap the right one, or <b>No, not on a request</b>; <b>Another request...</b> finds one by number or name. Less came and nothing more is coming? Tick <b>Nothing more is coming</b>.',
+    'Something not on a request: <b>Not on a request</b>, then one line per material with its quantity. A note is optional.',
     'A material not in the store yet: <b>A material not in the store</b>, its name, type and unit. It gets its code (e.g. CF 008) and is received in the same step.',
-    '<b>Issue</b>: the printer, line or machine it is for, who collected it, then one line per material. Stock cannot go below 0: count it first if the shelf has more.',
+    '<b>Issue</b>: the printer, line or machine it is for, then one line per material. Stock cannot go below 0: count it first if the shelf has more.',
     'A mistake: <b>Received</b> or <b>Issued</b> tab > <b>Reverse</b>, with the reason. Nothing is deleted.']],
   ['check', 'Store: weekly count', [
     'Store > <b>Weekly count</b> tab. It checks that the shelf matches the system, so the stock is always right. A few materials each working day; the counter (Settings) gets the list on WhatsApp at 08:00, with what needs ordering.',

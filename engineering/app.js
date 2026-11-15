@@ -1496,6 +1496,8 @@ function spRules(){
     order: 'How many to ask for on a request.\nOrder quantity = reorder level x ' + pct + '%.',
     min: 'The lowest the reorder level can ever be (until 13 Nov 2026 this was the reorder level).\nWhen there is too little use to work one out, this is the reorder level.',
     lead: 'How many weeks a delivery takes, from the request to the store.\nEmpty means the default, ' + lead + ' weeks.',
+    receipt: 'Record what arrived in the store, so the stock goes up.\n'
+      + 'Under each part, the open requests it could be for are shown: confirm the right one, and Procurement sees it as received.\nA request comes off the list when it has all arrived, or when you tick "Nothing more is coming".',
   };
 }
 function spWhy(x){
@@ -1546,7 +1548,7 @@ function viewSpares(){
     x => x.trusted ? +x.use_per_week : -1, x => x.weeks_left == null ? 9999 : +x.weeks_left, x => +x.reorder_level, x => +x.order_qty]), shown = rows.slice(0, 300);
   const out = all.filter(x => x.status === 'Out of stock').length, reo = all.filter(x => x.status === 'Reorder now').length, soon = all.filter(x => x.status === 'Order soon').length;
   const R = spRules();
-  const value = all.reduce((t, x) => t + (+x.value || 0), 0), noLoc = all.filter(x => !x.location).length, never = all.filter(x => !x.last_count_at).length;
+  const noLoc = all.filter(x => !x.location).length, never = all.filter(x => !x.last_count_at).length;
   const opt = (v, cur, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
   return {
     title:'Spares', crumb:'Store', keepScroll: true,
@@ -1554,7 +1556,7 @@ function viewSpares(){
       + (mark ? window.oklRequestBanner(mark) : '') + `
     <div class="grid g4" style="margin-bottom:14px">
       <div class="stat"><div class="lbl">Parts</div><div class="val">${all.length}</div><div class="meta">in the catalogue</div></div>
-      <div class="stat"><div class="lbl">Stock value</div><div class="val">&#8358;${money(Math.round(value))}</div><div class="meta">where a price is known</div></div>
+      <div class="stat"><div class="lbl">Never counted</div><div class="val">${never}</div><div class="meta">the stock is checked in the weekly count</div></div>
       <div class="stat"><div class="lbl">Out of stock / reorder now</div><div class="val">${out} / ${reo}</div><div class="meta">${soon} more to order soon</div></div>
       <div class="stat"><div class="lbl">Up to standard</div><div class="val">${all.filter(x => x.up_to_standard).length} of ${all.length}</div><div class="meta">machines and location known · ${never} never counted</div></div>
     </div>
@@ -1594,12 +1596,11 @@ route('/spares', viewSpares);
 function spDownload(what){
   const mv = m => [m.entry, m.date, m.sku, m.description, (m.reversal ? -1 : 1) * +m.qty, m.unit];
   const sheets = {
-    inventory: () => [{ name: 'Inventory', head: ['SKU', 'Part', 'Part number', 'Brand', 'Supplier', 'Location', 'Stock', 'Unit', 'Use per week', 'Weeks left', 'Minimum', 'Reorder at', 'Order qty', 'Status', 'Unit price (NGN)', 'Value (NGN)', 'Used on', 'Last counted', 'Active'],
+    inventory: () => [{ name: 'Inventory', head: ['SKU', 'Part', 'Part number', 'Brand', 'Supplier', 'Location', 'Stock', 'Unit', 'Use per week', 'Weeks left', 'Minimum', 'Reorder at', 'Order qty', 'Status', 'Used on', 'Last counted', 'Active'],
       rows: spFiltered().map(x => [x.sku, x.description, x.part_number, x.brand, x.supplier, x.location, +x.stock, x.unit, x.trusted ? +x.use_per_week : 'not enough use', x.weeks_left == null ? '' : +x.weeks_left,
-        +x.min_level, +x.reorder_level, +x.order_qty, x.status, x.unit_price == null ? '' : +x.unit_price,
-        x.value == null ? '' : +x.value, x.common_use ? 'Common use' : (x.used_on_names || []).join(', '), x.last_count_at ? x.last_count_at.slice(0, 10) : '', x.active ? 'yes' : 'no']) }],
-    receipt: () => [{ name: 'Inbound', head: ['Entry', 'Date', 'SKU', 'Part', 'Qty', 'Unit', 'Amount (NGN)', 'Invoice', 'Supplier', 'Received by', 'Note'],
-      rows: (SP.moves.receipt || []).map(m => mv(m).concat([m.amount == null ? '' : (m.reversal ? -1 : 1) * +m.amount, m.invoice_no, m.supplier, m.received_by_name, m.reason || m.note])) }],
+        +x.min_level, +x.reorder_level, +x.order_qty, x.status, x.common_use ? 'Common use' : (x.used_on_names || []).join(', '), x.last_count_at ? x.last_count_at.slice(0, 10) : '', x.active ? 'yes' : 'no']) }],
+    receipt: () => [{ name: 'Inbound', head: ['Entry', 'Date', 'SKU', 'Part', 'Qty', 'Unit', 'Request', 'Received by', 'Note'],
+      rows: (SP.moves.receipt || []).map(m => mv(m).concat([m.request_ref || '', m.received_by_name, m.reason || m.note])) }],
     issue: () => [{ name: 'Outbound', head: ['Entry', 'Date', 'SKU', 'Part', 'Qty', 'Unit', 'Equipment', 'Collected by', 'Job', 'Status', 'Note'],
       rows: (SP.moves.issue || []).map(m => mv(m).concat([m.asset_name || m.purpose_text, m.collected_by_name, m.job, m.status, m.reason || m.decision_reason || m.note])) }],
     handovers: () => [{ name: 'Hand-overs', head: ['Entry', 'Job', 'SKU', 'Part', 'Qty', 'Unit', 'Taken by', 'Equipment', 'Working days waiting'],
@@ -1644,7 +1645,7 @@ const plStock = l => spDetail(spBySku(l.sku), l.text);
 function plRows(L, opt){
   return L.map((l, i) => `<div class="pl-row">
     <div class="pl-part"><input class="inp" data-pl-sku="${i}" list="${opt.id}Skus" value="${esc(l.text)}" placeholder="Type the SKU or the part name" aria-label="Part ${i + 1}">
-      <div class="tiny muted" data-pl-stock="${i}">${plStock(l)}</div></div>
+      <div class="tiny muted" data-pl-stock="${i}">${plStock(l)}</div>${opt.sug ? opt.sug.slot(l, spSugInfo) : ''}</div>
     <input class="inp pl-qty" type="number" min="0" step="any" data-pl-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
     ${opt.price ? `<input class="inp pl-price" type="number" min="0" step="any" data-pl-price="${i}" value="${esc(l.price)}" placeholder="Unit price" aria-label="Unit price ${i + 1}">` : ''}
     <button type="button" class="btn btn-ghost btn-sm" data-pl-rm="${i}" ${L.length === 1 ? 'disabled' : ''} aria-label="Remove line ${i + 1}">${I.x}</button></div>`).join('');
@@ -1665,10 +1666,11 @@ function plBind(root, L, opt){
       if (e && e.type === 'change') spFullText(el, it);
       l.text = el.value;
       if (it && pr && !pr.value && it.unit_price) { pr.value = num(it.unit_price); l.price = pr.value; }
-      $(`[data-pl-stock="${el.dataset.plSku}"]`, box).innerHTML = plStock(l); }; });
-    $$('[data-pl-qty]', box).forEach(el => { el.oninput = () => { L[+el.dataset.plQty].qty = el.value; }; });
+      $(`[data-pl-stock="${el.dataset.plSku}"]`, box).innerHTML = plStock(l);
+      if (opt.sug) opt.sug.refresh(box, l); }; });
+    $$('[data-pl-qty]', box).forEach(el => { el.oninput = () => { const l = L[+el.dataset.plQty]; l.qty = el.value; if (opt.sug) opt.sug.refresh(box, l); }; });
     $$('[data-pl-price]', box).forEach(el => { el.oninput = () => { L[+el.dataset.plPrice].price = el.value; }; });
-    $$('[data-pl-rm]', box).forEach(el => { el.onclick = () => { L.splice(+el.dataset.plRm, 1); rows.innerHTML = plRows(L, opt); wire(); }; });
+    $$('[data-pl-rm]', box).forEach(el => { el.onclick = () => { L.splice(+el.dataset.plRm, 1); rows.innerHTML = plRows(L, opt); wire(); if (opt.sug) opt.sug.refreshAll(); }; });
   };
   $('[data-pl-add]', box).onclick = () => { L.push(plNew()); rows.innerHTML = plRows(L, opt); wire(); const ins = $$('[data-pl-sku]', box); ins[ins.length - 1].focus(); };
   wire();
@@ -1687,7 +1689,7 @@ function plCheck(L, opt){
     if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return { error: n + 'enter a quantity above 0' + (whole ? ', in whole ' + it.unit + '.' : '.') };
     if (opt.stock && +l.qty > +it.stock) return { error: n + 'only ' + num(it.stock) + ' ' + it.unit + ' of ' + it.sku + ' in stock. Count it first if the shelf has more.' };
     if (opt.price && !(+l.price > 0)) return { error: n + 'enter the unit price from the invoice.' };
-    out.push(Object.assign({ sku: it.sku, qty: String(l.qty).trim(), description: it.description, unit: it.unit }, opt.price ? { unit_price: String(l.price).trim() } : {}));
+    out.push(Object.assign({ sku: it.sku, qty: String(l.qty).trim(), description: it.description, unit: it.unit }, opt.price ? { unit_price: String(l.price).trim() } : {}, opt.sug ? opt.sug.link(l) : {}));
   }
   if (!out.length && !opt.optional) return { error: 'Add at least one part.' };
   return { lines: out };
@@ -1702,7 +1704,7 @@ function spOpen(sku){
   const usedNames = (v.used_on || []).map(c => { const a = (EQ.list || []).find(e => e.code === c); return a ? a.name + ' (' + c + ')' : c; });
   openModal({
     title: isNew ? 'Add a part' : v.sku + ' - ' + v.description, size:'wide',
-    sub: isNew ? 'The SKU is given automatically from the type.' : (SP_TYPES[v.sku.slice(0, 2)] + ' - stock ' + num(v.stock) + ' ' + v.unit + (v.unit_price ? ', last price NGN ' + money(v.unit_price) : '')),
+    sub: isNew ? 'The SKU is given automatically from the type.' : (SP_TYPES[v.sku.slice(0, 2)] + ' - stock ' + num(v.stock) + ' ' + v.unit),
     body: facts + `<form novalidate>
       <div class="grid g2">
         ${isNew ? `<div class="field"><label for="spPrefix">Type</label><select class="inp" id="spPrefix">${Object.entries(SP_TYPES).map(([k, t]) => `<option value="${k}">${k} - ${t}</option>`).join('')}</select></div>` : ''}
@@ -1764,7 +1766,7 @@ function spOpen(sku){
 // one delivery: the invoice, supplier and date once, then one line per part
 // a part that is not in the catalogue, typed on a receipt (043): its name, type and unit; the server adds it with the next
 // number of its type and receives it in the same step. The same name next time is the part already there.
-const nlNew = () => ({ name: '', prefix: '', unit: 'pcs', qty: '', price: '', confirm: false });
+const nlNew = () => ({ name: '', prefix: '', unit: 'pcs', qty: '', confirm: false });
 const nameKey = t => String(t || "").toLowerCase().replace(/[^a-z0-9]/g, "");     // the same name, whatever the case, spacing or punctuation
 function nameWords(t){ return Array.from(new Set(String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean)
   .map(w => w.length > 3 && /[a-z]s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w))); }
@@ -1782,15 +1784,20 @@ function namesAlike(a, b){
 const spAlike = nm => (SP.list || []).filter(x => x.active && nameKey(x.description) !== nameKey(nm) && namesAlike(x.description, nm)).slice(0, 3);
 function spNextSku(prefix){ if (!prefix) return ''; const n = Math.max(0, ...(SP.list || []).filter(x => x.sku.slice(0, 2) === prefix).map(x => +x.sku.slice(3) || 0)); return prefix + ' ' + String(n + 1).padStart(3, '0'); }
 function eqNextOther(){ const n = Math.max(0, ...(EQ.list || []).map(a => (/^OTH-(\d+)$/.exec(a.code) || [0, 0])[1] * 1)); return 'OTH-' + String(n + 1).padStart(3, '0'); }
-function nlRows(N){
+// 15 Nov 2026 (user): enter what arrived; under each line the open requests that look like it are suggested (shared.js oklReqSuggest)
+function spSugInfo(l){
+  if ('prefix' in l) return { key: '', name: l.name, qty: l.qty, unit: l.unit };
+  const it = spBySku(l.sku);
+  return it ? { key: it.sku, name: [it.description, it.part_number, it.brand].filter(Boolean).join(' '), qty: l.qty, unit: it.unit } : { key: '', name: l.text, qty: l.qty, unit: '' };
+}
+function nlRows(N, sug){
   return N.map((l, i) => `<div class="pl-row nl-row">
     <div class="pl-part"><input class="inp" data-nl-name="${i}" maxlength="160" value="${esc(l.name)}" placeholder="Name of the new part, e.g. Bearing 6205 2RS" aria-label="New part ${i + 1}">
       <div class="row" style="gap:6px;margin-top:6px;flex-wrap:nowrap"><select class="inp" data-nl-prefix="${i}" aria-label="Type ${i + 1}"><option value="">Type...</option>${Object.entries(SP_TYPES).map(([k, v]) => `<option value="${k}" ${l.prefix === k ? 'selected' : ''}>${k} ${v}</option>`).join('')}</select>
         <select class="inp" data-nl-unit="${i}" style="width:auto" aria-label="Unit ${i + 1}">${SP_UNITS.map(u => `<option ${l.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
       <div class="tiny muted" data-nl-info="${i}">${nlInfo(l)}</div>
-      <label class="row small ${l.name && spAlike(l.name.trim()).length ? '' : 'hide'}" data-nl-newwrap="${i}" style="gap:6px;margin-top:4px"><input type="checkbox" data-nl-new="${i}" ${l.confirm ? 'checked' : ''}> It is a new part (not one of those)</label></div>
+      <label class="row small ${l.name && spAlike(l.name.trim()).length ? '' : 'hide'}" data-nl-newwrap="${i}" style="gap:6px;margin-top:4px"><input type="checkbox" data-nl-new="${i}" ${l.confirm ? 'checked' : ''}> It is a new part (not one of those)</label>${sug ? sug.slot(l, spSugInfo) : ''}</div>
     <input class="inp pl-qty" type="number" min="0" step="any" data-nl-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
-    <input class="inp pl-price" type="number" min="0" step="any" data-nl-price="${i}" value="${esc(l.price)}" placeholder="Unit price" aria-label="Unit price ${i + 1}">
     <button type="button" class="btn btn-ghost btn-sm" data-nl-rm="${i}" aria-label="Remove new part ${i + 1}">${I.x}</button></div>`).join('');
 }
 // what happens to a typed name: the same part (reused), like a part already there (confirm), or new with its code
@@ -1802,71 +1809,70 @@ function nlInfo(l){
   if (alike.length) return '<span style="color:var(--warn-ink, #92400e)">Looks like ' + alike.map(x => '<b>' + esc(x.sku) + '</b> ' + esc(x.description)).join(', ') + '. If it is one of those, remove this line and pick it in the list above.</span>';
   return 'New part: it gets the code <b>' + esc(spNextSku(l.prefix) || '(choose the type)') + '</b>. Next time pick it by that code.';
 }
-function spReceive(sku){
-  const x = sku ? spBySku(sku) : null, me = S.me.name, L = [plNew(sku)], opt = { id: 'rcLines', price: true }, N = [];
+// 070 (user, 15 Nov 2026): enter what arrived (no invoice, supplier or price); each line suggests the open Engineering
+// requests it could be for, and the one confirmed is linked (Procurement sees it as received).
+async function spReceive(sku){
+  let reqs = [];
+  try { reqs = (await api('/webhook/engineering/api/spares/requests')).requests || []; } catch (e) { reqs = []; }
+  const me = S.me.name, L = [plNew(sku)], N = [];
+  const sug = window.oklReqSuggest({ requests: reqs, what: 'part', lines: () => L.concat(N) });
+  const opt = { id: 'rcLines', sug };
   openModal({
-    title:'Receive parts', size:'wide', sub:'A delivery into the store: one invoice, one line per part. The invoice number and prices come from the supplier\'s invoice.',
+    title:'Receive parts', size:'wide', sub:'What arrived in the store: one line per part.',
     body: `<form novalidate><div class="grid g2">
-      <div class="field"><label for="rcInv">Invoice number</label><input class="inp" id="rcInv" maxlength="40"></div>
-      <div class="field"><label for="rcSup">Supplier</label><input class="inp" id="rcSup" maxlength="80" value="${x ? esc(x.supplier || '') : ''}"></div>
       <div class="field"><label for="rcDate">Received on</label><input class="inp" id="rcDate" type="date" value="${todayIso()}" max="${todayIso()}"></div>
       <div class="field"><label for="rcBy">Received by</label><select class="inp" id="rcBy"><option value="">${esc(me)} (me)</option>${(SP.people || []).map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}</option>`).join('')}</select></div>
     </div>
-    <div class="field"><span class="lbl">Parts received</span>${plHtml(L, opt)}
-      <div data-nl-rows>${nlRows(N)}</div>
-      <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A part not in the catalogue</button>
-      <div class="hint">${I.info}<span>Not in the list? Use "A part not in the catalogue": type its name, type and unit. It is added to the catalogue and remembered.</span></div></div>
+    <div class="field"><span class="lbl">Parts received ${spInfo(spRules().receipt)}</span>
+      ${sug.count ? `<div class="tiny muted" style="margin-bottom:6px">Under each part, the requests it could be for are shown. Confirm the right one.</div>` : ''}
+      ${plHtml(L, opt)}
+      <div data-nl-rows>${nlRows(N, sug)}</div>
+      <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A part not in the catalogue</button></div>
     <div class="field"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
-    <div class="err-msg hide" data-err="rcInv"></div></form>`,
+    <div class="err-msg hide" data-err="rcDate"></div></form>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Receive</button>`,
     onMount: (w, close) => {
       plBind(w, L, opt);
+      sug.bind($('form', w));
       const nbox = $('[data-nl-rows]', w);
       const wireN = () => {
         $$('[data-nl-name]', w).forEach(el => { el.oninput = () => { const l = N[+el.dataset.nlName]; l.name = el.value; $(`[data-nl-info="${el.dataset.nlName}"]`, w).innerHTML = nlInfo(l);
-          const wr = $(`[data-nl-newwrap="${el.dataset.nlName}"]`, w); if (wr) wr.classList.toggle('hide', !spAlike(el.value.trim()).length); }; });
+          const wr = $(`[data-nl-newwrap="${el.dataset.nlName}"]`, w); if (wr) wr.classList.toggle('hide', !spAlike(el.value.trim()).length); sug.refresh(nbox, l); }; });
         $$('[data-nl-new]', w).forEach(el => { el.onchange = () => { N[+el.dataset.nlNew].confirm = el.checked; }; });
         $$('[data-nl-prefix]', w).forEach(el => { el.onchange = () => { const l = N[+el.dataset.nlPrefix]; l.prefix = el.value; $(`[data-nl-info="${el.dataset.nlPrefix}"]`, w).innerHTML = nlInfo(l); }; });
-        $$('[data-nl-unit]', w).forEach(el => { el.onchange = () => { N[+el.dataset.nlUnit].unit = el.value; }; });
-        $$('[data-nl-qty]', w).forEach(el => { el.oninput = () => { N[+el.dataset.nlQty].qty = el.value; }; });
-        $$('[data-nl-price]', w).forEach(el => { el.oninput = () => { N[+el.dataset.nlPrice].price = el.value; }; });
-        $$('[data-nl-rm]', w).forEach(el => { el.onclick = () => { N.splice(+el.dataset.nlRm, 1); nbox.innerHTML = nlRows(N); wireN(); }; });
+        $$('[data-nl-unit]', w).forEach(el => { el.onchange = () => { const l = N[+el.dataset.nlUnit]; l.unit = el.value; sug.refresh(nbox, l); }; });
+        $$('[data-nl-qty]', w).forEach(el => { el.oninput = () => { const l = N[+el.dataset.nlQty]; l.qty = el.value; sug.refresh(nbox, l); }; });
+        $$('[data-nl-rm]', w).forEach(el => { el.onclick = () => { N.splice(+el.dataset.nlRm, 1); nbox.innerHTML = nlRows(N, sug); wireN(); sug.refreshAll(); }; });
       };
-      $('[data-nl-add]', w).onclick = () => { N.push(nlNew()); nbox.innerHTML = nlRows(N); wireN(); const ins = $$('[data-nl-name]', w); ins[ins.length - 1].focus(); };
+      $('[data-nl-add]', w).onclick = () => { N.push(nlNew()); nbox.innerHTML = nlRows(N, sug); wireN(); const ins = $$('[data-nl-name]', w); ins[ins.length - 1].focus(); };
       const sv = $('[data-save]', w);
       sv.onclick = async () => {
         clearErrors(w);
-        const chk = plCheck(L, Object.assign({}, opt, { optional: N.length > 0 }));
-        if (chk.error) return setErr('rcInv', chk.error, w);
+        const chk = plCheck(L, Object.assign({}, opt, { optional: true }));
+        if (chk.error) return setErr('rcDate', chk.error, w);
         const newLines = [];
         for (let i = 0; i < N.length; i++) {
           const l = N[i], n = 'New part ' + (i + 1) + ': ', nm = l.name.trim().replace(/\s+/g, ' ');
           if (!nm && !String(l.qty).trim()) continue;
-          if (nm.length < 2 || letters(nm) < 2) return setErr('rcInv', n + 'type its name in words.', w);
+          if (nm.length < 2 || letters(nm) < 2) return setErr('rcDate', n + 'type its name in words.', w);
           const same = (SP.list || []).find(x => x.active && nameKey(x.description) === nameKey(nm));
-          if (!same && !l.prefix) return setErr('rcInv', n + 'choose its type (MP, EP, PP...).', w);
-          if (!same && !l.confirm && spAlike(nm).length) return setErr('rcInv', n + '"' + nm + '" looks like ' + spAlike(nm).map(x => x.sku + ' ' + x.description).join(', ') + '. Pick that part, or tick "It is a new part".', w);
+          if (!same && !l.prefix) return setErr('rcDate', n + 'choose its type (MP, EP, PP...).', w);
+          if (!same && !l.confirm && spAlike(nm).length) return setErr('rcDate', n + '"' + nm + '" looks like ' + spAlike(nm).map(x => x.sku + ' ' + x.description).join(', ') + '. Pick that part, or tick "It is a new part".', w);
           const unit = same ? same.unit : l.unit, whole = !['m', 'L', 'kg'].includes(unit);
-          if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return setErr('rcInv', n + 'enter a quantity above 0' + (whole ? ', in whole ' + unit + '.' : '.'), w);
-          if (!(+l.price > 0)) return setErr('rcInv', n + 'enter the unit price from the invoice.', w);
-          if (chk.lines.some(c => same && c.sku === same.sku) || newLines.some(c => nameKey(c.new.description) === nameKey(nm))) return setErr('rcInv', n + 'this part is listed twice.', w);
-          newLines.push({ new: { description: nm, prefix: l.prefix, unit: l.unit, confirm: !!l.confirm }, qty: String(l.qty).trim(), unit_price: String(l.price).trim() });
+          if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return setErr('rcDate', n + 'enter a quantity above 0' + (whole ? ', in whole ' + unit + '.' : '.'), w);
+          if (chk.lines.some(c => same && c.sku === same.sku) || newLines.some(c => nameKey(c.new.description) === nameKey(nm))) return setErr('rcDate', n + 'this part is listed twice.', w);
+          newLines.push(Object.assign({ new: { description: nm, prefix: l.prefix, unit: l.unit, confirm: !!l.confirm }, qty: String(l.qty).trim() }, sug.link(l)));
         }
-        if (!chk.lines.length && !newLines.length) return setErr('rcInv', 'Add at least one part.', w);
-        const receipt = { invoice_no: $('#rcInv', w).value.trim(), supplier: $('#rcSup', w).value.trim(), date: $('#rcDate', w).value, received_by: $('#rcBy', w).value,
-          note: $('#rcNote', w).value.trim(), lines: chk.lines.map(l => ({ sku: l.sku, qty: l.qty, unit_price: l.unit_price })).concat(newLines) };
-        if (!receipt.invoice_no || !receipt.supplier) return setErr('rcInv', 'The invoice number and the supplier are needed.', w);
-        if (receipt.invoice_no.length < 2 || !/[A-Za-z0-9]/.test(receipt.invoice_no)) return setErr('rcInv', 'Give the invoice number as on the invoice.', w);
-        if (letters(receipt.supplier) < 2) return setErr('rcInv', 'Give the supplier\'s name.', w);
-        // a slipped zero: 5 times the last price or more, or a fifth of it or less
-        const odd = receipt.lines.map(l => { const it = spBySku(l.sku); return it && +it.unit_price > 0 && (+l.unit_price >= 5 * it.unit_price || +l.unit_price <= it.unit_price / 5)
-          ? it.sku + ' ' + it.description + ': NGN ' + money(l.unit_price) + ' (last time NGN ' + money(it.unit_price) + ')' : ''; }).filter(Boolean);
-        if (odd.length && !(await confirmDialog('Check the price', 'Far from the last price:<br>' + odd.map(esc).join('<br>') + '<br>Is it right?', 'Yes, it is right'))) return;
+        const receipt = { date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim(),
+          lines: chk.lines.map(l => Object.assign({ sku: l.sku, qty: l.qty }, l.request_item_id ? { request_item_id: l.request_item_id, close_line: l.close_line } : {})).concat(newLines) };
+        if (!receipt.lines.length) return setErr('rcDate', 'Add at least one part.', w);
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/receipt', { method:'POST', body:{ receipt } }); close();
+              const linked = receipt.lines.filter(l => l.request_item_id).length;
               toast('Received ' + receipt.lines.length + ' part' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', ')
+                + (linked ? ' · ' + linked + ' on a request' : '')
                 + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ' given: ' + r.added.map(a => a.sku + ' = ' + a.description).join(', ') + '. Pick ' + (r.added.length === 1 ? 'it' : 'them') + ' by that code next time.' : ''), 'ok', 12000); await spRefresh(); }
-        catch (err) { setErr('rcInv', err.message, w); sv.disabled = false; }
+        catch (err) { setErr('rcDate', err.message, w); sv.disabled = false; }
       };
     },
   });
@@ -1957,7 +1963,7 @@ function spMovesView(kind){
   if (!SP.list) { spLoad(); return spWait(cur); }
   if (!SP.moves[kind]) { spLoadMoves(kind); }
   const rows = SP.moves[kind], canEdit = canEditHere();
-  const head = spHead(kind === 'receipt' ? 'Deliveries into the store. Each needs the invoice number and the supplier.' : 'Parts leaving the store, with the equipment and who collected them.', dlButton(`spDownload('${kind}')`) + spActions()) + spTabs(cur)
+  const head = spHead(kind === 'receipt' ? 'Deliveries into the store, for which request, and who received them.' : 'Parts leaving the store, with the equipment and who collected them.', dlButton(`spDownload('${kind}')`) + spActions()) + spTabs(cur)
     + `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap"><label class="small">From <input class="inp" type="date" id="mvFrom" value="${esc(SP.from)}" style="width:auto"></label>
        <label class="small">to <input class="inp" type="date" id="mvTo" value="${esc(SP.to)}" style="width:auto"></label><span class="small muted">Default: the last 90 days.</span></div>`;
   const bind = () => { ['#mvFrom', '#mvTo'].forEach((id, i) => { const el = $(id); if (el) el.onchange = e => { SP[i ? 'to' : 'from'] = e.target.value; SP.moves = { receipt: null, issue: null }; render(); }; }); };
@@ -1968,14 +1974,14 @@ function spMovesView(kind){
     : m.source === 'import' ? '<span class="badge">Old workbook</span>' : '<span class="badge b-ok">' + (kind === 'receipt' ? 'Received' : 'Issued') + '</span>';
   const canRev = m => canEdit && !m.reversal && !m.reversed_by && m.source !== 'import' && m.status === 'issued';
   const table = kind === 'receipt'
-    ? `<thead><tr><th>Entry</th><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount (NGN)</th><th>Invoice / supplier</th><th>Received by</th><th>Status</th><th></th></tr></thead>
+    ? `<thead><tr><th>Entry</th><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th>Request</th><th>Received by</th><th>Status</th><th></th></tr></thead>
        <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="small">${esc(m.date)}</td>
          <td><div class="strong">${esc(m.sku || '(no SKU)')}</div><div class="tiny muted">${esc(m.description || m.note || '')}</div></td>
-         <td style="text-align:right">${m.reversal ? '-' : ''}${num(m.qty)} ${esc(m.unit || '')}</td><td style="text-align:right">${m.amount == null ? '' : (m.reversal ? '-' : '') + money(m.amount)}</td>
-         <td class="small">${esc(m.invoice_no || '--')}<div class="tiny muted">${esc(m.supplier || '')}</div></td><td class="small">${esc(m.received_by_name || '')}</td>
+         <td style="text-align:right">${m.reversal ? '-' : ''}${num(m.qty)} ${esc(m.unit || '')}</td>
+         <td class="small">${esc(m.request_ref || '--')}${m.request_po ? `<div class="tiny muted">PO ${esc(m.request_po)}</div>` : ''}</td><td class="small">${esc(m.received_by_name || '')}</td>
          <td>${stat(m)}${m.reason ? `<div class="tiny muted">${esc(m.reason)}</div>` : ''}</td>
          <td style="text-align:right">${canRev(m) ? `<button class="btn btn-ghost btn-sm" onclick="spReverse(${m.id}, 'receipt')">Reverse</button>` : ''}</td></tr>`).join('')
-         || `<tr><td colspan="9" class="muted" style="padding:16px">No receipts in this period.</td></tr>`}</tbody>`
+         || `<tr><td colspan="8" class="muted" style="padding:16px">No receipts in this period.</td></tr>`}</tbody>`
     : `<thead><tr><th>Entry</th><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th>Equipment</th><th>Collected by</th><th>Job</th><th>Status</th><th></th></tr></thead>
        <tbody>${rows.map(m => `<tr><td class="mono small">${esc(m.entry)}</td><td class="small">${esc(m.date)}</td>
          <td><div class="strong">${esc(m.sku || '(no SKU)')}</div><div class="tiny muted">${esc(m.description || m.note || '')}</div></td>
@@ -3553,7 +3559,10 @@ const HELP = [
     'Status: <span class="sb sb-out">Out of stock</span> <span class="sb sb-reorder">Reorder now</span> <span class="sb sb-soon">Order soon</span> <span class="sb sb-ok">OK</span> <span class="sb sb-idle">Not moving</span>. The worst come first.',
     'Tap a part for how its own numbers were worked out. A part can have its own lead time. The numbers are in Settings.']],
   ['box', 'Parts: receive, issue, new names', [
-    'Receive parts: pick the parts from the list. A part not in the catalogue: <b>A part not in the catalogue</b>, type its name, type and unit. It gets the next code (e.g. MP 671), shown before you save: pick it by that code next time.',
+    '<b>Receive</b>: the date, who received it, then one line per part that arrived and its quantity. No invoice number or price is asked.',
+    'Under each part, the open requests it could be for are shown (the same SKU is picked for you). Tap the right one, or <b>No, not on a request</b>; <b>Another request...</b> finds one by number or name.',
+    'Less came than asked and nothing more is coming? Tick <b>Nothing more is coming</b>: the request comes off the list. Procurement sees what arrived (Department Receival Status).',
+    'A part not in the catalogue: <b>A part not in the catalogue</b>, type its name, type and unit. It gets the next code (e.g. MP 671), shown before you save: pick it by that code next time.',
     'Issue for equipment not in the list: tick <b>Other</b> and name it. It gets a code (OTH-004...): pick it from the list next time.',
     'A name like one already there (e.g. "bearings 6205" and "Bearing 6205") is stopped: use the one there, or tick that it is new.',
     'Changing a part\'s unit after it has moved asks you to confirm: the numbers stay, only the unit changes.']],

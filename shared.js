@@ -191,6 +191,137 @@
   window.oklInfo = function (text, label) {
     return '<button type="button" class="okl-info no-print" data-okl-info="' + esc(text) + '" aria-label="' + esc(label || 'How this is worked out') + '">i</button>';
   };
+  /* ---------------- Which request did it come for? (070, Production store and Engineering spares) ----------------
+     15 Nov 2026 (user): Receive starts from what arrived, not from the request. Each delivery line gets a slot under it
+     that suggests the open request lines that look like it (the same store code first, then a name alike); one tap
+     links it, and "Nothing more is coming" closes a line that came short. A line can also be found by search.
+     cfg: { requests [{ref, asked_on, requestor, po, vendor, lines: [{id, item_id, material, detail, qty, unit, received, due, code}]}],
+            what ('material' | 'part'), lines() -> the delivery lines on the form now (a removed line no longer holds its request) }
+     returns { count, slot(line, info) -> html, bind(root), refresh(root, line), refreshAll(), link(line) -> {request_item_id, close_line} | {} }
+     info(line) -> { key, name, qty, unit }: the store code, the words to match, the quantity and the store unit of the line */
+  window.oklReqSuggest = function (cfg) {
+    const what = cfg.what || 'material';
+    const open = [];
+    (cfg.requests || []).forEach(r => (r.lines || []).forEach(l => open.push(Object.assign({}, l, { ref: r.ref, asked_on: r.asked_on, requestor: r.requestor, po: r.po, vendor: r.vendor }))));
+    const byId = id => open.find(l => String(l.id) === String(id));
+    const reg = {}; let uid = 0, root = null;
+    const qtyTxt = (n, u) => (n == null ? '' : String(+n)) + (u ? ' ' + u : '');
+    const dateTxt = d => { try { return new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }); } catch (e) { return d || ''; } };
+    const STOP = { the: 1, and: 1, for: 1, of: 1, with: 1, to: 1, in: 1, on: 1, a: 1, an: 1, new: 1, pcs: 1, piece: 1, pieces: 1, unit: 1, units: 1, no: 1, nos: 1, x: 1 };
+    const words = t => Array.from(new Set(String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ')
+      .filter(w => w && !STOP[w] && (w.length > 1 || /\d/.test(w))).map(w => w.length > 3 && /[a-z]s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w)));
+    const flat = t => String(t || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    // how much a request line looks like the delivery line: 2 = the same store code, 0..1 = the words, 0 = not alike
+    function score(l, inf) {
+      if (inf.key && (l.code === inf.key || flat(l.material + ' ' + (l.detail || '')).includes(flat(inf.key)))) return 2;
+      const a = words(inf.name), b = words(l.material + ' ' + (l.detail || ''));
+      if (!a.length || !b.length) return 0;
+      const both = a.filter(w => b.includes(w)); if (!both.length) return 0;
+      const na = a.filter(w => /\d/.test(w)), nb = b.filter(w => /\d/.test(w));
+      if (na.length && nb.length && !na.some(w => nb.includes(w))) return 0;      // "Bearing 6205" is not "Bearing 6206"
+      const s = both.length / Math.min(a.length, b.length);
+      return s >= 0.5 ? s : 0;
+    }
+    const sameUnit = (store, req) => { const U = (window.oklRequests && window.oklRequests.UNIT_OF_STORE) || {};
+      const k = t => String(t || '').toLowerCase().replace(/e?s$/, '').replace(/^piece$/, 'pc').replace(/^pc$/, 'pcs');
+      return !req || !store || U[store] === req || k(store) === k(req); };
+    const live = () => (cfg.lines ? cfg.lines() : Object.keys(reg).map(u => reg[u].line));
+    const taken = (line, id) => live().some(x => x !== line && x.rqId && String(x.rqId) === String(id));
+    const sig = inf => (inf.key || '') + '|' + words(inf.name).join(' ');
+    function cands(line) {
+      const inf = reg[line._rqs].info(line);
+      if (!inf.key && !words(inf.name).length) return [];
+      return open.map(l => ({ l, s: score(l, inf) })).filter(x => x.s > 0 && !taken(line, x.l.id))
+        .sort((a, b) => b.s - a.s || String(b.l.asked_on).localeCompare(String(a.l.asked_on))).map(x => x);
+    }
+    function lineTxt(l) {
+      return '<b>' + esc(l.ref) + '</b> <span class="muted">' + esc([dateTxt(l.asked_on), l.requestor].filter(Boolean).join(' · ')) + '</span><br>'
+        + esc(l.material) + (l.detail && l.detail !== l.material ? ' <span class="muted">' + esc(l.detail) + '</span>' : '')
+        + ' · <b>' + esc(l.due == null ? 'quantity not given' : qtyTxt(l.due, l.unit) + ' to come') + '</b>';
+    }
+    function opt(u, l, on) {
+      return '<label class="rqs-opt' + (on ? ' on' : '') + '"><input type="radio" name="rqs' + u + '" data-rqs-pick="' + u + '" value="' + esc(l.id) + '"' + (on ? ' checked' : '') + '><span>' + lineTxt(l) + '</span></label>';
+    }
+    function inner(line) {
+      const u = line._rqs, inf = reg[u].info(line);
+      if (!open.length) return '';
+      // another material on the line: what was said about the request no longer holds
+      const sg = sig(inf);
+      if (line.rqSig !== undefined && line.rqSig !== sg) { line.rqId = undefined; line.rqAuto = false; line.rqClose = false; line.rqFind = false; }
+      line.rqSig = sg;
+      const L = line.rqId ? byId(line.rqId) : null;
+      // a line linked to a request: what is left after this delivery, and closing it
+      if (L) {
+        const q = +inf.qty > 0 ? +inf.qty : 0, same = sameUnit(inf.unit, L.unit), due = L.due == null ? null : +L.due;
+        const done = due == null || (same && q >= due);
+        if (done) line.rqClose = false;
+        return '<div class="rqs-head">For request ' + (line.rqAuto ? '<span class="tiny muted">(same ' + (what === 'part' ? 'SKU' : 'code') + ' as on the request)</span>' : '')
+          + '<button type="button" class="btn btn-ghost btn-sm" data-rqs-change="' + u + '">Change</button></div>'
+          + '<div class="rqs-opt on"><span>' + lineTxt(L) + '</span></div>'
+          + '<div class="tiny" style="margin-top:4px">' + (done ? '<span class="rqs-ok">This delivery completes the request line.</span>'
+            : (same && q ? 'After this delivery: <b>' + esc(qtyTxt(due - q, L.unit)) + '</b> still to come.' : 'Asked ' + esc(qtyTxt(L.qty, L.unit)) + '.')
+              + '<label class="row" style="gap:6px;margin-top:4px"><input type="checkbox" data-rqs-close="' + u + '"' + (line.rqClose ? ' checked' : '') + '> Nothing more is coming: close the request line</label>') + '</div>';
+      }
+      if (line.rqFind) {
+        const q = String(line.rqQ || '').trim().toLowerCase();
+        const list = open.filter(l => !taken(line, l.id) && (!q || [l.ref, l.requestor, l.po, l.vendor, l.material, l.detail, l.code].join(' ').toLowerCase().includes(q))).slice(0, 8);
+        return '<div class="rqs-head">Which request is it for?<button type="button" class="btn btn-ghost btn-sm" data-rqs-nofind="' + u + '">Close</button></div>'
+          + '<input class="inp" type="search" data-rqs-q="' + u + '" value="' + esc(line.rqQ || '') + '" placeholder="Request number, item, who asked, PO" style="margin:4px 0">'
+          + '<div data-rqs-list="' + u + '">' + (list.map(l => opt(u, l, false)).join('') || '<div class="tiny muted">No open request line matches.</div>') + '</div>';
+      }
+      const c = cands(line);
+      if (!c.length) return (inf.key || words(inf.name).length) ? '<div class="tiny muted">No open request looks like this. <button type="button" class="rqs-link" data-rqs-find="' + u + '">On a request? Find it</button></div>' : '';
+      if (line.rqId === undefined && c[0].s === 2 && !(c[1] && c[1].s === 2)) { line.rqId = c[0].l.id; line.rqAuto = true; return inner(line); }
+      return '<div class="rqs-head">Is it for one of these requests?</div>' + c.slice(0, 3).map(x => opt(u, x.l, false)).join('')
+        + '<label class="rqs-opt' + (line.rqId === 0 ? ' on' : '') + '"><input type="radio" name="rqs' + u + '" data-rqs-pick="' + u + '" value="0"' + (line.rqId === 0 ? ' checked' : '') + '><span>No, not on a request</span></label>'
+        + '<button type="button" class="rqs-link tiny" data-rqs-find="' + u + '">Another request...</button>';
+    }
+    function refresh(r, line) {
+      const box = (r || root) && (r || root).querySelector('[data-rqs="' + line._rqs + '"]'); if (!box) return;
+      box.innerHTML = inner(line);
+    }
+    function refreshAll() { live().forEach(l => { if (l._rqs && reg[l._rqs]) refresh(root, l); }); }
+    function slot(line, info) {
+      if (!line._rqs) line._rqs = String(++uid);
+      reg[line._rqs] = { line, info };
+      return '<div class="rqs" data-rqs="' + line._rqs + '">' + inner(line) + '</div>';
+    }
+    function bind(r) {
+      if (root === r) { refreshAll(); return; }
+      root = r;
+      const L = u => reg[u] && reg[u].line;
+      r.addEventListener('change', e => {
+        const t = e.target, d = t.dataset || {};
+        if (d.rqsPick) { const line = L(d.rqsPick); if (!line) return; line.rqId = t.value === '0' ? 0 : t.value; line.rqAuto = false; line.rqFind = false; line.rqClose = false; refreshAll(); }
+        else if (d.rqsClose) { const line = L(d.rqsClose); if (line) line.rqClose = t.checked; }
+      });
+      r.addEventListener('input', e => {
+        const t = e.target, d = t.dataset || {};
+        if (!d.rqsQ) return;
+        const line = L(d.rqsQ); if (!line) return; line.rqQ = t.value;
+        const keep = t.selectionStart; refresh(r, line);
+        const n = r.querySelector('[data-rqs-q="' + d.rqsQ + '"]'); if (n) { n.focus(); try { n.setSelectionRange(keep, keep); } catch (er) { /* ignore */ } }
+      });
+      r.addEventListener('click', e => {
+        const b = e.target.closest && e.target.closest('[data-rqs-change],[data-rqs-find],[data-rqs-nofind]'); if (!b) return;
+        const d = b.dataset, line = L(d.rqsChange || d.rqsFind || d.rqsNofind); if (!line) return;
+        e.preventDefault();
+        if (d.rqsChange) { line.rqId = 0; line.rqAuto = false; line.rqClose = false; line.rqFind = true; }
+        else if (d.rqsFind) { line.rqFind = true; line.rqQ = ''; }
+        else line.rqFind = false;
+        refreshAll();
+        const q = r.querySelector('[data-rqs-q="' + line._rqs + '"]'); if (q) q.focus();
+      });
+      refreshAll();
+    }
+    // what a line sends: its request line, and "nothing more is coming"
+    function link(line) {
+      const L = line && line.rqId ? byId(line.rqId) : null;
+      return L ? { request_item_id: String(L.id), close_line: !!line.rqClose } : {};
+    }
+    return { count: open.length, slot, bind, refresh: (r, line) => { if (line && line._rqs) refresh(r, line); }, refreshAll: () => { if (root) refreshAll(); }, link };
+  };
+
   function infoStyle() {
     if (document.getElementById('oklInfoStyle')) return;
     const st = document.createElement('style'); st.id = 'oklInfoStyle';
@@ -200,7 +331,14 @@
       + '#oklInfoPop{position:absolute;z-index:3000;max-width:320px;background:#fff;color:#1d2329;border:1px solid #d6dbe0;border-radius:8px;'
       + 'box-shadow:0 8px 24px rgba(0,0,0,.14);padding:10px 12px;font:13px/1.45 system-ui,-apple-system,Segoe UI,Arial,sans-serif;white-space:pre-line;text-align:left;font-weight:400;text-transform:none;letter-spacing:0}'
       + '@media print{#oklInfoPop{display:none}}'
-      + '.tbl tr.req-item td{background:#FFF7DB}.tbl tr.req-item td:nth-child(2){font-weight:700}';
+      + '.tbl tr.req-item td{background:#FFF7DB}.tbl tr.req-item td:nth-child(2){font-weight:700}'
+      // which request did a delivery line come for (070)
+      + '.rqs:empty{display:none}.rqs{margin-top:6px;padding:6px 8px;border-left:3px solid #F6C9A8;background:#FFFBF7;border-radius:0 6px 6px 0;font-size:13px}'
+      + '.rqs-head{display:flex;gap:8px;align-items:center;justify-content:space-between;font-weight:600;font-size:12px;margin-bottom:4px}'
+      + '.rqs-opt{display:flex;gap:8px;align-items:flex-start;padding:5px 6px;border:1px solid var(--line-2,#e5e8eb);border-radius:6px;margin-top:4px;background:#fff;cursor:pointer;font-size:12px;line-height:1.35}'
+      + '.rqs-opt input{margin-top:2px}.rqs-opt.on{border-color:var(--brand,#ED6B1F);background:#FFF3EA}'
+      + '.rqs-link{background:none;border:0;padding:0;margin-top:4px;color:var(--brand,#ED6B1F);text-decoration:underline;cursor:pointer;font:inherit;font-size:12px}'
+      + '.rqs-ok{color:var(--ok-ink,#166534);font-weight:600}';
     document.head.appendChild(st);
   }
   function infoClose() { const p = document.getElementById('oklInfoPop'); if (p) p.remove(); }
