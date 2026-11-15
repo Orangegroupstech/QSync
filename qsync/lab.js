@@ -219,7 +219,7 @@ function viewLabInbox(){
     : (d.ipqa || []).length ? hiddenBySearch((d.ipqa || []).length)
     : `<div class="card-b">${emptyState('inbox', 'Nothing with IPQA', 'Samples appear here from the moment they are raised until the QA Supervisor approves them.')}</div>`;
   const body = !tab[2] ? ipqaBody : rows.length ? `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Tests</th><th>OOS</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Tests</th><th>OOS ${qInfo('Out of specification (OOS) results still open on this request.\nOpen the request to see each one and its investigation.')}</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.map(r => `<tr class="clickable" onclick="go('/lab/request/${r.id}')">
         <td data-label="Request"><div class="req-no">${esc(r.request_no)}</div><div class="tiny muted">${r.qa_signed_at ? 'QA approved ' + relTime(r.qa_signed_at) : r.ipqa_signed_at ? 'IPQA sampled ' + relTime(r.ipqa_signed_at) + ', no QA review (' + esc(r.stage) + ')' : 'sent straight to QC (' + esc(r.stage) + ')'}</div></td>
         <td data-label="Product / Batch"><div class="strong">${esc(r.product_name)}</div><div class="tiny muted mono">${esc(r.batch_no)}</div></td>
@@ -713,7 +713,7 @@ function wsStandardCard(t, extraSub){
         <div class="notice" style="margin-bottom:12px">${I.info} The standard of <b>${esc(src ? src.label : 'worksheet #' + from.analysis_id)}</b>${src ? ` (${esc(src.analyst || '')}, ${esc(src.status || '')})` : ''}: the same solution, weight, dilution and injections. If that worksheet is corrected, this one recalculates.</div>
         ${src ? `<div class="grid g3"><div class="kv-item"><div class="k">Working standard</div><div class="v">${esc(src.ws_no)}</div></div>
           <div class="kv-item"><div class="k">Standard weight</div><div class="v">${esc(src.std_weight)} mg</div></div>
-          <div class="field"><label>System suitability</label><div id="sst-${tid}" class="small" style="padding-top:8px">--</div></div></div>
+          <div class="field"><label>System suitability ${qInfo('Checks the instrument is precise before the samples count: the %RSD of the standard\'s repeat readings.\nIt must be at or below the method\'s limit (usually 2.0%).\nIf it fails, repeat the run, or a supervisor writes a justification.', 'What system suitability is')}</label><div id="sst-${tid}" class="small" style="padding-top:8px">--</div></div></div>
           <div class="small muted">${esc(techWords(P).std)}: ${(src.std_areas || []).map(x => esc(x)).join(', ')}</div>` : `<div class="notice" style="color:var(--danger)">${I.alert} That worksheet's standard cannot be used any more. Enter your own standard.</div>`}
       </div></div>`;
   }
@@ -735,7 +735,7 @@ function wsStandardCard(t, extraSub){
           ${stdList.map(w => `<option value="${w.id}" ${String(a.ws_id) === String(w.id) ? 'selected' : ''} ${w.usable ? '' : 'disabled'}>${esc(w.ws_no)} - ${esc(w.substance)} - ${esc(w.potency_pct)}%${w.usable ? ' (exp ' + fmtDate(w.expiry_date) + ')' : ' (cannot be used: ' + (w.expiry_date ? 'expired' : 'no expiry date') + ')'}</option>`).join('')}</select></div>`}
         <div class="field"><label>Standard weight (mg)</label>${inpNum(`apis.${tid}.std_weight`, 'placeholder="' + esc((P.std || {}).nominal_mg || '') + '"')}
           <div class="hint">${I.info}<span>${esc(stepsText((P.std || {}).steps, 'mg'))}</span></div></div>
-        <div class="field"><label>System suitability</label><div id="sst-${tid}" class="small" style="padding-top:8px">--</div></div>
+        <div class="field"><label>System suitability ${qInfo('Checks the instrument is precise before the samples count: the %RSD of the standard\'s repeat readings.\nIt must be at or below the method\'s limit (usually 2.0%).\nIf it fails, repeat the run, or a supervisor writes a justification.', 'What system suitability is')}</label><div id="sst-${tid}" class="small" style="padding-top:8px">--</div></div>
       </div>
       <div class="field"><label>${esc(W.std)} (${inj.min === inj.max ? inj.min : `${inj.min || 1} to ${inj.max || ''}`} ${W.readings})</label>
         <div class="lab-areas" data-group="apis.${tid}.std_areas">${a.std_areas.map((v, i) => inpNum(`apis.${tid}.std_areas.${i}`, `placeholder="${i + 1}"`)).join('')}</div>

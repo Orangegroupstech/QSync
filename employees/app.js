@@ -452,9 +452,10 @@ function skillStats(list, field){
 function hasSkill(e, field, key){
   return (Array.isArray(e[field]) ? e[field] : []).some(v => String(v||'').trim().toLowerCase() === key);
 }
-function statCard(label, val, meta, icon, accent, link){
+const hInfo = (t, l) => window.oklInfo ? window.oklInfo(t, l) : '';   // (i) bubbles (shared.js)
+function statCard(label, val, meta, icon, accent, link, info){
   return `<div class="stat acc-${accent} ${link?'link':''}" ${link?`onclick="go('${link}')"`:''}>
-    <div class="lbl">${esc(label)}</div><div class="val">${val}</div><div class="meta">${meta}</div>
+    <div class="lbl">${esc(label)}${info ? ' ' + hInfo(info) : ''}</div><div class="val">${val}</div><div class="meta">${meta}</div>
     <div class="ic-wrap">${I[icon]}</div></div>`;
 }
 
@@ -478,10 +479,10 @@ function viewDashboard(){
     title:'Dashboard', crumb:'Overview',
     html: `${pageHead('Dashboard', 'Headcount and skills across the people currently employed.')}
     <div class="grid g4" style="margin-bottom:16px">
-      ${statCard('Total headcount', total, former ? former + ' former ' + (former===1?'employee':'employees') + ' not counted' : 'Staff and casual', 'users', 'brand')}
+      ${statCard('Total headcount', total, former ? former + ' former ' + (former===1?'employee':'employees') + ' not counted' : 'Staff and casual', 'users', 'brand', '', 'Everyone employed now, staff and casual.\nFormer employees are not counted.')}
       ${statCard('Staff', staff, pct(staff) + '% of headcount', 'users', 'ok')}
       ${statCard('Casual', casual, pct(casual) + '% of headcount', 'users', 'info')}
-      ${statCard('Skills recorded', skills.length, withSkills + ' ' + (withSkills===1?'person has':'people have') + ' at least one', 'award', 'warn')}
+      ${statCard('Skills recorded', skills.length, withSkills + ' ' + (withSkills===1?'person has':'people have') + ' at least one', 'award', 'warn', '', 'The number of different skills and trainings recorded for the people employed now.\nThe line below says how many people have at least one.')}
     </div>
     <div class="card"><div class="card-h"><div><h3>Top skills</h3><div class="sub">Most common current competencies</div></div></div>
       <div class="card-b stack" style="gap:13px">${top.length ? top.map(k => `<div><div class="row between small"><span class="strong">${esc(k.name)}</span><span class="muted">${k.people.length} ${k.people.length===1?'person':'people'}</span></div>
@@ -1106,9 +1107,9 @@ function paintOtList(){
     const bar = (label, right, pct) => `<div><div class="row between small"><span class="strong">${esc(label)}</span><span class="muted">${right}</span></div><div class="bar" style="margin-top:4px"><i style="width:${pct}%"></i></div></div>`;
     box.innerHTML = `<div class="card-b">
       <div class="grid g3" style="margin-bottom:18px">
-        ${statCard('Total hours', fmtHours(total), live.length + ' ' + (live.length === 1 ? 'entry' : 'entries') + ' in this period', 'clock', 'brand')}
+        ${statCard('Total hours', fmtHours(total), live.length + ' ' + (live.length === 1 ? 'entry' : 'entries') + ' in this period', 'clock', 'brand', '', 'Overtime hours entered for the chosen period.\nVoided entries are left out.')}
         ${statCard('People', people, 'worked overtime', 'users', 'ok')}
-        ${statCard('Average per person', fmtHours(people ? total / people : 0), 'hours in this period', 'activity', 'info')}
+        ${statCard('Average per person', fmtHours(people ? total / people : 0), 'hours in this period', 'activity', 'info', '', 'Total hours / the number of people who worked overtime in the period.')}
       </div>
       <div class="grid g2">
         <div><div class="strong" style="margin-bottom:8px">Hours by department</div><div class="stack" style="gap:11px">${depts.map(x => bar(x.key, fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people') + ' - ' + fmtHours(x.hours / x.people.size) + ' h each', Math.round(x.hours / maxD * 100))).join('')}</div></div>
@@ -1541,10 +1542,10 @@ function paintAttOverview(body, c){
   const wd = c.workingDays || 1;
   body.innerHTML = `
     <div class="grid g4" style="margin-bottom:16px">
-      ${statCard('Working days', c.workingDays, 'weekdays with attendance uploaded', 'clock', 'brand')}
-      ${statCard('Avg present per day', fmtHours(c.avgPresent), 'of ' + fmtHours(c.avgExpected) + ' on the payroll', 'users', 'ok')}
-      ${statCard('Late arrivals', c.lateTotal, 'first punch after ' + c.late + ' - ' + c.latePeople + ' ' + (c.latePeople === 1 ? 'person' : 'people'), 'alert', 'warn')}
-      ${statCard('People absent', c.absentPeople, c.absentTotal + ' absent ' + (c.absentTotal === 1 ? 'day' : 'days') + ' in total' + (c.uncheckedTotal ? ', ' + c.uncheckedTotal + ' not checked' : ''), 'x', 'danger')}
+      ${statCard('Working days', c.workingDays, 'weekdays with attendance uploaded', 'clock', 'brand', '', 'Weekdays in the period that have attendance uploaded from the clock-in machine.\nDays not uploaded are left out of every figure here.')}
+      ${statCard('Avg present per day', fmtHours(c.avgPresent), 'of ' + fmtHours(c.avgExpected) + ' on the payroll', 'users', 'ok', '', 'On an average working day: how many people punched in, against how many were expected that day.')}
+      ${statCard('Late arrivals', c.lateTotal, 'first punch after ' + c.late + ' - ' + c.latePeople + ' ' + (c.latePeople === 1 ? 'person' : 'people'), 'alert', 'warn', '', 'A late arrival is a first punch of the day after the late time (' + c.late + ').\nHR can change the times in the attendance settings.')}
+      ${statCard('People absent', c.absentPeople, c.absentTotal + ' absent ' + (c.absentTotal === 1 ? 'day' : 'days') + ' in total' + (c.uncheckedTotal ? ', ' + c.uncheckedTotal + ' not checked' : ''), 'x', 'danger', '', 'People with at least one expected working day with no punch and no leave, sick or other reason.\n"Not checked" = absent days HR has not given a reason for yet.')}
     </div>
     <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>By day</h3><div class="sub">Click a day to open its register</div></div></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Present</th><th>Late</th><th>Absent</th><th title="Leave, sick or other">Excused</th><th>No out/in punch</th><th style="width:28%">Attendance</th></tr></thead>
@@ -2040,8 +2041,8 @@ function lvPaint(){
   const list = (items, empty, extra) => items.length ? items.slice(0, 8).map(r => line(r, extra(r))).join('') + (items.length > 8 ? `<div class="small muted" style="padding-top:8px">and ${items.length - 8} more in Requests</div>` : '') : `<div class="small muted">${empty}</div>`;
   box.innerHTML = `<div class="card-b">
     <div class="grid g4" style="margin-bottom:18px">
-      ${statCard('Waiting for HR', waitHR.length, waitHR.length ? 'needs a decision' : 'nothing waiting', 'check', waitHR.length ? 'warn' : 'ok')}
-      ${statCard('Waiting for managers', waitMgr.length, 'decided from their email', 'clock', 'info')}
+      ${statCard('Waiting for HR', waitHR.length, waitHR.length ? 'needs a decision' : 'nothing waiting', 'check', waitHR.length ? 'warn' : 'ok', '', 'Leave requests that now need HR\'s decision.')}
+      ${statCard('Waiting for managers', waitMgr.length, 'decided from their email', 'clock', 'info', '', 'Leave requests waiting for the person\'s manager, who decides from the e-mail link.')}
       ${statCard('On leave today', now.length, 'approved leave', 'users', 'brand')}
       ${statCard('Starting in 30 days', soon.length, 'approved leave', 'activity', 'ok')}
     </div>
@@ -2092,7 +2093,7 @@ function lvPaintBalances(){
   const rows = lvBalFiltered(), canEdit = canEditHere(), unset = lv.bal.filter(b => b.entitled == null).length;
   if (!rows.length) { box.innerHTML = `<div class="small muted" style="padding:14px">No staff match these filters.</div>`; return; }
   const dirty = Object.keys(lv.balEdits).length;
-  box.innerHTML = `<div class="card-b row between" style="flex-wrap:wrap;gap:10px"><div class="small muted">${unset ? `<b>${unset}</b> staff have no yearly days set yet, so they cannot request annual leave. ` : ''}Left = yearly days - approved - waiting. Staff only; casual workers are not listed.</div>
+  box.innerHTML = `<div class="card-b row between" style="flex-wrap:wrap;gap:10px"><div class="small muted">${unset ? `<b>${unset}</b> staff have no yearly days set yet, so they cannot request annual leave. ` : ''}Left = yearly days - approved - waiting. ${hInfo('Yearly days = the annual leave set for the person for this year.\nLeft = yearly days - approved (taken) - waiting, so days already asked for cannot be asked for twice.\nWithout yearly days set, the person cannot request annual leave.')} Staff only; casual workers are not listed.</div>
       ${canEdit ? `<div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" id="lbFill">Fill empty with...</button><button class="btn btn-primary btn-sm" id="lbSave" ${dirty ? '' : 'disabled'}>${I.check} Save ${dirty ? '(' + dirty + ')' : 'changes'}</button></div>` : ''}</div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Yearly days</th><th>Taken</th><th>Waiting</th><th>Left</th></tr></thead>
     <tbody>${rows.map(b => { const ed = lv.balEdits[b.enroll_id]; const v = ed !== undefined ? ed : b.entitled; const left = v === '' || v == null ? null : Number(v) - b.taken - b.pending;

@@ -639,7 +639,7 @@ function viewItems(){
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr>
           <th>Request Date</th><th>Item ID</th><th>Requestor</th><th>Material</th><th>Item Detail</th>
-          <th>Qty &amp; Unit</th><th>Stage</th><th>Vendor / PO</th>
+          <th>Qty &amp; Unit</th><th>Stage ${stockInfo('Where the line is after it was requested: Waiting for approval > Waiting for order (approved) > Ordered (a PO number is in) > Partly received / Received (from the store receipts) > Closed.\nA line closes by itself when fully received, or by hand with a reason; it can be reopened with a reason.\nOverdue = a vendor delivery date was given and has passed. Old sheet line = copied from the old Google Sheet.')}</th><th>Vendor / PO</th>
         </tr></thead>
         <tbody>${rows.length ? rows.map(it => `
           <tr class="clickable" onclick="openItemDetail(${it.id})">

@@ -490,8 +490,8 @@ function viewPeople(){
        <button class="btn btn-primary" onclick="openAddPerson()">${I.plus} Add person</button>`)}
     <div class="grid g4" style="margin-bottom:16px">
       <div class="stat"><div class="lbl">Accounts</div><div class="val">${consoleN}</div><div class="meta">active, can sign in (they see only what they are given)</div></div>
-      <div class="stat"><div class="lbl">Machine screens</div><div class="val">${appN}</div><div class="meta">picked at a machine (page "Machine screens", role Production operator)</div></div>
-      <div class="stat"><div class="lbl">First PIN not changed</div><div class="val">${onFirst}</div><div class="meta">active, have not set their own yet</div></div>
+      <div class="stat"><div class="lbl">Machine screens ${window.oklInfo ? window.oklInfo('People whose name shows on the shop floor machines, where they pick it and type their PIN.\nThey have the page "Machine screens" (Shop floor), usually through the role Production operator.') : ''}</div><div class="val">${appN}</div><div class="meta">picked at a machine (page "Machine screens", role Production operator)</div></div>
+      <div class="stat"><div class="lbl">First PIN not changed ${window.oklInfo ? window.oklInfo('Active people still on the first PIN they were given; they are asked to set their own at the next sign-in.\nIf someone lost theirs, reset it in People > Manage.') : ''}</div><div class="val">${onFirst}</div><div class="meta">active, have not set their own yet</div></div>
       <div class="stat"><div class="lbl">Not on the machine app</div><div class="val">${S.noApp}</div><div class="meta">on the employee list</div></div>
     </div>
     <div class="row" style="gap:8px;margin-bottom:12px">

@@ -547,7 +547,7 @@ function ahuGrid(D, M){
       h += '</tr>';
     });
   });
-  return `<div class="eng-legend"><span class="lg-ok">OK</span><span class="lg-near">Near limit (23 to 25 °C)</span><span class="lg-bad">Out of limit (above 25 °C)</span><span class="lg-rev">Needs review</span><span class="lg-miss">Not logged</span><span style="background:#fff;border:1px solid var(--line);box-shadow:inset 0 -3px 0 #1B5FBF">Logged late</span></div>
+  return `<div class="eng-legend"><span class="lg-ok">OK</span><span class="lg-near">Near limit (23 to 25 °C)</span><span class="lg-bad">Out of limit (above 25 °C)</span><span class="lg-rev">Needs review</span><span class="lg-miss">Not logged</span>${spInfo('OK = below 23 °C. Near limit = 23 to 25 °C. Out of limit = above 25 °C.\nReadings are due on working days between 2:00 and 4:00 pm; after 4:00 pm a reading is marked Late. Backfilled = recorded later for a past day.\nNeeds review = a reading with no usable temperature.', 'What the colours mean')}<span style="background:#fff;border:1px solid var(--line);box-shadow:inset 0 -3px 0 #1B5FBF">Logged late</span></div>
     <div class="eng-grid-wrap"><table class="eng-grid">${h}</tbody></table></div>`;
 }
 
@@ -593,7 +593,7 @@ function ahuTrend(D, M, a){
 
 function ahuByAhu(M){
   const pct = a => a.readings ? a.bad / a.readings : 0;
-  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>AHU</th><th>Rooms</th><th>Readings</th><th>Out of limit</th><th>% out of limit</th><th>Highest °C</th></tr></thead><tbody>
+  return `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>AHU</th><th>Rooms</th><th>Readings</th><th>Out of limit</th><th>% out of limit ${spInfo('The share of this AHU\'s readings above the limit in the month.\nRed when more than 10%.')}</th><th>Highest °C</th></tr></thead><tbody>
     ${M.perAhu.map(a => `<tr><td data-label="AHU"><strong>${esc(a.ahu)}</strong></td><td data-label="Rooms">${a.rooms.length}</td><td data-label="Readings">${a.readings}</td>
       <td data-label="Out of limit">${a.bad}</td><td data-label="% out of limit">${a.readings ? `<span class="badge" style="background:${pct(a) > 0.1 ? 'var(--t-bad-bg)' : 'var(--t-ok-bg)'};color:${pct(a) > 0.1 ? 'var(--t-bad-tx)' : 'var(--t-ok-tx)'}">${(100 * pct(a)).toFixed(1)}%</span>` : '--'}</td>
       <td data-label="Highest °C">${a.max == null ? '--' : a.max.toFixed(1)}</td></tr>`).join('')}</tbody></table></div></div>`;
@@ -950,11 +950,11 @@ function viewAsset(params){
       <div class="row small" style="gap:6px 16px;flex-wrap:wrap">${facts.map(([l, v]) => `<span><span class="muted">${esc(l)}:</span> <b>${esc(v)}</b></span>`).join('')}</div>
       ${a.notes ? `<div class="small muted" style="margin-top:6px">${esc(a.notes)}</div>` : ''}</div></div>
     <div class="grid g4" style="margin-bottom:14px">
-      <div class="stat"><div class="lbl">Preventive maintenance</div><div class="val" style="font-size:16px">${pm ? PM_STATE[pm.state] || '' : '<span class="small muted">not tracked</span>'}</div>
+      <div class="stat"><div class="lbl">Preventive maintenance ${spInfo('Whether this machine\'s preventive maintenance (PM) is on time.\nNext PM = the last finished PM + the interval. "Due this week" = within 7 days; "Overdue" = the date has passed.\nA job on a Saturday or Sunday that is not a breakdown also counts as a PM.', 'What the PM state means')}</div><div class="val" style="font-size:16px">${pm ? PM_STATE[pm.state] || '' : '<span class="small muted">not tracked</span>'}</div>
         <div class="meta">${pm ? `every ${pm.interval_days} d · last ${esc(pm.last_pm || 'never')}${pm.due_date ? ' · next ' + esc(pm.due_date) : ''}` : ''}</div></div>
-      <div class="stat"><div class="lbl">Failures (90 days)</div><div class="val">${num(k.failures) || 0}</div><div class="meta">${k.downtime_min != null ? 'downtime ' + dur(k.downtime_min) : 'breakdown jobs'}</div></div>
-      <div class="stat"><div class="lbl">MTTR</div><div class="val">${dur(k.mttr_min)}</div><div class="meta">mean time to repair</div></div>
-      <div class="stat"><div class="lbl">MTBF</div><div class="val">${k.mtbf_days == null ? '--' : num(k.mtbf_days) + ' d'}</div><div class="meta">mean time between failures</div></div></div>
+      <div class="stat"><div class="lbl">Failures (90 days) ${spInfo('How often this machine broke down in the last 90 days.\nEvery breakdown job and every floor stop counts, however short; cancelled jobs do not.\nDowntime adds up the time the machine was down in those failures.', 'What counts as a failure')}</div><div class="val">${num(k.failures) || 0}</div><div class="meta">${k.downtime_min != null ? 'downtime ' + dur(k.downtime_min) : 'breakdown jobs'}</div></div>
+      <div class="stat"><div class="lbl">MTTR ${spInfo('Mean time to repair: how long the machine is down per failure, on average.\nEach failure runs from when the machine stopped (or the call) until it ran again or the job was finished.\nFailures of the last 90 days.', 'How MTTR is worked out')}</div><div class="val">${dur(k.mttr_min)}</div><div class="meta">mean time to repair</div></div>
+      <div class="stat"><div class="lbl">MTBF ${spInfo('Mean time between failures: the average number of days from one failure to the next.\nFailures of the last 90 days; it needs at least two, else it shows --.\nHigher is better.', 'How MTBF is worked out')}</div><div class="val">${k.mtbf_days == null ? '--' : num(k.mtbf_days) + ' d'}</div><div class="meta">mean time between failures</div></div></div>
     <div class="tabs" style="margin-bottom:14px">${tabs.map(([t, l, n]) => `<a class="tab ${t === cur ? 'on' : ''}" href="#/equipment/${esc(code)}?tab=${t}">${esc(l)} <span class="badge" style="padding:1px 7px">${n}</span></a>`).join('')}</div>
     ${cur === 'history' ? `<div class="row between" style="margin-bottom:10px;gap:8px;flex-wrap:wrap"><div class="small muted">The last year, newest first: jobs from every source${a.floor_code ? ' and floor stops with no job' : ''}. Every breakdown and floor stop is a failure, however short.</div>
       <div class="seg"><button class="${APF === 'all' ? 'on' : ''}" onclick="apFilter('all')">All ${hist.length}</button><button class="${APF === 'fail' ? 'on' : ''}" onclick="apFilter('fail')">Failures ${hist.filter(h => h.failure).length}</button></div></div>` : ''}
@@ -1552,9 +1552,9 @@ function viewSpares(){
       + (mark ? window.oklRequestBanner(mark) : '') + `
     <div class="grid g4" style="margin-bottom:14px">
       <div class="stat"><div class="lbl">Parts</div><div class="val">${all.length}</div><div class="meta">in the catalogue</div></div>
-      <div class="stat"><div class="lbl">Never counted</div><div class="val">${never}</div><div class="meta">the stock is checked in the weekly count</div></div>
+      <div class="stat"><div class="lbl">Never counted ${spInfo('Parts that have not had a stock count yet, so their stock has not been checked against the shelf.\nEach part comes up in the weekly count.')}</div><div class="val">${never}</div><div class="meta">the stock is checked in the weekly count</div></div>
       <div class="stat"><div class="lbl">Out of stock / reorder now</div><div class="val">${out} / ${reo}</div><div class="meta">${soon} more to order soon</div></div>
-      <div class="stat"><div class="lbl">Up to standard</div><div class="val">${all.filter(x => x.up_to_standard).length} of ${all.length}</div><div class="meta">machines and location known · ${never} never counted</div></div>
+      <div class="stat"><div class="lbl">Up to standard ${spInfo('A part is up to standard when the machines it is used on and its store location are both recorded.\nBoth are confirmed in the weekly count.')}</div><div class="val">${all.filter(x => x.up_to_standard).length} of ${all.length}</div><div class="meta">machines and location known · ${never} never counted</div></div>
     </div>
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px"><div class="row" style="gap:10px;flex-wrap:wrap">
@@ -2063,7 +2063,7 @@ function viewCounts(){
     <div class="grid g3" style="margin-bottom:14px">
       <div class="stat"><div class="lbl">${thisWeek ? 'To count today' : 'Week'}</div><div class="val">${thisWeek ? dueNow : esc(c.week)}</div><div class="meta">${thisWeek ? 'today\'s parts and any left from earlier days' : 'from ' + esc(c.week_start)}</div></div>
       <div class="stat"><div class="lbl">This week</div><div class="val">${done} of ${items.length}</div><div class="meta">counted. Count ahead if you have time.</div></div>
-      <div class="stat"><div class="lbl">Parts up to standard</div><div class="val">${num(std.done) || 0} of ${num(std.parts) || 0}</div><div class="meta">machines and location known</div></div>
+      <div class="stat"><div class="lbl">Parts up to standard ${spInfo('A part is up to standard when the machines it is used on and its store location are both recorded.\nConfirm both when you count it.')}</div><div class="val">${num(std.done) || 0} of ${num(std.parts) || 0}</div><div class="meta">machines and location known</div></div>
     </div>
     <div class="row between" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" onclick="spWeek('${shift(-7)}')">${I.chevL} Previous week</button>
@@ -2411,9 +2411,9 @@ function viewJob(params, ctx){
     </div></div>
     ${rcJobBanner(j.job_id)}
     <div class="grid g2" style="margin-bottom:14px">
-      ${isCall ? `<div class="stat"><div class="lbl">${j.arrived_at ? 'Waited for a technician' : 'Waiting for a technician'}</div><div class="val mono">${j.arrived_at || closed ? dur(waited) : liveDur(j.called_at, true)}</div></div>` : ''}
-      ${fromRep ? `<div class="stat"><div class="lbl">Machine down (from the report)</div><div class="val mono">${dur(j.downtime_minutes)}</div></div>`
-        : `<div class="stat"><div class="lbl">${j.finished_at ? 'Repair time' : 'Repair so far'}</div><div class="val mono">${!(j.started_at || j.arrived_at) ? '--' : j.finished_at || closed ? dur(repair) : liveDur(j.started_at || j.arrived_at, true)}</div></div>`}
+      ${isCall ? `<div class="stat"><div class="lbl">${j.arrived_at ? 'Waited for a technician' : 'Waiting for a technician'} ${spInfo('From the operator\'s call to the technician arriving at the machine.')}</div><div class="val mono">${j.arrived_at || closed ? dur(waited) : liveDur(j.called_at, true)}</div></div>` : ''}
+      ${fromRep ? `<div class="stat"><div class="lbl">Machine down (from the report) ${spInfo('The downtime written in the daily packaging report for this issue.\nThe report has no clock times, so only the day is known.')}</div><div class="val mono">${dur(j.downtime_minutes)}</div></div>`
+        : `<div class="stat"><div class="lbl">${j.finished_at ? 'Repair time' : 'Repair so far'} ${spInfo('From the technician starting (or arriving) to the job being finished.')}</div><div class="val mono">${!(j.started_at || j.arrived_at) ? '--' : j.finished_at || closed ? dur(repair) : liveDur(j.started_at || j.arrived_at, true)}</div></div>`}
     </div>
     <div class="card" style="margin-bottom:14px"><div class="card-b">${tl.map(([a, b]) => `<div class="row between small" style="padding:4px 0;border-bottom:1px solid var(--line-2)"><span>${esc(a)}</span><span class="mono strong">${esc(b)}</span></div>`).join('') || '<span class="small muted">Nothing yet.</span>'}
       ${(j.technicians || []).length ? `<div class="small" style="margin-top:8px"><b>On the job:</b> ${j.technicians.map(t => esc(t.name)).join(', ')}</div>` : ''}</div></div>
@@ -2903,10 +2903,10 @@ function viewPm(tab){
     const fromReport = eff.some(x => x.failure_source === 'report');
     return { title:'Preventive maintenance', crumb:'Maintenance', keepScroll: true,
       html: head + `<div class="grid g4" style="margin-bottom:14px">
-        <div class="stat"><div class="lbl">PM effectiveness</div><div class="val">${avg == null ? '--' : avg + '%'}</div><div class="meta">${scored.length} finished PM runs</div></div>
+        <div class="stat"><div class="lbl">PM effectiveness ${spInfo('How well PMs keep machines running until the next PM is due.\nA PM that reaches its next PM date (or the next PM) with no failure scores 100%; one that fails early scores the days it held / the interval.\nA failure is a breakdown job or a floor stop (from the floor app or the daily report only when it is at least the minutes set in Settings). Only finished runs are averaged.', 'How PM effectiveness is worked out')}</div><div class="val">${avg == null ? '--' : avg + '%'}</div><div class="meta">${scored.length} finished PM runs</div></div>
         <div class="stat"><div class="lbl">PMs in the period</div><div class="val">${eff.length}</div></div>
-        <div class="stat"><div class="lbl">Failed early</div><div class="val">${eff.filter(x => x.status === 'Failed early').length}</div></div>
-        <div class="stat"><div class="lbl">Still running</div><div class="val">${eff.filter(x => x.status === 'Running').length}</div>${waiting ? `<div class="meta">${waiting} waiting for the daily report</div>` : ''}</div></div>
+        <div class="stat"><div class="lbl">Failed early ${spInfo('PMs after which the machine failed before its next PM was due.\nOpen the line to see the failure that ended the run.')}</div><div class="val">${eff.filter(x => x.status === 'Failed early').length}</div></div>
+        <div class="stat"><div class="lbl">Still running ${spInfo('PMs whose run is not over: no failure so far and the next PM date is still ahead.\nThey count in the average only when they finish.\n"Waiting for the daily report": a machine judged from the report, and the report is not read up to the end of the run yet.')}</div><div class="val">${eff.filter(x => x.status === 'Running').length}</div>${waiting ? `<div class="meta">${waiting} waiting for the daily report</div>` : ''}</div></div>
       ${fromReport ? `<div class="notice ${waiting ? 'warn' : 'info'}" style="margin-bottom:12px">${I.info}<div>Machines the floor app does not cover are judged from the daily packaging report and breakdown jobs.
         ${repTo ? `The report has been read up to <b>${esc(repTo)}</b>.` : '<b>No daily report has been read yet.</b>'}
         ${waiting ? ` ${waiting} PM${waiting === 1 ? '' : 's'} wait${waiting === 1 ? 's' : ''} for it: without it, "no failure" cannot be trusted.` : ''}</div></div>` : ''}
@@ -3120,7 +3120,7 @@ async function ovLoad(){
 }
 function ovSet(k, v){ OV[k] = v; if (k === 'preset' && v === 'custom') { const r = ovRange(); OV.from = r.from; OV.to = r.to; } OV.data = null; render(); }
 const ovPct = (a, b) => b ? Math.round(100 * a / b) + '%' : '--';
-const ovStat = (lbl, val, meta, link, kind) => `<div class="stat ${link ? 'link' : ''} ${kind ? 'acc-' + kind : ''}" ${link ? `onclick="go('${link}')"` : ''}><div class="lbl">${esc(lbl)}</div><div class="val">${val == null ? '--' : val}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>`;
+const ovStat = (lbl, val, meta, link, kind, info) => `<div class="stat ${link ? 'link' : ''} ${kind ? 'acc-' + kind : ''}" ${link ? `onclick="go('${link}')"` : ''}><div class="lbl">${esc(lbl)}${info ? ' ' + spInfo(info) : ''}</div><div class="val">${val == null ? '--' : val}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>`;
 function viewOverview(tab){
   if (!EQ.list && !EQ.loading) eqLoad();
   if (!OV.data) { OV.data = 'loading'; ovLoad(); }
@@ -3149,10 +3149,10 @@ function ovNoTime(x, m){ const t = new Date(m.last_failure).getTime(), f = (x.fa
 function ovReliability(d){
   const x = d.reliability || {};
   return `<div class="grid g4" style="margin-bottom:14px">
-      ${ovStat('Failures', num(x.failures) || 0, 'every breakdown and machine stop, however short')}
-      ${ovStat('MTTR', dur(x.mttr_min), 'mean time to repair: failure to running again')}
-      ${ovStat('MTBF', x.mtbf_days == null ? '--' : num(x.mtbf_days) + ' days', 'mean time between failures on the same equipment')}
-      ${ovStat('Machine downtime', dur(x.downtime_min), 'floor ' + dur(x.floor_downtime_min) + ' (' + num(x.stops) + ' stops), daily report ' + dur(x.report_downtime_min) + ' (' + num(x.report_issues) + ' issues)')}</div>
+      ${ovStat('Failures', num(x.failures) || 0, 'every breakdown and machine stop, however short', '', '', 'Every breakdown job and every machine stop in the chosen period, however short (cancelled jobs left out).\nStops come from the floor app; issues from the daily packaging report count too.')}
+      ${ovStat('MTTR', dur(x.mttr_min), 'mean time to repair: failure to running again', '', '', 'The average time down per failure in the period.\nEach failure runs from when the machine stopped (or the call) until it ran again or the job was finished.')}
+      ${ovStat('MTBF', x.mtbf_days == null ? '--' : num(x.mtbf_days) + ' days', 'mean time between failures on the same equipment', '', '', 'The average number of days between two failures of the same equipment, in the period.\nEquipment that failed only once has no gap and is left out. Higher is better.')}
+      ${ovStat('Machine downtime', dur(x.downtime_min), 'floor ' + dur(x.floor_downtime_min) + ' (' + num(x.stops) + ' stops), daily report ' + dur(x.report_downtime_min) + ' (' + num(x.report_issues) + ' issues)', '', '', 'Time the machines were down in the period.\nFloor = stops recorded by the floor app; daily report = downtime written in the daily packaging report for machines the app does not cover.')}</div>
     <div class="card"><div class="card-h"><div><h3>Equipment</h3><div class="sub">Most downtime first. Open one to see its history.</div></div></div><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Equipment</th><th style="text-align:right">Failures</th><th style="text-align:right">Downtime</th><th style="text-align:right">Stops / issues</th><th style="text-align:right">MTTR</th><th style="text-align:right">MTBF</th><th>Last failure</th></tr></thead>
       <tbody>${(x.equipment || []).map(m => `<tr class="clickable" onclick="go('/equipment/${esc(m.asset)}')"><td data-label="Equipment"><div class="strong">${esc(m.name)}</div><div class="tiny muted">${esc(m.type || '')}</div></td>
@@ -3163,10 +3163,10 @@ function ovReliability(d){
 function ovResponse(d){
   const x = d.response || {};
   return `<div class="grid g4" style="margin-bottom:14px">
-      ${ovStat('Calls from the floor', num(x.calls) || 0, (x.not_accepted_now || 0) + ' not accepted right now', '/jobs', x.not_accepted_now ? 'warn' : '')}
-      ${ovStat('Response time', dur(x.response_min), 'called to accepted, average')}
-      ${ovStat('Wait for maintenance', dur(x.wait_min), 'called to technician at the machine, average')}
-      ${ovStat('Open jobs', num(x.open_now) || 0, (x.open_over_day || 0) + ' open over 24 h, ' + (x.waiting_part || 0) + ' waiting for a part; ' + (x.to_report || 0) + ' report issues to fill in', '/jobs?tab=open', x.open_over_day ? 'warn' : '')}</div>
+      ${ovStat('Calls from the floor', num(x.calls) || 0, (x.not_accepted_now || 0) + ' not accepted right now', '/jobs', x.not_accepted_now ? 'warn' : '', 'Calls for maintenance sent from the machines in the period.\n"Not accepted right now" = calls no technician has taken yet.')}
+      ${ovStat('Response time', dur(x.response_min), 'called to accepted, average', '', '', 'How fast a technician takes a call: from the call to "accepted", averaged over the calls in the period.')}
+      ${ovStat('Wait for maintenance', dur(x.wait_min), 'called to technician at the machine, average', '', '', 'How long the machine waits for help: from the call to the technician arriving at the machine, on average.')}
+      ${ovStat('Open jobs', num(x.open_now) || 0, (x.open_over_day || 0) + ' open over 24 h, ' + (x.waiting_part || 0) + ' waiting for a part; ' + (x.to_report || 0) + ' report issues to fill in', '/jobs?tab=open', x.open_over_day ? 'warn' : '', 'Jobs not finished yet, now (not only the period).\nOver 24 h = open more than a day since the call or start. Report issues to fill in = daily report issues waiting for what failed and what was done.')}</div>
     <div class="card"><div class="card-h"><div><h3>Open jobs</h3><div class="sub">Oldest first.</div></div></div><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Job</th><th>Equipment</th><th>Type</th><th>Since</th><th>Status</th></tr></thead>
       <tbody>${(x.open_jobs || []).map(j => `<tr class="clickable" onclick="go('/jobs/${esc(j.job_id)}')"><td class="mono small" data-label="Job">${esc(j.job_id)}</td>
@@ -3176,10 +3176,10 @@ function ovResponse(d){
 function ovPreventive(d){
   const x = d.preventive || {};
   return `<div class="grid g4" style="margin-bottom:14px">
-      ${ovStat('PM on schedule', ovPct(x.on_schedule, x.tracked), (x.on_schedule || 0) + ' of ' + (x.tracked || 0) + ' items; ' + (x.no_record || 0) + ' with no PM yet', '/pm')}
-      ${ovStat('PM overdue', num(x.overdue) || 0, (x.due_week || 0) + ' due this week', '/pm', x.overdue ? 'danger' : '')}
-      ${ovStat('PM effectiveness', x.effectiveness == null ? '--' : x.effectiveness + '%', (x.done || 0) + ' PMs in the period', '/pm/effectiveness')}
-      ${ovStat('Planned work', x.planned_pct == null ? '--' : x.planned_pct + '%', 'of labour hours: everything but breakdowns')}</div>
+      ${ovStat('PM on schedule', ovPct(x.on_schedule, x.tracked), (x.on_schedule || 0) + ' of ' + (x.tracked || 0) + ' items; ' + (x.no_record || 0) + ' with no PM yet', '/pm', '', 'The share of equipment whose PM is not overdue (OK or due this week).\nNext PM = the last finished PM + the interval. Equipment with no PM recorded yet is counted as not on schedule.')}
+      ${ovStat('PM overdue', num(x.overdue) || 0, (x.due_week || 0) + ' due this week', '/pm', x.overdue ? 'danger' : '', 'Equipment whose next PM date has passed without a PM.\nDue this week = the next PM date is within 7 days.')}
+      ${ovStat('PM effectiveness', x.effectiveness == null ? '--' : x.effectiveness + '%', (x.done || 0) + ' PMs in the period', '/pm/effectiveness', '', 'How well PMs keep machines running until the next PM is due: 100% when no failure came before it; less when one did (days held / the interval).\nThe average of finished PM runs in the period. Details in PM effectiveness.')}
+      ${ovStat('Planned work', x.planned_pct == null ? '--' : x.planned_pct + '%', 'of labour hours: everything but breakdowns', '', '', 'The share of technicians\' recorded hours that went to planned work (PM, checks, projects) rather than breakdowns.\nHigher means less fire-fighting.')}</div>
     ${x.checks_not_done ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>${x.checks_not_done} PM checklist item${x.checks_not_done === 1 ? ' was' : 's were'} not done in this period, ${x.checks_no_material || 0} for want of material.</div></div>` : ''}
     <div class="grid g2">
       <div class="card"><div class="card-h"><h3>Labour by type of job</h3></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Type</th><th style="text-align:right">Jobs</th><th style="text-align:right">Hours</th></tr></thead>
@@ -3191,8 +3191,8 @@ function ovPreventive(d){
 function ovFollowup(d){
   const x = d.followup || {}, cw = x.count_week || {};
   return `<div class="grid g4" style="margin-bottom:16px">
-      ${ovStat('Out of stock', num(x.out_of_stock) || 0, (x.reorder || 0) + ' more at or below the reorder level', '/spares')}
-      ${ovStat('Hand-overs waiting', num(x.handovers_waiting) || 0, 'parts recorded on jobs, not confirmed', '/spares/handovers', x.handovers_waiting ? 'warn' : '')}
+      ${ovStat('Out of stock', num(x.out_of_stock) || 0, (x.reorder || 0) + ' more at or below the reorder level', '/spares', '', 'Spare parts with no stock left now.\nThe reorder level is worked out from how fast each part is used; details in Spares.')}
+      ${ovStat('Hand-overs waiting', num(x.handovers_waiting) || 0, 'parts recorded on jobs, not confirmed', '/spares/handovers', x.handovers_waiting ? 'warn' : '', 'Parts a technician recorded on a job that the storekeeper has not confirmed handing over yet.\nThe stock changes only when it is confirmed.')}
       ${ovStat('Weekly count', (cw.done || 0) + ' of ' + (cw.items || 0), 'this week', '/spares/counts')}</div>`;
 }
 route('/overview', () => viewOverview('reliability'));
@@ -3292,10 +3292,10 @@ function viewWatch(top){
   const t = d.totals || {}, list = d.machines || [];
   return { title:'Weekend watch', crumb:'Maintenance', keepScroll: true, bind,
     html: head + `<div class="grid g4" style="margin-bottom:14px">
-        <div class="stat"><div class="lbl">Breakdowns and stops</div><div class="val">${t.failures || 0}</div><div class="meta">${t.failures_before || 0} the 7 days before</div></div>
+        <div class="stat"><div class="lbl">Breakdowns and stops ${spInfo('Breakdown jobs and machine stops in the 7 days shown, however short.\nThe line below compares with the 7 days before.')}</div><div class="val">${t.failures || 0}</div><div class="meta">${t.failures_before || 0} the 7 days before</div></div>
         <div class="stat"><div class="lbl">Time down</div><div class="val">${dur(t.minutes || 0)}</div></div>
         <div class="stat"><div class="lbl">Machines</div><div class="val">${t.machines || 0}</div></div>
-        <div class="stat"><div class="lbl">PMs overdue or due</div><div class="val">${(d.pm_due || []).length}</div></div></div>
+        <div class="stat"><div class="lbl">PMs overdue or due ${spInfo('Equipment whose PM is overdue or due within 7 days.')}</div><div class="val">${(d.pm_due || []).length}</div></div></div>
       ${list.length ? list.map((x, i) => `<div class="card" style="margin-bottom:12px"><div class="card-b">
         <div class="row between" style="flex-wrap:nowrap;align-items:flex-start"><div><span class="badge ${i < 3 ? 'b-danger' : 'b-warn'}">${i + 1}</span> <a class="strong" style="font-size:16px" href="#/equipment/${esc(x.asset)}">${esc(x.name)}</a>
           <div class="small muted">${esc(x.area || '')}</div></div><div class="mono strong" style="white-space:nowrap">${x.failures} stop${+x.failures === 1 ? '' : 's'} · ${dur(+x.minutes)}</div></div>

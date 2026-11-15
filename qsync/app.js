@@ -440,6 +440,7 @@ function emptyState(icon, title, msg, action){
     <h4>${esc(title)}</h4><div class="small">${msg||''}</div>
     ${action?`<div style="margin-top:14px">${action}</div>`:''}</div>`;
 }
+const qInfo = (t, l) => window.oklInfo ? window.oklInfo(t, l) : '';   // (i) bubbles (shared.js)
 function statusBadge(status){
   const s = STATUS[status] || {label:status, badge:'b-slate'};
   return `<span class="badge ${s.badge}"><span class="dot"></span>${esc(s.label)}</span>`;
@@ -810,10 +811,10 @@ function reportsTimingHtml(d){
   const t = d.timing || {}, steps = (t.steps || []).filter(s => s.key !== 'total'), total = (t.steps || []).find(s => s.key === 'total') || {};
   const max = Math.max(1, ...steps.map(s => Number(s.avg_h) || 0));
   return `<div class="grid g4" style="margin-bottom:16px">
-      <div class="stat acc-info"><div class="lbl">Whole cycle, average</div><div class="val" style="font-size:22px">${hrs(total.avg_h)}</div><div class="meta">request to QA acknowledgement, ${total.n || 0} batches</div></div>
-      <div class="stat acc-info"><div class="lbl">Whole cycle, median</div><div class="val" style="font-size:22px">${hrs(total.median_h)}</div><div class="meta">half the batches are faster</div></div>
+      <div class="stat acc-info"><div class="lbl">Whole cycle, average ${qInfo('From the request (or Production\'s sign-off) to QA\'s acknowledgement of the QC decision, for batches that got there.\nClock hours: nights and weekends count.')}</div><div class="val" style="font-size:22px">${hrs(total.avg_h)}</div><div class="meta">request to QA acknowledgement, ${total.n || 0} batches</div></div>
+      <div class="stat acc-info"><div class="lbl">Whole cycle, median ${qInfo('The middle batch: half were faster, half slower.\nOne very slow batch pulls the average up but hardly moves the median.')}</div><div class="val" style="font-size:22px">${hrs(total.median_h)}</div><div class="meta">half the batches are faster</div></div>
       <div class="stat acc-warn"><div class="lbl">Longest</div><div class="val" style="font-size:22px">${hrs(total.max_h)}</div><div class="meta">one batch</div></div>
-      <div class="stat acc-brand"><div class="lbl">Not finished yet</div><div class="val">${(t.open || []).length}</div><div class="meta">batches still moving</div></div></div>
+      <div class="stat acc-brand"><div class="lbl">Not finished yet ${qInfo('Batches raised in the period that have not reached QA acknowledgement yet. They are not in the times above.')}</div><div class="val">${(t.open || []).length}</div><div class="meta">batches still moving</div></div></div>
     <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Time of each step</h3><div class="sub">Average (bar), median and longest, from one sign-off to the next</div></div></div>
       <div class="card-b">${steps.map(s => `<div style="margin-bottom:14px" title="${esc(s.label)}: average ${hrs(s.avg_h)}, median ${hrs(s.median_h)}, longest ${hrs(s.max_h)} (${s.n} batches)">
         <div class="row between"><div class="small strong">${esc(s.label)}</div><div class="small"><b class="tnum">${hrs(s.avg_h)}</b> <span class="muted">median ${hrs(s.median_h)} - longest ${hrs(s.max_h)} - ${s.n} batches</span></div></div>
@@ -922,13 +923,13 @@ function viewReports(){
     ${reportsFilterBarHtml()}
 
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="stat acc-brand"><div class="ic-wrap">${I.layers}</div><div class="lbl">Total requests</div>
+      <div class="stat acc-brand"><div class="ic-wrap">${I.layers}</div><div class="lbl">Total requests ${qInfo('Test requests raised in the chosen period (by the day they were raised).\n"Still open" = not yet signed off by the QA Supervisor.')}</div>
         <div class="val">${d.kpis.totalRequests}</div><div class="meta">${d.kpis.openRequests} still open</div></div>
-      <div class="stat acc-ok"><div class="ic-wrap">${I.checkCircle}</div><div class="lbl">First pass rate</div>
-        <div class="val">${d.kpis.firstPassRate}%</div><div class="meta">${d.kpis.passCount} of ${d.kpis.testedCount} analyses</div></div>
-      <div class="stat acc-info"><div class="ic-wrap">${I.clock}</div><div class="lbl">Average turnaround</div>
-        <div class="val" style="font-size:22px">${d.kpis.avgTurnaround || '--'}</div><div class="meta">Request raised to QA decision</div></div>
-      <div class="stat acc-warn"><div class="ic-wrap">${I.doc}</div><div class="lbl">Paper saved</div>
+      <div class="stat acc-ok"><div class="ic-wrap">${I.checkCircle}</div><div class="lbl">First pass rate ${qInfo('The share of tested requests where every IPQA check passed the first time.\nA request with any failed check is not a first pass.\nThese are the IPQA checks on the request, not the QC lab results.')}</div>
+        <div class="val">${d.kpis.testedCount ? d.kpis.firstPassRate + '%' : '--'}</div><div class="meta">${d.kpis.passCount} of ${d.kpis.testedCount} tested requests</div></div>
+      <div class="stat acc-info"><div class="ic-wrap">${I.clock}</div><div class="lbl">Average turnaround ${qInfo('The average time from a request being raised to the QA Supervisor\'s sign-off, for requests signed off in the period.\nClock hours: nights and weekends count.\nThe Turnaround tab measures the whole cycle, up to QA acknowledgement.')}</div>
+        <div class="val" style="font-size:22px">${d.kpis.avgTurnaround || '--'}</div><div class="meta">Request raised to QA Supervisor sign-off</div></div>
+      <div class="stat acc-warn"><div class="ic-wrap">${I.doc}</div><div class="lbl">Paper saved ${qInfo('An estimate: each tested request would have used about 68 printed pages on paper.')}</div>
         <div class="val">${nfmt(d.kpis.paperSaved)}</div><div class="meta">pages, at 68 per paper analysis</div></div>
     </div>
 
