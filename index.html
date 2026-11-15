@@ -61,10 +61,10 @@
     <p class="sub">Sign in to continue.</p>
     <form class="card" id="loginForm" novalidate>
       <h2>Sign in</h2>
-      <p class="hint">Use your work email and password.</p>
-      <label for="email">Email address</label>
-      <input id="email" type="email" autocomplete="username" placeholder="you@orangegroups.ng">
-      <label for="password">Password</label>
+      <p class="hint">Use your work e-mail or your staff number, and your PIN.</p>
+      <label for="email">E-mail or staff number</label>
+      <input id="email" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="you@orangegroups.ng or 2024037">
+      <label for="password">PIN / password</label>
       <input id="password" type="password" autocomplete="current-password">
       <div class="err" id="loginErr"></div>
       <button class="btn" type="submit">Sign in</button>
@@ -97,8 +97,14 @@
       <div><button class="linkbtn" id="changePw">Change password</button><button class="linkbtn" id="signOut">Sign out</button></div>
     </div>
     
-    <div id="noConsoles" class="notice hidden">You have not been given access to any console yet. Ask an admin to add you in Users.</div>
     <div class="grid">
+      <!-- 072: everyone signed in has their own profile (name, staff no., competencies); Requests needs one of its two pages -->
+      <a class="tile" id="profileTile" href="profile/">
+        <h3>My profile</h3>
+      </a>
+      <a class="tile" data-module="requests" href="requests/">
+        <h3>Requests</h3>
+      </a>
       <a class="tile" data-module="employees" href="employees/">
         <h3>Human Resource</h3>
       </a>
@@ -187,7 +193,6 @@
       var can = !!me.user.is_admin || !!access[t.getAttribute('data-module')];
       t.classList.toggle('hidden', !can); any = any || can;
     });
-    $('noConsoles').classList.toggle('hidden', any || !!me.user.is_admin);
     show('homeView'); resetIdle();
     backupBar();
   }
@@ -226,14 +231,16 @@
   async function load(){
     try { me = await call('me', 'GET'); if (window.oklMe) oklMe.save(getToken(), me); }   // startup.js: the console opened next starts at once
     catch(e){ setToken(''); me = null; showLogin(e.status === 401 ? '' : e.message); return; }
-    if (me.user.must_change) showPassword(true); else showHome();
+    if (me.user.must_change) showPassword(true);
+    else if (/[?&]pw=1/.test(location.search)) { history.replaceState(null, '', location.pathname); showPassword(false); }   // "Change PIN" on My profile
+    else showHome();
   }
 
   $('loginForm').addEventListener('submit', async function(ev){
     ev.preventDefault();
     var email = $('email').value.trim(), password = $('password').value;
     $('loginErr').textContent = '';
-    if (!email || !password){ $('loginErr').textContent = 'Enter your email and password.'; return; }
+    if (!email || !password){ $('loginErr').textContent = 'Enter your e-mail or staff number, and your PIN.'; return; }
     var btn = ev.target.querySelector('button[type=submit]'); btn.disabled = true;
     try { var r = await call('login', 'POST', { email: email, password: password }); setToken(r.token); await load(); }
     catch(e){ $('loginErr').textContent = e.message; }

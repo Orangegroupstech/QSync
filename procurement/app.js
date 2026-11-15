@@ -248,11 +248,7 @@ function renderShell(inner, meta){
         <div style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.02em">Procurement</div>
       </div>
       <div class="sidebar-scroll">${navHtml}</div>
-      <div class="sidebar-foot">
-        <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to home</a>
-        <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)"
-          onclick="logout()">${I.logout} Sign out</button>
-      </div>
+      <!-- Home, My profile, Phone/Laptop and Sign out: the bar at the top right (shared.js) -->
     </aside>
     <div class="main">
       <header class="topbar">
@@ -309,6 +305,7 @@ async function bootstrap(){
   if (it.e) { if (it.e.status === 403) limited = true; else throw it.e; } else data = it.d;   // an approver without the console's pages still gets My approvals and the approval page
   S = { me: meFromAuth(auth, 'procurement'), items: data.items || [], limited };
   resetIdleTimer();
+  window.reloadItems = async () => { try { const d = await api('/webhook/procurement/api/items'); S.items = d.items || []; render(); } catch (e) { toast('Could not reload', e.message, 'err'); } };
   oklMe.follow(st, a => { if (a.user && a.user.must_change){ rememberHere(); toLandingKeepToken(); return; } if (S){ S.me = meFromAuth(a, 'procurement'); render(); } });
 }
 function render(){
@@ -372,18 +369,33 @@ let itemStatusFilter = '';
 let itemDateFrom = '';
 let itemDateTo = '';
 
-// The 7 fields this workflow never fills in - the only ones the console can
-// edit. Kept as one list so the detail modal, the edit form, and the
-// PATCH payload builder can't drift out of sync with each other.
+let itemStageFilter = '';
+
+// 072 (15 Nov 2026): what Procurement fills in. Term of payment, RFP, ODL and the management remark are no longer asked
+// (their old values still show, read only). The department receival status is written by the stores.
 const EDITABLE_FIELDS = [
   { key: 'vendor', label: 'Vendor' },
-  { key: 'po_number', label: 'PO Number' },
-  { key: 'term_of_payment', label: 'Term Of Payment' },
-  { key: 'rfp_number', label: 'RFP Number' },
-  { key: 'management_review_odl', label: 'Management Review (ODL)' },
-  { key: 'vendor_delivery_date', label: 'Vendor Delivery Date' },
-  { key: 'department_receival_status', label: 'Department Receival Status' },
+  { key: 'po_number', label: 'PO number' },
+  { key: 'vendor_delivery_date', label: 'Vendor delivery date (if known)', type: 'date' },
+  { key: 'procurement_note', label: 'Procurement note', type: 'area' },
 ];
+const OLD_FIELDS = [
+  { key: 'term_of_payment', label: 'Term of payment (old)' },
+  { key: 'rfp_number', label: 'RFP number (old)' },
+  { key: 'management_review_odl', label: 'Management review ODL (old)' },
+  { key: 'management_remark', label: 'Management remark (old)' },
+];
+const CLOSE_REASONS = ['Delivered outside the stores', 'Service done', 'Cancelled', 'Not needed any more', 'Finished before the console'];
+const STAGES = [
+  ['approval', 'Waiting for approval'], ['waiting_order', 'Waiting for order'], ['ordered', 'Ordered'], ['partly', 'Partly received'],
+  ['closed', 'Closed'], ['rejected', 'Rejected'], ['old', 'Old sheet line'],
+];
+const stageOf = it => it.stage || { key: '', label: it.request_status || '' };
+function stageBadge(it){
+  const st = stageOf(it);
+  const cls = { approval: 'b-slate', waiting_order: 'b-warn', ordered: 'b-info', partly: 'b-warn', closed: 'b-ok', rejected: 'b-slate', old: 'b-slate' }[st.key] || 'b-slate';
+  return `<span class="badge ${cls}" title="${esc(st.text || '')}">${esc(st.label || '--')}</span>${st.overdue ? ' <span class="badge b-danger" title="The vendor delivery date has passed">Overdue</span>' : ''}`;
+}
 
 function formatQty(item){
   if (item.quantity == null) return '--';
@@ -395,15 +407,15 @@ function formatDate(v){
   try { return new Date(v).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }); }
   catch (e) { return String(v); }
 }
+function dateOnly(v){ return v ? String(v).slice(0, 10) : ''; }
 function statusBadgeClass(status){
   const s = String(status||'').toLowerCase();
   if (s.includes('approved')) return 'b-brand';
-  if (s.includes('rejected')) return 'b-slate';
   return 'b-slate';
 }
 function matchesItemQuery(it, q){
   if (!q) return true;
-  const haystack = [it.item_id, it.requestor, it.material_name, it.item_detail, it.material_type, it.department, it.purpose].map(v => String(v||'').toLowerCase()).join(' ');
+  const haystack = [it.item_id, it.requestor, it.material_name, it.item_detail, it.material_type, it.department, it.purpose, it.vendor, it.po_number].map(v => String(v||'').toLowerCase()).join(' ');
   return haystack.includes(q);
 }
 function inDateRange(dateStr, from, to){
@@ -417,20 +429,36 @@ function inDateRange(dateStr, from, to){
   }
   return true;
 }
+// the server answers a save with the whole line (stage and history too)
+function replaceItem(item){
+  const i = S.items.findIndex(x => String(x.id) === String(item.id));
+  if (i >= 0) S.items[i] = item;
+}
+const PATCH_URL = id => '/webhook/e3705766-d634-4852-ba77-62ccfdfb0786/procurement/api/items/' + id;   // n8n serves a ':id' path under its webhook id
 
-// Detail + edit lives in one wide modal (not an inline row expansion) - more
-// room for the full record, and the edit form is right there without
-// needing a narrow table row to carry it.
+// Detail + edit in one wide modal: the request, where it is (stage), what Procurement fills in, and close / reopen.
 function openItemDetail(id){
-  // Postgres bigserial ids come back as strings (node-postgres avoids precision
-  // loss on int8 by not coercing to number), but the onclick="...(${it.id})"
-  // that got us here embeds a bare numeric literal - compare as strings.
+  // Postgres bigserial ids come back as strings: compare as strings
   const it = S.items.find(x => String(x.id) === String(id));
   if (!it) return;
   const canEdit = canEditHere();
+  const st = stageOf(it);
   const readonlyRow = (label, value) => `<div class="kv-item"><div class="k">${esc(label)}</div><div class="v">${esc(value||'--')}</div></div>`;
+  const vendors = [...new Set(S.items.map(x => String(x.vendor || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const olds = OLD_FIELDS.filter(f => String(it[f.key] || '').trim());
+  const log = (it.log || []).map(l => `<div class="small" style="margin-top:4px">${esc(l.action === 'closed' ? 'Closed' : 'Opened again')}: ${esc(l.reason)}${l.note ? ' (' + esc(l.note) + ')' : ''}
+      <span class="muted">· ${esc(l.by || '')} · ${esc(formatDate(l.at))}</span></div>`).join('');
+  const canClose = canEdit && !['closed', 'rejected'].includes(st.key);
+  const canReopen = canEdit && st.key === 'closed' && st.reopen;
 
   const body = `
+    <div class="card" style="margin-bottom:14px"><div class="card-b">
+      <div class="row between" style="flex-wrap:wrap;gap:8px"><div>${stageBadge(it)} <span class="small" style="margin-left:6px">${esc(st.text || '')}</span></div>
+        <div class="row" style="gap:8px">${canClose ? `<button class="btn btn-ghost btn-sm" id="closeLineBtn">Close this line</button>` : ''}${canReopen ? `<button class="btn btn-ghost btn-sm" id="reopenLineBtn">Open it again</button>` : ''}</div></div>
+      ${st.key === 'closed' && !st.reopen ? '<div class="tiny muted" style="margin-top:6px">Closed by the store: everything asked for was received.</div>' : ''}
+      ${log}
+      <div id="stageForm" style="display:none;margin-top:12px"></div>
+    </div></div>
     <div class="kv-grid">
       ${readonlyRow('Item ID', it.item_id)}
       ${readonlyRow('Department', it.department)}
@@ -447,22 +475,28 @@ function openItemDetail(id){
       ${readonlyRow('Management review (OKL)', it.management_review_okl)}
       ${readonlyRow('Remarks', it.remarks)}
       ${readonlyRow('Request status', it.request_status)}
+      ${readonlyRow('Received (from the stores)', it.department_receival_status)}
     </div>
     <div class="divider"></div>
     <div class="row between" id="procDetailsHead" style="margin-bottom:12px">
-      <div class="small muted">Procurement details (not set by the requisition flow)</div>
+      <div class="small muted">Filled in by Procurement</div>
       ${canEdit ? `<button class="btn btn-primary btn-sm" id="startEditBtn">${I.edit} Edit</button>` : ''}
     </div>
-    ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access - filling in vendor/PO details requires an editor account.</div></div>` : ''}
+    ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access: filling in the vendor and PO needs an editor account.</div></div>` : ''}
     <div class="kv-grid" id="procDetailsView">
-      ${EDITABLE_FIELDS.map(f => readonlyRow(f.label, it[f.key])).join('')}
+      ${EDITABLE_FIELDS.map(f => readonlyRow(f.label, f.type === 'date' ? (it[f.key] ? formatDate(it[f.key]) : '') : it[f.key])).join('')}
+      ${olds.map(f => readonlyRow(f.label, it[f.key])).join('')}
     </div>
     <form id="editItemForm" novalidate style="display:none">
+      <datalist id="vendorList">${vendors.map(v => `<option value="${esc(v)}">`).join('')}</datalist>
       <div class="grid g2">
         ${EDITABLE_FIELDS.map(f => `
-          <div class="field"><label for="ei_${f.key}">${esc(f.label)}</label>
-            <input class="inp" id="ei_${f.key}" value="${esc(it[f.key]||'')}"></div>`).join('')}
+          <div class="field" ${f.type === 'area' ? 'style="grid-column:1/-1"' : ''}><label for="ei_${f.key}">${esc(f.label)}</label>
+            ${f.type === 'area' ? `<textarea class="inp" id="ei_${f.key}" rows="2" maxlength="500">${esc(it[f.key]||'')}</textarea>`
+              : `<input class="inp" id="ei_${f.key}" ${f.type === 'date' ? 'type="date"' : 'maxlength="' + (f.key === 'vendor' ? 120 : 60) + '"'} ${f.key === 'vendor' ? 'list="vendorList" autocomplete="off"' : ''}
+                 value="${esc(f.type === 'date' ? dateOnly(it[f.key]) : (it[f.key]||''))}">`}</div>`).join('')}
       </div>
+      <div class="tiny muted">With a PO number the line shows as Ordered. The delivery date can stay empty; when it is given and has passed, the line shows Overdue.</div>
       <div class="row end" style="margin-top:6px">
         <button class="btn btn-ghost" type="button" id="cancelEditBtn">Cancel</button>
         <button class="btn btn-primary" type="submit">${I.check} Save changes</button>
@@ -478,91 +512,145 @@ function openItemDetail(id){
       const startEditBtn = $('#startEditBtn', wrap);
       const viewGrid = $('#procDetailsView', wrap);
       const form = $('#editItemForm', wrap);
-      if (startEditBtn){
-        startEditBtn.onclick = () => {
-          viewGrid.hidden = true;
-          startEditBtn.hidden = true;
-          form.style.display = 'block';
+      const send = async (payload, okTitle, btn) => {
+        if (btn) btn.disabled = true;
+        try {
+          const r = await api(PATCH_URL(id), { method:'PATCH', body: payload });
+          if (r.item) replaceItem(r.item);
+          render(); toast(okTitle, it.item_id || '', 'ok'); openItemDetail(id);
+        } catch (err) { toast('Could not save', err.message, 'err', 7000); if (btn) btn.disabled = false; }
+      };
+      // close (a reason from the list) or open again (say why)
+      const stageForm = $('#stageForm', wrap);
+      const closeBtn = $('#closeLineBtn', wrap), reopenBtn = $('#reopenLineBtn', wrap);
+      if (closeBtn) closeBtn.onclick = () => {
+        stageForm.style.display = 'block';
+        stageForm.innerHTML = `<div class="grid g2"><div class="field"><label for="clReason">Why is it closed?</label><select class="inp" id="clReason"><option value="">Choose...</option>
+            ${CLOSE_REASONS.map(r => `<option>${esc(r)}</option>`).join('')}</select></div>
+          <div class="field"><label for="clNote">Note (optional)</label><input class="inp" id="clNote" maxlength="300"></div></div>
+          <div class="row end"><button class="btn btn-ghost btn-sm" type="button" id="clCancel">Cancel</button><button class="btn btn-primary btn-sm" type="button" id="clGo">Close the line</button></div>`;
+        $('#clCancel', stageForm).onclick = () => { stageForm.style.display = 'none'; };
+        $('#clGo', stageForm).onclick = (e) => {
+          const reason = $('#clReason', stageForm).value; if (!reason) { toast('Choose why it is closed', '', 'err'); return; }
+          send({ action: 'close', reason, note: $('#clNote', stageForm).value.trim() }, 'Line closed', e.target);
         };
+      };
+      if (reopenBtn) reopenBtn.onclick = () => {
+        stageForm.style.display = 'block';
+        stageForm.innerHTML = `<div class="field"><label for="roReason">Why is it opened again?</label><input class="inp" id="roReason" maxlength="300"></div>
+          <div class="row end"><button class="btn btn-ghost btn-sm" type="button" id="roCancel">Cancel</button><button class="btn btn-primary btn-sm" type="button" id="roGo">Open it again</button></div>`;
+        $('#roCancel', stageForm).onclick = () => { stageForm.style.display = 'none'; };
+        $('#roGo', stageForm).onclick = (e) => {
+          const reason = $('#roReason', stageForm).value.trim(); if (reason.length < 3) { toast('Say why it is opened again', '', 'err'); return; }
+          send({ action: 'reopen', reason }, 'Line opened again', e.target);
+        };
+      };
+      if (startEditBtn){
+        startEditBtn.onclick = () => { viewGrid.hidden = true; startEditBtn.hidden = true; form.style.display = 'block'; };
       }
       if (form){
-        $('#cancelEditBtn', form).onclick = () => {
-          form.style.display = 'none';
-          viewGrid.hidden = false;
-          if (startEditBtn) startEditBtn.hidden = false;
-        };
-        form.onsubmit = async (ev) => {
+        $('#cancelEditBtn', form).onclick = () => { form.style.display = 'none'; viewGrid.hidden = false; if (startEditBtn) startEditBtn.hidden = false; };
+        form.onsubmit = (ev) => {
           ev.preventDefault();
           const payload = {};
           EDITABLE_FIELDS.forEach(f => { payload[f.key] = $('#ei_' + f.key, form).value.trim(); });
-          const btn = form.querySelector('button[type=submit]');
-          btn.disabled = true;
-          try {
-            // n8n serves a webhook with a ':id' in its path under its webhook id ("Procurement Item Patch Webhook")
-            await api('/webhook/e3705766-d634-4852-ba77-62ccfdfb0786/procurement/api/items/' + id, { method:'PATCH', body: payload });
-            Object.assign(it, payload);
-            render();
-            toast('Changes saved', 'Procurement details updated.', 'ok');
-            openItemDetail(id);
-          } catch (err) {
-            toast('Could not save', err.message, 'err');
-            btn.disabled = false;
-          }
+          send(payload, 'Changes saved', form.querySelector('button[type=submit]'));
         };
       }
     },
   });
 }
 
+// the old sheet lines (from before the console): close all the ones shown, with one reason
+function closeShown(ids){
+  openModal({
+    title: 'Close ' + ids.length + ' line' + (ids.length === 1 ? '' : 's'), sub: 'The lines shown by the filters now.',
+    body: `<div class="grid g2"><div class="field"><label for="bcReason">Why are they closed?</label><select class="inp" id="bcReason"><option value="">Choose...</option>
+        ${CLOSE_REASONS.map(r => `<option ${r === 'Finished before the console' ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select></div>
+      <div class="field"><label for="bcNote">Note (optional)</label><input class="inp" id="bcNote" maxlength="300"></div></div>
+      <div class="tiny muted">Each line keeps who closed it and why; a closed line can be opened again from its detail.</div>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Close them</button>`,
+    onMount(w, close){
+      $('[data-save]', w).onclick = async (e) => {
+        const reason = $('#bcReason', w).value; if (!reason) { toast('Choose why they are closed', '', 'err'); return; }
+        e.target.disabled = true;
+        try {
+          const r = await api('/webhook/procurement/api/items-close', { method:'POST', body: { ids, reason, note: $('#bcNote', w).value.trim() } });
+          close(); toast('Lines closed', r.closed + ' closed' + (r.skipped ? ', ' + r.skipped + ' left as they were' : ''), 'ok', 7000);
+          await reloadItems();
+        } catch (err) { toast('Could not close them', err.message, 'err', 7000); e.target.disabled = false; }
+      };
+    },
+  });
+}
+window.closeShownLines = () => { const ids = (window.__shownIds || []); if (ids.length) closeShown(ids); };
+
 function viewItems(){
   const q = itemQuery.trim().toLowerCase();
-  // Server already returns items ordered by request_date desc - filtering
-  // preserves that order, no client-side re-sort needed.
-  const rows = S.items.filter(it =>
+  // the approval e-mail's button opens #/items?batch=<request>: only that request's lines (072)
+  const onlyBatch = new URLSearchParams(currentPath().split('?')[1] || '').get('batch') || '';
+  // the server returns the lines newest first: filtering keeps that order
+  const rows = S.items.filter(it => (!onlyBatch || it.batch_id === onlyBatch) &&
     (!itemDeptFilter || it.department === itemDeptFilter) &&
     (!itemStatusFilter || it.request_status === itemStatusFilter) &&
+    (!itemStageFilter || stageOf(it).key === itemStageFilter || (itemStageFilter === 'overdue' && stageOf(it).overdue)) &&
     inDateRange(it.request_date, itemDateFrom, itemDateTo) &&
     matchesItemQuery(it, q));
   const departments = [...new Set(S.items.map(it => it.department).filter(Boolean))].sort();
   const statuses = [...new Set(S.items.map(it => it.request_status).filter(Boolean))].sort();
+  const count = k => S.items.filter(it => stageOf(it).key === k).length;
+  const overdue = S.items.filter(it => stageOf(it).overdue).length;
+  const closable = rows.filter(it => !['closed', 'rejected'].includes(stageOf(it).key));
+  window.__shownIds = closable.map(it => it.id);
+  const bulk = canEditHere() && itemStageFilter === 'old' && closable.length
+    ? `<div class="notice info" style="margin-bottom:14px">${I.info}<div>${closable.length} old sheet line${closable.length === 1 ? '' : 's'} shown (from before the console). If they are finished, close them in one go.
+        <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="closeShownLines()">Close the ${closable.length} shown</button></div></div>` : '';
 
   return {
     title:'Procurement Log', crumb:'Modules',
     html: `
-    ${pageHead('Procurement Log', 'Every procured item across all departments, sorted by request date.')}
+    ${pageHead('Procurement Log', 'Every procured item across all departments, newest first. Each line shows where it is: waiting for order, ordered, received or closed.')}
     <div class="row filter-bar" style="margin-bottom:14px;flex-wrap:wrap;row-gap:10px">
       <div class="search filter-search">
         <span class="ic">${I.search}</span>
-        <input class="inp" id="itemSearch" placeholder="Search item ID, requestor, material, item detail, purpose..." value="${esc(itemQuery)}">
+        <input class="inp" id="itemSearch" placeholder="Search item ID, requestor, material, vendor, PO..." value="${esc(itemQuery)}">
       </div>
+      <select class="inp filter-sel-status" id="itemStageFilter">
+        <option value="">All stages</option>
+        ${STAGES.map(([k, l]) => `<option value="${k}" ${itemStageFilter===k?'selected':''}>${esc(l)} (${count(k)})</option>`).join('')}
+        <option value="overdue" ${itemStageFilter==='overdue'?'selected':''}>Overdue (${overdue})</option>
+      </select>
       <select class="inp filter-sel-status" id="itemDeptFilter">
         <option value="">All departments</option>
         ${departments.map(d => `<option value="${esc(d)}" ${itemDeptFilter===d?'selected':''}>${esc(d)}</option>`).join('')}
       </select>
       <select class="inp filter-sel-status" id="itemStatusFilter">
-        <option value="">All statuses</option>
+        <option value="">All approval statuses</option>
         ${statuses.map(s => `<option value="${esc(s)}" ${itemStatusFilter===s?'selected':''}>${esc(s)}</option>`).join('')}
       </select>
       <input type="date" class="inp" id="itemDateFrom" value="${esc(itemDateFrom)}" title="From date" style="max-width:150px">
       <input type="date" class="inp" id="itemDateTo" value="${esc(itemDateTo)}" title="To date" style="max-width:150px">
       <div class="spacer"></div>
     </div>
+    ${bulk}
+    ${onlyBatch ? `<div class="notice info" style="margin-bottom:14px">${I.info}<div>Showing request <b>${esc(onlyBatch)}</b> only: open each line, <b>Edit</b>, put the PO number and vendor.
+        <a class="btn btn-ghost btn-sm" style="margin-left:8px" href="#/items">Show every line</a></div></div>` : ''}
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr>
           <th>Request Date</th><th>Item ID</th><th>Requestor</th><th>Material</th><th>Item Detail</th>
-          <th>Material Type</th><th>Qty &amp; Unit</th><th>Status</th>
+          <th>Qty &amp; Unit</th><th>Stage</th><th>Vendor / PO</th>
         </tr></thead>
         <tbody>${rows.length ? rows.map(it => `
           <tr class="clickable" onclick="openItemDetail(${it.id})">
             <td data-label="Request Date">${esc(formatDate(it.request_date))}</td>
             <td class="mono" data-label="Item ID">${esc(it.item_id||'--')}</td>
-            <td data-label="Requestor"><div class="person">${avatarEl(it.requestor)}<div class="person-txt"><span class="strong" title="${esc(it.requestor)}">${esc(it.requestor)}</span></div></div></td>
+            <td data-label="Requestor"><div class="person">${avatarEl(it.requestor)}<div class="person-txt"><span class="strong" title="${esc(it.requestor)}">${esc(it.requestor)}</span><span class="tiny muted">${esc(it.department||'')}</span></div></div></td>
             <td data-label="Material">${esc(it.material_name||'--')}</td>
             <td data-label="Item Detail" style="max-width:280px;white-space:normal" title="${esc(it.item_detail||'')}">${esc(it.item_detail||'--')}</td>
-            <td data-label="Material Type">${esc(it.material_type||'--')}</td>
             <td data-label="Qty & Unit">${esc(formatQty(it))}</td>
-            <td data-label="Status">${it.request_status ? `<span class="badge ${statusBadgeClass(it.request_status)}">${esc(it.request_status)}</span>` : '--'}</td>
+            <td data-label="Stage">${stageBadge(it)}</td>
+            <td data-label="Vendor / PO" class="small">${esc(it.vendor||'')}${it.po_number ? `<div class="tiny muted mono">PO ${esc(it.po_number)}</div>` : ''}${it.vendor_delivery_date ? `<div class="tiny muted">due ${esc(formatDate(it.vendor_delivery_date))}</div>` : ''}</td>
           </tr>`).join('') : `<tr><td colspan="8">${emptyState('box','No items match', 'Try a different search or filter.')}</td></tr>`}
         </tbody>
       </table></div>
@@ -571,6 +659,7 @@ function viewItems(){
       $('#itemSearch').oninput = debounce((e) => { itemQuery = e.target.value; render(); }, 200);
       $('#itemSearch').focus();
       $('#itemSearch').setSelectionRange(itemQuery.length, itemQuery.length);
+      $('#itemStageFilter').onchange = (e) => { itemStageFilter = e.target.value; render(); };
       $('#itemDeptFilter').onchange = (e) => { itemDeptFilter = e.target.value; render(); };
       $('#itemStatusFilter').onchange = (e) => { itemStatusFilter = e.target.value; render(); };
       $('#itemDateFrom').onchange = (e) => { itemDateFrom = e.target.value; render(); };
@@ -860,7 +949,7 @@ const HELP = [
     'Add each item: name, description, category, quantity, why. <b>Send for approval</b>: that department\'s manager, then the plant manager.',
     'Engineering requests (with the store parts list) are made in the Engineering console.']],
   ['check', 'Approve a request', [
-    'An approval e-mail now links to the request in this console. Sign in with your e-mail and password and you land on it. You can also open it from <b>My approvals</b>.',
+    'An approval e-mail now links to the request in this console. Sign in with your e-mail or staff number and your PIN and you land on it. You can also open it from <b>My approvals</b>.',
     'Approve or reject each item, then <b>Submit decisions</b>. A reason is needed when any item is rejected. Only the approver of the request\'s current step can decide it.',
     '<b>Stock of these items</b> (below the request, before and after you decide): what the store has of each item with a store code, its use per week, weeks left, reorder level and order quantity. Point at the small <b>i</b> for what each one means.',
     'When you submit, you are taken to the <b>whole store</b> of that request (Production > Store or Engineering > Spares), with its items highlighted at the top, so you see all the stock and its status.']],
@@ -868,7 +957,13 @@ const HELP = [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
-    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail or staff number and your PIN and you land on that item.']],
+  ['box', 'Procurement log: stages and closing', [
+    'Menu > <b>Procurement Log</b>. Every line shows its <b>stage</b>: Waiting for approval, <b>Waiting for order</b> (approved), <b>Ordered</b> (a PO number is in), <b>Partly received</b>, <b>Closed</b>, Rejected, or <b>Old sheet line</b> (from before the console). Filter by stage at the top; <b>Overdue</b> = ordered and the delivery date has passed.',
+    'Open a line > <b>Edit</b>: vendor (earlier vendors are suggested), PO number, the vendor delivery date if you know it (it can stay empty) and a note. Term of payment, RFP and ODL are no longer asked; old values still show.',
+    'Received and partly received come from the stores by themselves (when the storekeeper receives against the request). Everything received = closed by itself.',
+    '<b>Close this line</b> when it is finished another way: delivered outside the stores, service done, cancelled, not needed any more. A closed line can be <b>opened again</b> with a reason. Who did it, and why, stays on the line.',
+    'Old sheet lines: pick <b>Old sheet line</b> in the stage filter, narrow it down if needed, then <b>Close the ... shown</b> to close them in one go.']],
   ['box', 'Production store stock', [
     'Menu > <b>Production store stock</b>: every Production store material (coding fluids, cartridges, ribbons, characters ...) with its stock, use per week, weeks left, reorder level and order quantity.',
     'Red and orange first: <b>Out of stock</b> and <b>Reorder now</b> are what Production will ask for. Their requests carry the store code (e.g. CF 001), so you can find the material here.',
@@ -888,7 +983,7 @@ const HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/', 'Spares stock (Engineering store)': '/stock', 'Production store stock': '/prd-stock', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/', 'Procurement log: stages and closing': '/items', 'Spares stock (Engineering store)': '/stock', 'Production store stock': '/prd-stock', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')

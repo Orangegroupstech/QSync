@@ -291,11 +291,7 @@ function renderShell(inner, meta){
         <div style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.02em">Engineering</div>
       </div>
       <div class="sidebar-scroll">${navHtml}</div>
-      <div class="sidebar-foot">
-        <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to home</a>
-        <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)"
-          onclick="logout()">${I.logout} Sign out</button>
-      </div>
+      <!-- Home, My profile, Phone/Laptop and Sign out: the bar at the top right (shared.js) -->
     </aside>
     <div class="main">
       <header class="topbar">
@@ -3516,7 +3512,7 @@ function viewRequests(kind){
     ? (d.overtime || []).map(o => ({ date: o.work_date, day_type: o.day_type, name: o.name || o.enroll_id, start: o.start, end: o.end, hours: num(o.hours), duty: o.duty, submitted_by: o.submitted_by }))
     : (d.requisitions || []).map(b => ({ batch_id: b.batch_id, created_at: b.created_at, requester: b.requester, requirement_date: b.requirement_date, decided: b.status === 'processed',
         status: b.status === 'processed' ? 'Decided' : 'With the ' + (RQ_STAGE[b.stage] || b.stage || 'approver'),
-        items: (b.items || []).map(i => ({ material: i.material, detail: i.detail, qty: num(i.qty), status: i.status })) }));
+        items: (b.items || []).map(i => ({ material: i.material, detail: i.detail, qty: num(i.qty), status: i.progress || i.status })) }));
   const pg = oklRequests.page(kind, Object.assign(rqCfg(), { lede: kind === 'overtime' ? 'Overtime worked by Engineering staff, to the HR overtime log. The HR Manager is told of the day\'s submissions at midday.' : undefined }), rows);
   const err = d && d.error ? `<div class="notice warn" style="margin-top:14px">${I.alert}<div>Could not load what was sent: ${esc(d.error)}</div></div>` : '';
   return { title: pg.title, crumb:'Requests', keepScroll: true, html: pageHead(pg.title, pg.lede) + pg.html + err, bind: pg.bind };
@@ -3574,7 +3570,7 @@ const HELP = [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
-    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail or staff number and your PIN and you land on that item.']],
   ['thermo', 'AHU temperature log', [
     'Every working day at 14:00 a WhatsApp reminder links to <b>Record readings</b>. Sign in once with your e-mail and password and you land on the form.',
     'Anyone with record access to AHU temperatures can fill it, not only the person reminded. Your name is taken from your sign-in.',

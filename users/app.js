@@ -209,6 +209,7 @@ function navModel(){
       { path:'/approvers', label:'Approvers', icon:'key' },
       { path:'/requesters', label:'Outside-form requesters', icon:'users' },
       { path:'/audit', label:'Activity', icon:'activity' },
+      { path:'/suggestions', label:'Suggestions', icon:'info' },
     ] },
   ];
 }
@@ -238,11 +239,7 @@ function renderShell(inner, meta){
         <div style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.02em">Users</div>
       </div>
       <div class="sidebar-scroll">${navHtml}</div>
-      <div class="sidebar-foot">
-        <a class="btn btn-ghost btn-sm btn-block" style="margin-bottom:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)" href="../">${I.chevL} Back to home</a>
-        <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px;border-color:rgba(255,255,255,.12);color:var(--nav-text)"
-          onclick="logout()">${I.logout} Sign out</button>
-      </div>
+      <!-- Home, My profile, Phone/Laptop and Sign out: the bar at the top right (shared.js) -->
     </aside>
     <div class="main">
       <header class="topbar">
@@ -396,8 +393,8 @@ function pageLabel(k){
 const scopeLabel = pageLabel;
 const levelWord = l => ({ view:'view', submit:'submit', edit:'edit' })[l] || l;
 function pagesSummary(pages){ return (pages || []).map(x => pageLabel(x.scope) + ': ' + levelWord(x.level)).join(', '); }
-let peopleState = { q:'', status:'console', tab:'accounts' };
-const hasConsole = a => a.console_access !== false || a.is_admin;   // accounts from before the machine app have it
+let peopleState = { q:'', status:'active', tab:'accounts' };
+// 072: everyone with an account signs in; what they see is only what their roles and pages give them (no switch any more)
 
 const fmtWhen = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', dateStyle:'medium', timeStyle:'short' }) : 'Never';
 // The access column keeps one line: the most telling chips first (Admin, roles), the rest counted as "+N more"
@@ -405,9 +402,7 @@ const fmtWhen = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'A
 function accessChips(a){
   const chips = [];
   if (a.is_admin) chips.push({ h: `<span class="badge b-brand">Admin</span>`, t: 'Admin' });
-  if (!hasConsole(a)) chips.push({ h: `<span class="badge b-slate">No console</span>`, t: 'No console' });
   (a.roles || []).forEach(r => chips.push({ h: `<span class="chip on">${esc(r)}</span>`, t: r + ' (' + roleSummary((S.roles || []).find(x => x.role === r) || {}) + ')' }));
-  if (a.app_access) chips.push({ h: `<span class="chip">Machine app</span>`, t: 'Machine app' });
   accessLines(expandAccess(a.grants)).forEach(l => chips.push({ h: `<span class="chip">${esc(l)}</span>`, t: l + ' (own access)' }));
   (a.signoff || []).forEach(k => chips.push({ h: `<span class="chip">Signs ${esc(scopeLabel(k))}</span>`, t: 'Signs ' + scopeLabel(k) }));
   (a.seats || []).forEach(s => chips.push({ h: `<span class="chip">Approver: ${esc(s)}</span>`, t: 'Approver: ' + s }));
@@ -427,7 +422,6 @@ function filteredAccounts(){
   return S.accounts.filter(a => {
     if (q && !(a.name + ' ' + (a.email || '') + ' ' + (a.enroll_id || '')).toLowerCase().includes(q)) return false;
     switch (peopleState.status) {
-      case 'console': return hasConsole(a);
       case 'app': return a.app_access;
       case 'approver': return (a.seats || []).length > 0;
       case 'active': return a.active;
@@ -442,7 +436,7 @@ function filteredAccounts(){
 
 function viewPeople(){
   const total = S.accounts.length;
-  const consoleN = S.accounts.filter(a => hasConsole(a) && a.active).length;
+  const consoleN = S.accounts.filter(a => a.active).length;
   const appN = S.accounts.filter(a => a.app_access && a.active).length;
   const onFirst = S.accounts.filter(a => a.must_change && a.active).length;
   const tab = peopleState.tab;
@@ -456,7 +450,7 @@ function viewPeople(){
           <div class="search filter-search"><span class="ic">${I.search}</span>
             <input class="inp" id="pplQ" style="padding-left:34px;border-radius:20px" placeholder="Search by name, email or staff number" value="${esc(peopleState.q)}"></div>
           <select class="inp" id="pplStatus" style="width:auto;min-width:180px">
-            ${[['console','Console users'],['app','Machine app'],['approver','Approvers'],['','Everyone'],['active','Active'],['inactive','Deactivated'],['admin','Admins'],['locked','Locked'],['default','First PIN not changed']]
+            ${[['active','Active'],['app','Machine screens'],['approver','Approvers'],['','Everyone'],['inactive','Deactivated'],['admin','Admins'],['locked','Locked'],['default','First PIN not changed']]
               .map(([v,l]) => `<option value="${v}" ${peopleState.status===v?'selected':''}>${l}</option>`).join('')}
           </select>
         </div>
@@ -495,8 +489,8 @@ function viewPeople(){
       `<button class="btn btn-ghost" onclick="openAppLogins()">${I.key} Machine-app logins${S.noApp ? ' (' + S.noApp + ')' : ''}</button>
        <button class="btn btn-primary" onclick="openAddPerson()">${I.plus} Add person</button>`)}
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="stat"><div class="lbl">Console users</div><div class="val">${consoleN}</div><div class="meta">active, can sign in here</div></div>
-      <div class="stat"><div class="lbl">Machine app</div><div class="val">${appN}</div><div class="meta">can be picked at a machine</div></div>
+      <div class="stat"><div class="lbl">Accounts</div><div class="val">${consoleN}</div><div class="meta">active, can sign in (they see only what they are given)</div></div>
+      <div class="stat"><div class="lbl">Machine screens</div><div class="val">${appN}</div><div class="meta">picked at a machine (page "Machine screens", role Production operator)</div></div>
       <div class="stat"><div class="lbl">First PIN not changed</div><div class="val">${onFirst}</div><div class="meta">active, have not set their own yet</div></div>
       <div class="stat"><div class="lbl">Not on the machine app</div><div class="val">${S.noApp}</div><div class="meta">on the employee list</div></div>
     </div>
@@ -568,7 +562,7 @@ function showPins(title, rows, extraHtml){
 async function openAppLogins(){
   if (!(await confirmDialog('Machine-app logins',
     `This gives everyone on the employee list (staff and casuals) a way to confirm themselves at a machine:
-     <ul style="margin:8px 0 0 18px;padding:0"><li>People with no account get one with a <b>random first PIN</b> (no console access).</li>
+     <ul style="margin:8px 0 0 18px;padding:0"><li>People with no account get one with a <b>random first PIN</b>. Everyone it covers gets the role <b>Production operator</b> (Machine screens) and nothing else.</li>
      <li>People who already use the console keep their own password.</li>
      <li>Anyone who looks like an existing account that is not linked to an employee is <b>skipped</b>: link that account first (Manage), then run this again.</li></ul>
      <p style="margin-top:8px">The first PINs are shown <b>once</b>, so be ready to print. Safe to run again later for new staff.</p>`, 'Create logins'))) return;
@@ -593,18 +587,19 @@ async function createAccount(payload){
 }
 function afterCreate(res, name){
   render(); openManage(res.id);
-  if (res.pin) showPins('First PIN for ' + name, [{ enroll_id: '', name, department: '', first_pin: res.pin }],
-    `<div class="small" style="margin-bottom:10px">They sign in with their email and this PIN, then must choose their own password.</div>`);
+  const a = (S.accounts || []).find(x => String(x.id) === String(res.id)) || {};
+  if (res.pin) showPins('First PIN for ' + name, [{ enroll_id: a.enroll_id || '', name, department: '', first_pin: res.pin }],
+    `<div class="small" style="margin-bottom:10px">They sign in with ${a.email ? 'their e-mail (' + esc(a.email) + ')' + (a.enroll_id ? ' or ' : '') : ''}${a.enroll_id ? 'their staff number <b>' + esc(a.enroll_id) + '</b>' : ''} and this PIN, then must choose their own password.</div>`);
 }
 async function addFromStaff(enrollId){
   const p = S.staff.find(x => x.enroll_id === enrollId); if (!p) return;
-  if (!p.email){ toast('No email on record', p.name + ' needs a work email in the Employee DB before they can sign in to the console. For the machine app, use "Machine-app logins".', 'err', 8000); return; }
-  if (!(await confirmDialog('Create account', `Create a console account for <b>${esc(p.name)}</b> (${esc(p.email)})? They get a first PIN (shown once) and must change it at first sign-in.`, 'Create account'))) return;
+  // no e-mail: they sign in with their staff number (072)
+  if (!(await confirmDialog('Create account', `Create a console account for <b>${esc(p.name)}</b> (${p.email ? esc(p.email) + ' or ' : ''}staff no. ${esc(p.enroll_id)})? They get a first PIN (shown once) and must change it at first sign-in.`, 'Create account'))) return;
   try { const res = await createAccount({ enroll_id: enrollId }); afterCreate(res, p.name); toast('Account created', p.name + ' can now sign in.', 'ok'); }
   catch (err) { toast('Could not create account', err.message, 'err', 7000); }
 }
 function openAddPerson(){
-  const staffOpts = S.staff.map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}${p.department ? ' - ' + esc(p.department) : ''}${p.email ? '' : ' (no email)'}</option>`).join('');
+  const staffOpts = S.staff.map(p => `<option value="${esc(p.enroll_id)}">${esc(p.name)}${p.department ? ' - ' + esc(p.department) : ''}${p.email ? '' : ' (signs in with staff no.)'}</option>`).join('');
   openModal({
     title:'Add person', size:'wide', sub:'A console account. They get a first PIN (shown once) and must change it at first sign-in.',
     body:`<form id="addForm" novalidate>
@@ -612,7 +607,7 @@ function openAddPerson(){
         <select class="inp" id="apMode"><option value="staff">Someone in the Employee DB</option><option value="new">Someone not in the Employee DB</option></select></div>
       <div id="apStaffBox"><div class="field"><label for="apStaff">Employee</label>
         <select class="inp" id="apStaff"><option value="">Select...</option>${staffOpts}</select>
-        <div class="hint">${I.info}<span>Their name, email and phone come from the Employee DB.</span></div></div></div>
+        <div class="hint">${I.info}<span>Their name, e-mail and phone come from the Employee DB. They sign in with their e-mail or their staff number.</span></div></div></div>
       <div id="apNewBox" class="hide"><div class="grid g2">
         <div class="field"><label for="apName">Full name</label><input class="inp" id="apName" maxlength="100"></div>
         <div class="field"><label for="apEmail">Email (they sign in with it)</label><input class="inp" id="apEmail" type="email"></div></div>
@@ -858,10 +853,8 @@ function openManage(id){
       </div>
 
       <div data-pane="account" class="hide">
-        <div class="strong" style="margin-bottom:4px">Can use</div>
-        <div class="small muted" style="margin-bottom:6px">One password for everything they can use.</div>
-        <label class="check"><input type="checkbox" id="mgConsole" ${hasConsole(a) ? 'checked' : ''} ${a.is_admin || isSelf ? 'disabled' : ''}><span>Console (sign in here)</span></label>
-        <label class="check"><input type="checkbox" id="mgApp" ${a.app_access ? 'checked' : ''}><span>Machine app (picked at a machine, confirms with PIN)</span></label>
+        <div class="small muted" style="margin-bottom:6px">One PIN for everything. They sign in with their e-mail or staff number and see only what their roles and pages give them.
+          The machine screens come with the page <b>Machine screens</b> (role <b>Production operator</b>)${a.app_access ? ': on for this person' : ''}.</div>
         ${(a.seats || []).length ? `<div class="small muted" style="margin-top:8px">Approver seat${a.seats.length === 1 ? '' : 's'}: ${a.seats.map(esc).join(', ')} (change these in Approvers; approvals work by email link).</div>` : ''}
         <div class="divider"></div>
         <div class="strong" style="margin-bottom:4px">Employee record</div>
@@ -933,15 +926,15 @@ function openManage(id){
       $('[data-save]', w).onclick = async () => {
         const grants = (a.is_admin ? (a.grants || []).filter(g => !String(g.scope).startsWith('signoff.')) : compressAccess(tree.value()))
           .concat($$('input[data-scope]', w).filter(c => c.checked).map(c => ({ scope: c.dataset.scope })));
-        const body = { id: a.id, roles: checkedRoles(), grants, app: $('#mgApp', w).checked };
-        if (!$('#mgConsole', w).disabled) body.console = $('#mgConsole', w).checked;
+        const body = { id: a.id, roles: checkedRoles(), grants };
         try { await api('/webhook/users/api/grants', { method:'POST', body }); await loadPeople(); close(); render(); toast('Access saved', a.name + "'s access has been updated.", 'ok'); }
         catch (err) { toast('Could not save', err.message, 'err', 8000); }
       };
       $('[data-reset]', w).onclick = async () => {
         if (!(await confirmDialog('Reset PIN', `Give <b>${esc(a.name)}</b> a new first PIN? Their current password stops working everywhere (console, sign-offs, machine app), they are signed out and must choose a new one.`, 'Reset PIN'))) return;
         try { const r = await api('/webhook/users/api/reset-pin', { method:'POST', body:{ id: a.id } }); await loadPeople(); close(); render();
-          showPins('New first PIN for ' + a.name, [{ enroll_id: a.enroll_id || '', name: a.name, department: '', first_pin: r.pin }]); }
+          showPins('New first PIN for ' + a.name, [{ enroll_id: a.enroll_id || '', name: a.name, department: '', first_pin: r.pin }],
+            `<div class="small" style="margin-bottom:10px">They sign in with ${a.email ? 'their e-mail (' + esc(a.email) + ')' + (a.enroll_id ? ' or ' : '') : ''}${a.enroll_id ? 'their staff number <b>' + esc(a.enroll_id) + '</b>' : ''} and this PIN, then must choose their own password.</div>`); }
         catch (err) { toast('Could not reset', err.message, 'err', 7000); }
       };
       $$('[data-act]', w).forEach(btn => btn.onclick = async () => {
@@ -965,7 +958,7 @@ function viewRoles(){
   const rows = S.roles || [];
   return {
     title:'Roles', crumb:'Admin',
-    html: `${pageHead('Roles', 'A role is a named set of pages with a level for each. Give roles to people in People &gt; Manage. Changing a role changes it for everyone who has it.',
+    html: `${pageHead('Roles', 'A role is a named set of pages with a level for each. Add or take off people in the role itself (Edit), or in People &gt; Manage. Changing a role changes it for everyone who has it.',
       `<button class="btn btn-primary" onclick="openRole('')">${I.plus} New role</button>`)}
     <div class="card"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Role</th><th>Covers</th><th>People</th><th></th></tr></thead>
@@ -991,7 +984,19 @@ function openRole(name){
       <div class="mg-opens" style="margin-bottom:10px"><span class="strong">Covers:</span> <span id="rlPreview"></span></div>
       <div class="small muted" style="margin-bottom:10px">${esc(LEVEL_HELP)} Choosing a level on a console sets all its pages; open it to change single pages.</div>
       <div id="rlTree">${tree.html}</div>
-      <div class="err-msg hide" data-err="rlName" style="margin-top:8px"></div>`,
+      <div class="err-msg hide" data-err="rlName" style="margin-top:8px"></div>
+      ${r.role ? `<div class="divider"></div>
+      <div class="strong" style="margin-bottom:6px">People with this role (${holders.length})</div>
+      <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <input class="inp" id="rlAdd" list="rlAddList" placeholder="Type a name or staff number to add" style="max-width:340px" autocomplete="off">
+        <datalist id="rlAddList">${(S.accounts || []).filter(x => x.active && !(x.roles || []).includes(r.role)).map(x => `<option value="${esc(x.name + (x.enroll_id ? ' (' + x.enroll_id + ')' : ''))}">`).join('')}</datalist>
+        <button class="btn btn-primary btn-sm" type="button" data-addp>${I.plus} Add person</button>
+        ${holders.length > 8 ? `<input class="inp" id="rlFind" placeholder="Find in this list" style="max-width:220px" autocomplete="off">` : ''}</div>
+      <div id="rlPeople" style="max-height:260px;overflow:auto;border:1px solid var(--line-2);border-radius:8px">${holders.length
+        ? holders.sort((x, y) => String(x.name).localeCompare(String(y.name))).map(h => `<div class="row between" data-person="${esc((h.name + ' ' + (h.enroll_id || '')).toLowerCase())}" style="padding:6px 10px;border-bottom:1px solid var(--line-2)">
+            <span>${esc(h.name)}<span class="tiny muted">${h.enroll_id ? ' · ' + esc(h.enroll_id) : ''}</span></span>
+            <button class="btn btn-ghost btn-sm" type="button" data-takeoff="${Number(h.id)}">Remove</button></div>`).join('')
+        : '<div class="small muted" style="padding:10px">Nobody has this role yet.</div>'}</div>` : ''}`,
     footer: `${r.role ? `<button class="btn btn-ghost" data-del style="margin-right:auto">Delete role</button>` : ''}<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>Save role</button>`,
     onMount: (w, close) => {
       tree.bind($('#rlTree', w), () => {
@@ -1017,11 +1022,35 @@ function openRole(name){
         if (holders.length) {
           // the database refuses to delete a role someone holds: say who, so the admin takes it off them first
           await confirmDialog('Take it off people first', `<b>${esc(r.role)}</b> is held by ${holders.map(h => '<b>' + esc(h.name) + '</b>').join(', ')}.
-            Open each of them in People &gt; Manage, untick the role and save; then delete it here.`, 'OK');
+            Take them off in <b>People with this role</b> below; then delete it here.`, 'OK');
           return;
         }
         if (await confirmDialog('Delete role?', `Delete the role <b>${esc(r.role)}</b>? Nobody holds it, so nobody's access changes.`, 'Delete', 'danger')) save([], 'Role deleted');
       };
+      // add or take off one person here (073); saved at once (the pages above are saved with "Save role")
+      const member = async (accountId, add, btn) => {
+        if (btn) btn.disabled = true;
+        try {
+          const res = await api('/webhook/okl/roles/member', { method:'POST', body:{ role: r.role, account_id: accountId, add } });
+          if (res.ok === false) throw new Error(res.error || 'Not saved');
+          await loadPeople(); close(); render(); openRole(r.role);
+          toast(add ? 'Added to ' + r.role : 'Taken off ' + r.role, ((S.accounts || []).find(x => x.id === accountId) || {}).name || '', 'ok');
+        } catch (err) { toast('Could not change the role', err.message, 'err', 7000); if (btn) btn.disabled = false; }
+      };
+      const addBtn = $('[data-addp]', w);
+      if (addBtn) addBtn.onclick = () => {
+        const v = ($('#rlAdd', w).value || '').trim().toLowerCase();
+        const hit = (S.accounts || []).find(x => x.active && (x.name + (x.enroll_id ? ' (' + x.enroll_id + ')' : '')).toLowerCase() === v)
+          || (S.accounts || []).find(x => x.active && v && (x.enroll_id || '').toLowerCase() === v);
+        if (!hit) { toast('Pick a person from the list', 'Type part of the name or staff number and choose from the suggestions.', 'err'); return; }
+        member(hit.id, true, addBtn);
+      };
+      $$('[data-takeoff]', w).forEach(b => b.onclick = async () => {
+        const h = (S.accounts || []).find(x => x.id === Number(b.dataset.takeoff)) || {};
+        if (await confirmDialog('Take off this role?', `Take <b>${esc(r.role)}</b> away from <b>${esc(h.name || '')}</b>? Pages they have from it go too.`, 'Take off', 'danger')) member(Number(b.dataset.takeoff), false, b);
+      });
+      const find = $('#rlFind', w);
+      if (find) find.oninput = () => { const q = find.value.trim().toLowerCase(); $$('[data-person]', w).forEach(x => { x.style.display = !q || x.dataset.person.includes(q) ? '' : 'none'; }); };
     },
   });
 }
@@ -1281,3 +1310,30 @@ async function aprRemove(roleKey){
   try { await api('/webhook/users/api/approvers/delete', { method:'POST', body:{ role_key: roleKey } }); toast('Removed', row.name + ' was removed.', 'ok'); aprLoad(true); }
   catch (err) { toast('Could not remove', err.message, 'err'); }
 }
+
+/* ---------------- Suggestions (072): what people sent with the Suggestions button, view only ---------------- */
+let SUG = null;
+async function sugLoad(){ try { SUG = await api('/webhook/okl/suggestions'); } catch (e) { SUG = { error: e.message }; } render(); }
+route('/suggestions', () => {
+  if (!SUG) { SUG = 'loading'; sugLoad(); }
+  const list = SUG && SUG !== 'loading' && !SUG.error ? (SUG.suggestions || []) : [];
+  const when = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', dateStyle:'medium', timeStyle:'short' }) : '';
+  const ST = [['new', 'New'], ['in_progress', 'In progress'], ['done', 'Attended to'], ['not_doing', 'Not doing']];
+  return { title:'Suggestions', crumb:'Admin', html: pageHead('Suggestions', 'What people sent with the orange Suggestions button, newest first. Mark each one when it is dealt with.',
+      `<button class="btn btn-ghost" onclick="SUG=null;render()">Reload</button>`)
+    + (SUG === 'loading' ? '<div class="card"><div class="card-b small muted">Loading...</div></div>'
+      : SUG.error ? `<div class="notice warn">${I.alert}<div>${esc(SUG.error)}</div></div>`
+      : `<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>Where</th><th>Suggestion</th><th>Status</th></tr></thead><tbody>
+        ${list.length ? list.map(x => `<tr><td data-label="When" class="small">${esc(when(x.created_at))}</td><td data-label="Who">${esc(x.name || '')}</td>
+          <td data-label="Where" class="small">${esc(x.module || '')}<div class="tiny muted mono">${esc(x.page || '')}${x.device ? ' · ' + esc(x.device) : ''}</div></td>
+          <td data-label="Suggestion" style="white-space:pre-wrap;max-width:520px">${esc(x.message || '')}</td>
+          <td data-label="Status"><select class="inp" style="min-width:140px" onchange="sugStatus(${Number(x.id)}, this)">${ST.map(([k, l]) => `<option value="${k}" ${(x.status || 'new') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+            ${x.status_by ? `<div class="tiny muted">${esc(x.status_by)} · ${esc(when(x.status_at))}</div>` : ''}</td></tr>`).join('')
+          : '<tr><td colspan="5" class="muted" style="padding:16px">No suggestions yet.</td></tr>'}</tbody></table></div></div>`) };
+});
+window.sugStatus = async (id, sel) => {
+  sel.disabled = true;
+  try { const r = await api('/webhook/okl/suggestions/status', { method:'POST', body:{ id, status: sel.value } });
+        if (r.ok === false) throw new Error(r.error || 'Not saved'); SUG = null; render(); toast('Status saved', '', 'ok'); }
+  catch (e) { toast('Could not save', e.message, 'err', 6000); sel.disabled = false; }
+};

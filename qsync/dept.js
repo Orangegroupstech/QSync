@@ -118,7 +118,7 @@ const QSYNC_HELP = [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
     'The orange number on the menu is the number of items on this page. It falls as you act.',
-    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail and password and you land on that item.']],
+    '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail or staff number and your PIN and you land on that item.']],
   ['layers', 'Long lists', [
     'A list longer than 80 rows shows its first 50, with <b>Show 50 more</b> and <b>Show all</b> under it. It opens faster, mostly on phones.',
     'Search, the filters, sorting by a column heading and the Excel / CSV downloads still cover every row, not only the 50 on screen. Printing prints them all.',

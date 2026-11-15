@@ -17,7 +17,7 @@
   if (window.oklShared) return;
   window.oklShared = true;
   const API = 'https://orangegroupsai.online';
-  const mod = (/\/(engineering|qsync|employees|procurement|users|production)\b/.exec(location.pathname) || [, 'console'])[1];
+  const mod = (/\/(engineering|qsync|employees|procurement|users|production|requests|profile)\b/.exec(location.pathname) || [, 'console'])[1];
   const safe = f => { try { return f(); } catch (e) { return undefined; } };
   const store = {
     get: k => safe(() => localStorage.getItem(k)),
@@ -64,9 +64,19 @@
 
   /* ---------------- 2. shared styles ---------------- */
   const css = `
-  #oklViewBtn{position:fixed;right:10px;top:8px;z-index:95;border:0;background:#0F5132;color:#fff;
-    border-radius:999px;padding:9px 15px;font:700 13px/1 var(--font,system-ui,sans-serif);box-shadow:0 2px 10px rgba(0,0,0,.3);cursor:pointer}
+  /* the bar at the top right of every page (072): Home, My profile, Phone/Laptop, Sign out */
+  #oklBar{position:fixed;right:10px;top:8px;z-index:95;display:flex;gap:6px;align-items:center}
+  #oklBar a,#oklBar button{border:0;border-radius:999px;padding:9px 13px;font:700 13px/1 var(--font,system-ui,sans-serif);cursor:pointer;
+    box-shadow:0 2px 10px rgba(0,0,0,.18);display:inline-flex;align-items:center;gap:6px;text-decoration:none;white-space:nowrap}
+  #oklBar .okl-nb{background:var(--surface,#fff);color:var(--text,#16191D);border:1px solid var(--line,#ccd3cf);box-shadow:none}
+  #oklBar .okl-nb:hover{background:var(--surface-2,#f1f4f2)}
+  #oklBar .okl-nb svg{width:16px;height:16px;flex:0 0 16px}
+  #oklBar .okl-nb.on{border-color:var(--brand,#ED6B1F);color:var(--brand-700,#b4500f)}
+  #oklViewBtn{background:#0F5132;color:#fff}
   #oklViewBtn:hover{background:#0b3d26}
+  @media (max-width:1024px){#oklBar .okl-nb .t{display:none}#oklBar .okl-nb{padding:9px 10px}}
+  body.view-phone #oklBar .okl-nb .t{display:none}
+  body.view-phone #oklBar .okl-nb{padding:9px 10px}
   /* phone view on a wide window: a 460px column. No transform (it would pin fixed bars to the page, not the screen); the column is
      clipped instead and the fixed bars are moved into it */
   body.view-phone{max-width:460px;margin:0 auto;min-height:100vh;box-shadow:0 0 0 1px #c9d1cc,0 0 30px rgba(0,0,0,.18)}
@@ -84,13 +94,14 @@
     .content,.card,.card-b{max-width:100%}
     img,video,canvas{max-width:100%}
     .tbl-wrap{max-width:100%}
-    .topbar{padding-right:118px}
+    .topbar{padding-right:250px}
   }
+  @media (min-width:1025px){.topbar{padding-right:420px}}
   body.view-phone input.inp,body.view-phone select.inp,body.view-phone textarea.inp{font-size:16px}
   body.view-phone select.inp,body.view-phone input.inp{height:auto;min-height:42px;line-height:1.3;padding-top:8px;padding-bottom:8px}
   body.view-phone .btn{min-height:42px}
-  body.view-phone #oklViewBtn{right:calc(50% - 220px)}
-  body.view-phone .topbar{padding-right:118px}
+  body.view-phone #oklBar{right:calc(50% - 220px)}
+  html body.view-phone .topbar{padding-right:250px}
   #oklSugFab{position:fixed;right:10px;bottom:10px;z-index:90;height:40px;border-radius:999px;border:0;background:var(--brand,#ED6B1F);color:#fff;
     box-shadow:0 3px 12px rgba(0,0,0,.28);cursor:pointer;font:700 12.5px/1 var(--font,system-ui,sans-serif);padding:0 14px 0 11px;display:flex;align-items:center;gap:7px}
   #oklSugFab:hover{filter:brightness(.94)}
@@ -107,7 +118,7 @@
   #oklSugBox button.go{border:0;background:var(--brand,#ED6B1F);color:#fff;border-radius:8px;padding:8px 14px;font:700 12.5px var(--font,system-ui,sans-serif);cursor:pointer;min-height:36px}
   #oklSugBox button:disabled{opacity:.55}
   #oklSugBox .okl-sug-m{color:var(--text-3,#8a93a0);font-size:11.5px}
-  @media print{#oklViewBtn,#oklSugFab,#oklSugBox{display:none !important}}`;
+  @media print{#oklBar,#oklViewBtn,#oklSugFab,#oklSugBox{display:none !important}}`;
   const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
 
   /* ---------------- 3. suggestion box ---------------- */
@@ -385,9 +396,27 @@
   /* ---------------- start ---------------- */
   function start() {
     safe(infoStyle);
-    const b = document.createElement('button'); b.id = 'oklViewBtn'; b.type = 'button'; b.className = 'no-print';
+    // the bar: Home, My profile, Phone/Laptop, Sign out (reachable from every page; replaces the sidebar's buttons)
+    const root = /\/(engineering|qsync|employees|procurement|users|production|requests|profile|datacenter)\//.test(location.pathname) ? '../' : './';
+    const ico = {
+      home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
+      user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
+      out: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>',
+    };
+    const bar = document.createElement('div'); bar.id = 'oklBar'; bar.className = 'no-print';
+    const onProfile = /\/profile\//.test(location.pathname);
+    bar.innerHTML = `<a class="okl-nb" href="${root}" title="Home">${ico.home}<span class="t">Home</span></a>`
+      + `<a class="okl-nb${onProfile ? ' on' : ''}" href="${root}profile/" title="My profile">${ico.user}<span class="t">My profile</span></a>`
+      + `<button type="button" id="oklViewBtn"></button>`
+      + `<button type="button" class="okl-nb" id="oklSignOut" title="Sign out">${ico.out}<span class="t">Sign out</span></button>`;
+    document.body.appendChild(bar);
+    const b = document.getElementById('oklViewBtn');
     b.onclick = () => { view = view === 'phone' ? 'laptop' : 'phone'; store.set('okl.view', view); applyView(); };
-    document.body.appendChild(b);
+    document.getElementById('oklSignOut').onclick = () => {
+      if (typeof window.logout === 'function') return window.logout();
+      safe(() => fetch(API + '/webhook/auth/api/logout', { method: 'POST', headers: { Authorization: token() } }));
+      safe(() => sessionStorage.removeItem('okl.token')); location.href = root;
+    };
     applyView();
     let timer = 0;
     const app = document.getElementById('app') || document.body;
