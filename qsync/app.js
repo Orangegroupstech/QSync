@@ -863,7 +863,7 @@ function trendChartSvg(pts, lo, hi, unit){
 function reportsTrendsHtml(d){
   const series = (d.ipqa_series || []).map(s => ({ key: 'i|' + s.product + '|' + s.stage + '|' + s.parameter, label: `${s.product} - ${s.stage} - ${s.parameter} (IPQA)`,
       unit: s.unit, lo: s.spec_min, hi: s.spec_max, limit: s.spec_min != null || s.spec_max != null ? `${s.spec_min ?? ''} to ${s.spec_max ?? ''} ${s.unit || ''}` : '', points: s.points }))
-    .concat((d.qc_series || []).map(s => ({ key: 'q|' + s.product + '|' + s.test + '|' + s.api, label: `${s.product} - ${s.api} ${String(s.test).replace(/_/g, ' ')} (QC)`,
+    .concat((d.qc_series || []).map(s => ({ key: 'q|' + s.product + '|' + s.test + '|' + s.api, label: s.test === 'density' ? `${s.product} - weight per mL (QC)` : `${s.product} - ${s.api} ${String(s.test).replace(/_/g, ' ')} (QC)`,
       unit: s.unit, lo: null, hi: null, limit: s.limit_text, points: s.points })))
     .filter(s => (s.points || []).length);
   const cur = series.find(s => s.key === trendsSeries) || series[0];

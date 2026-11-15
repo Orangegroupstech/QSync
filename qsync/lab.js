@@ -565,10 +565,28 @@ function wsEnsure(){
   const hplc = ['assay', 'dissolution', 'content_uniformity'].includes(test);
   for (const t of ws.ctx.templates){
     const P = t.parameters || {}, a = inp.apis[t.id] = inp.apis[t.id] || {};
-    if (hplc && techOf(P) !== 'uv_a1' && !Array.isArray(a.std_areas)) a.std_areas = Array(((P.std_injections || {}).max) || 6).fill('');   // UV fixed A1%: no standard
+    if (hplc && ['hplc', 'uv_std'].includes(techOf(P)) && !Array.isArray(a.std_areas)) a.std_areas = Array(((P.std_injections || {}).max) || 6).fill('');   // UV fixed A1%: no standard
+    // 071: titration (the blank, back-titration only) and IR (the standard's peak height)
+    if (test === 'assay' && techOf(P) === 'titration_back' && !Array.isArray(a.blank)) a.blank = ['', ''];
+    if (test === 'assay' && techOf(P) === 'ir_std' && !Array.isArray(a.std_heights)) a.std_heights = [''];
   }
+  const densTpl = ws.ctx.templates.find(t => test === 'assay' && usesDensity(t.parameters));
+  const wvc = ws.ctx.templates.find(t => test === 'weight_variation' && isWvContent(t.parameters));
   for (const s of inp.samples){
     const v = inp.values[s.key] = inp.values[s.key] || {};
+    if (densTpl && (!v.density || Array.isArray(v.density))) v.density = { empty: '', full: '', volume: String((((densTpl.parameters || {}).density) || {}).flask_ml || '') };
+    if (densTpl && ws.ctx.templates.some(t => isTitration(t.parameters)) && v.sol_weight === undefined) v.sol_weight = '';
+    if (wvc){ const n = Number((wvc.parameters || {}).units) || 10;
+      if (!v.sachets || Array.isArray(v.sachets)) v.sachets = { gross: [], empty: [] };
+      ['gross', 'empty'].forEach(k => { if (!Array.isArray(v.sachets[k])) v.sachets[k] = []; while (v.sachets[k].length < n) v.sachets[k].push(''); }); }
+    if (test === 'identification' && (!v.obs || Array.isArray(v.obs))) v.obs = {};
+    if (test === 'assay' && densTpl){
+      if (!v.titr || Array.isArray(v.titr)) v.titr = {};
+      if (!v.ir || Array.isArray(v.ir)) v.ir = {};
+      for (const t of ws.ctx.templates){ const P = t.parameters || {};
+        if (isTitration(P)){ const l = v.titr[t.id] = Array.isArray(v.titr[t.id]) ? v.titr[t.id] : []; while (l.length < (Number(P.titrations) || 2)) l.push(['', '']); }
+        if (techOf(P) === 'ir_std'){ const x = v.ir[t.id] = v.ir[t.id] && !Array.isArray(v.ir[t.id]) ? v.ir[t.id] : { weight: '', heights: [''] }; if (!Array.isArray(x.heights)) x.heights = ['']; } }
+    }
     if (test === 'assay'){
       const theo = ((((ws.ctx.templates[0] || {}).parameters || {}).avg_weight) || {}).theoretical_mg;
       if (v.avg_weight === undefined) v.avg_weight = ws.ctx.analysis.stage === 'Granulation' && theo ? String(theo) : '';
@@ -581,12 +599,12 @@ function wsEnsure(){
     if (test === 'ph'){ if (!v.ph || Array.isArray(v.ph)) v.ph = {}; }
     for (const t of ws.ctx.templates){
       const P = t.parameters || {};
-      if (test === 'weight_variation'){   // 058: the number of units from the method (10 if it does not say)
+      if (test === 'weight_variation' && !isWvContent(P)){   // 058: the number of units from the method (10 if it does not say)
         const w = v.weights[t.id] = Array.isArray(v.weights[t.id]) ? v.weights[t.id] : [];
         while (w.length < (Number((P.limits || {}).units) || 10)) w.push('');
       }
       if (test === 'ph'){ const r = v.ph[t.id] = Array.isArray(v.ph[t.id]) ? v.ph[t.id] : []; while (r.length < (Number(P.readings) || 1)) r.push(''); }
-      if (test === 'assay'){
+      if (test === 'assay' && !usesDensity(P)){
         const list = v.preps[t.id] = Array.isArray(v.preps[t.id]) ? v.preps[t.id] : [];
         while (list.length < (P.preparations || 1)) list.push({ weight:'', areas: [''] });   // 1 injection; each preparation can get a 2nd
         list.forEach(p => { if (!Array.isArray(p.areas)) p.areas = []; while (p.areas.length < wsSplMin(P)) p.areas.push(''); });   // 065: the method's least
@@ -632,8 +650,20 @@ function readingsHint(P, per){
 // ---- technique of a method (065, same rule as the server's labTechnique): HPLC (peak areas, injections), UV with a measured
 // standard, or UV with a fixed A1% (absorbance, readings; no standard). A method without it is HPLC, or UV A1% when a1pct is set.
 const TECHNIQUES = [['hplc', 'HPLC (peak areas)'], ['uv_std', 'UV with a standard (absorbance)'], ['uv_a1', 'UV with a fixed A1% (absorbance, no standard)']];
-function techOf(P){ P = P || {}; return ['hplc', 'uv_std', 'uv_a1'].includes(P.technique) ? P.technique : (P.a1pct != null && P.a1pct !== '' ? 'uv_a1' : 'hplc'); }
+// 071 (suspensions, e.g. Mintacid): assay only; the sample is weighed (g) and turned into mL with the density
+const SUSP_TECHNIQUES = [['titration_back', 'Titration with a blank (back-titration)'], ['titration_direct', 'Titration, direct'], ['ir_std', 'IR with a standard (peak height)']];
+const ALL_TECH = ['hplc', 'uv_std', 'uv_a1', 'titration_back', 'titration_direct', 'ir_std', 'observation'];
+function techOf(P){ P = P || {}; return ALL_TECH.includes(P.technique) ? P.technique : (P.a1pct != null && P.a1pct !== '' ? 'uv_a1' : 'hplc'); }
+const isTitration = P => ['titration_back', 'titration_direct'].includes(techOf(P));
+const usesDensity = P => ['titration_back', 'titration_direct', 'ir_std'].includes(techOf(P));   // same rule as the server's labUsesDensity
+const isWvContent = P => (P || {}).mode === 'content';
+const isObservation = P => techOf(P) === 'observation';
 function techWords(P){
+  const t = techOf(P);
+  if (t === 'ir_std') return { value: 'peak height', values: 'peak heights', Value: 'Peak height', reading: 'reading', readings: 'readings', Reading: 'Reading', Readings: 'Readings',
+    std: 'Standard peak height', spl: 'Sample peak height', src: 'the IR printout', name: 'IR, peak height' };
+  if (t === 'titration_back' || t === 'titration_direct') return { value: 'titre', values: 'titres', Value: 'Titre', reading: 'titration', readings: 'titrations', Reading: 'Titration', Readings: 'Titrations',
+    std: '', spl: 'Titrations', src: 'the burette', name: t === 'titration_back' ? 'titration with a blank' : 'titration, direct' };
   return techOf(P) === 'hplc'
     ? { value: 'area', values: 'areas', Value: 'Area', reading: 'injection', readings: 'injections', Reading: 'Injection', Readings: 'Injections',
         std: 'Standard injection areas', spl: 'Sample peak areas', src: 'Empower', name: 'HPLC' }
@@ -731,9 +761,112 @@ function sstExtraText(s, html){
     return html ? `<span><span class="muted">${name}</span> <b class="tnum">${esc(x.value)}</b> <span class="muted">(${esc(x.limit_text)})</span> ${x.pass ? '<span class="badge b-ok">Pass</span>' : '<span class="badge b-danger">Fail</span>'}</span>`
       : `${name} ${x.value} (${x.limit_text}) ${x.pass ? 'pass' : 'FAIL'}`; }).join(html ? '' : '; ');
 }
+// ---- 071: suspensions (Mintacid) ----------------------------------------------------------------------------------------------------
+const fmtN = (v, dp) => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? '--' : Number(v).toFixed(dp));
+const limitPct = P => { const L = P.limits || {}; return L.min != null && L.max != null ? `limit ${L.min}% to ${L.max}%` : ''; };
+const claimText = P => `label claim ${P.label_claim_mg ?? '--'} mg in ${P.label_ml ?? '--'} mL`;
+// the density, once per sample, above the API tabs of an assay worksheet whose methods weigh the suspension (shared by the APIs)
+function wsDensityCard(){
+  const tpl = ws.ctx.templates.find(t => usesDensity(t.parameters)); if (!tpl) return '';
+  const D = (tpl.parameters || {}).density || {};
+  return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Density (weight per mL)</h3>
+      <div class="sub">Shared by the APIs of each sample: the titrations and the IR sample weights are turned into mL with it${D.min != null && D.max != null ? ` - limit ${esc(D.min)} to ${esc(D.max)} g/mL` : ''}</div></div></div>
+    <div class="card-b">${ws.inputs.samples.map((s, si) => `<div class="grid g4" style="align-items:end${si ? ';margin-top:10px' : ''}">
+        <div class="field"><label>${ws.inputs.samples.length > 1 ? `Sample ${esc(s.label)}: e` : 'E'}mpty flask (g)</label>${inpNum(`values.${s.key}.density.empty`, 'placeholder="A"')}</div>
+        <div class="field"><label>Flask + sample (g)</label>${inpNum(`values.${s.key}.density.full`, 'placeholder="B"')}</div>
+        <div class="field"><label>Flask volume (mL)</label>${inpNum(`values.${s.key}.density.volume`, 'placeholder="mL"')}</div>
+        <div class="field"><label>Weight per mL</label><div id="dens-${si}" class="small" style="padding-top:8px">--</div></div></div>`).join('')}
+      <div class="hint" style="margin-top:6px">${I.info}<span>Weight per mL = (B - A) / flask volume.</span></div></div></div>`;
+}
+// weight variation by content: one weighing per sample (gross and empty of each unit), shared by the APIs; each API tab shows its own AV
+function wsSachetsCard(){
+  const tpl = ws.ctx.templates.find(t => isWvContent(t.parameters)); if (!tpl) return '';
+  const P = tpl.parameters || {}, unit = P.dosage_form || 'sachet', NL = P.net_limits || {};
+  return ws.inputs.samples.map((s, si) => { const w = ws.inputs.values[s.key].sachets;
+    const row = (k, ph) => `<div class="lab-units" data-group="values.${s.key}.sachets.${k}">${w[k].map((x, i) => `<div class="lab-unit"><div class="tiny muted">${esc(unit.charAt(0).toUpperCase() + unit.slice(1))} ${i + 1}</div>
+      ${inpNum(`values.${s.key}.sachets.${k}.${i}`, `placeholder="${ph}"`)}${k === 'empty' ? `<div class="tiny tnum strong" id="net-${si}-${i}">--</div>` : ''}</div>`).join('')}</div>`;
+    return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Weighing - sample ${esc(s.label)}</h3>
+        <div class="sub">${esc(w.gross.length)} ${esc(unit)}s: gross weight, then the empty ${esc(unit)}; net = gross - empty. Shared by the APIs.</div></div>
+        <div id="netm-${si}" class="strong" style="text-align:right">--</div></div>
+      <div class="card-b"><div class="field"><label>Gross weight of each ${esc(unit)} (g)</label>${row('gross', 'gross')}</div>
+        <div class="field"><label>Empty ${esc(unit)} (g) - the net weight shows under it</label>${row('empty', 'empty')}</div>
+        <div class="hint">${I.info}<span>Tip: paste a column of weights into the first box of a row.${NL.min != null && NL.max != null ? ` The mean net weight is shown against ${esc(NL.min)} to ${esc(NL.max)} g (IPQA's limit) for information.` : ''}</span></div></div></div>`; }).join('');
+}
+function wsTitrationPanel(t){
+  const P = t.parameters || {}, tid = t.id, back = techOf(P) === 'titration_back';
+  const head = `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - ${back ? 'titration with a blank' : 'direct titration'}</h3>
+      <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - ${esc(claimText(P))} - ${esc(limitPct(P))}</div></div></div>
+    <div class="card-b"><div class="grid g3">
+      <div class="field"><label>Factor of the titrant${P.titrant ? ' (' + esc(P.titrant) + ')' : ''}</label>${inpNum(`apis.${tid}.factor`, 'placeholder="e.g. 1.039"')}</div>
+      ${back ? `<div class="field"><label>Blank: initial reading (mL)</label>${inpNum(`apis.${tid}.blank.0`, 'placeholder="0.00"')}</div>
+        <div class="field"><label>Blank: final reading (mL)</label>${inpNum(`apis.${tid}.blank.1`)}<div class="tiny muted" id="blank-${tid}" style="margin-top:4px"></div></div>` : ''}</div>
+      <div class="hint">${I.info}<span>${esc(P.make_up_ml)} mL of sample solution, ${esc(P.aliquot_ml)} mL per titration; ${esc(P.eq_mg)} mg of ${esc(t.api)} per mL of titrant.
+        % = ${back ? '(blank titre - sample titre)' : 'titre'} x factor x ${esc(P.eq_mg)} x 100 / mg in ${esc(P.aliquot_ml)} mL.</span></div></div></div>`;
+  return head + ws.inputs.samples.map((s, si) => { const runs = ws.inputs.values[s.key].titr[tid] || [];
+    return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
+        <div class="sub">mg of ${esc(t.api)} in ${esc(P.aliquot_ml)} mL: <b id="mga-${tid}-${si}">--</b></div></div><div id="mean-${tid}-${si}" class="strong">--</div></div>
+      <div class="card-b">
+        <div class="field" style="max-width:320px"><label>Weight of sample taken (g)</label>${inpNum(`values.${s.key}.sol_weight`, 'placeholder="g"')}
+          <div class="hint">${I.info}<span>About <b id="tw-${tid}-${si}">density x ${esc(P.sample_ml)}</b> g (${esc(P.sample_ml)} mL), made up to ${esc(P.make_up_ml)} mL. The same solution for every titrated API.</span></div></div>
+        <div class="tbl-wrap"><table class="tbl" style="min-width:0" data-nosort><thead><tr><th>Titration</th><th>Initial reading (mL)</th><th>Final reading (mL)</th><th style="text-align:right">Titre (mL)</th><th style="text-align:right">%</th></tr></thead><tbody>
+        ${runs.map((r, i) => `<tr><td class="strong">${i + 1}</td><td style="width:150px">${inpNum(`values.${s.key}.titr.${tid}.${i}.0`)}</td><td style="width:150px">${inpNum(`values.${s.key}.titr.${tid}.${i}.1`)}</td>
+          <td class="tnum" style="text-align:right" id="tt-${tid}-${si}-${i}">--</td><td class="tnum strong" style="text-align:right" id="tp-${tid}-${si}-${i}">--</td></tr>`).join('')}</tbody></table></div>
+      </div></div>`; }).join('');
+}
+function wsIrPanel(t){
+  const P = t.parameters || {}, tid = t.id, a = ws.inputs.apis[tid], ro = wsEditable() ? '' : 'disabled';
+  const stds = ws.ctx.standards.filter(w => !t.api || String(w.substance).toLowerCase() === String(t.api).toLowerCase());
+  const stdList = stds.length ? stds : ws.ctx.standards;
+  return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - standard (IR)</h3>
+      <div class="sub">Template v${esc(t.version)} ${esc(t.method_ref || '')} - ${esc(claimText(P))} - ${esc(limitPct(P))}</div></div></div>
+    <div class="card-b"><div class="grid g4">
+      ${ws.try ? `<div class="field"><label>Standard purity (%) from the Excel sheet</label>${inpNum(`apis.${tid}.try_purity`, 'placeholder="e.g. 94.5"')}</div>`
+        : `<div class="field"><label>Working standard</label><select class="inp${wsMiss(a.ws_id)}" data-ws="${tid}" ${ro}><option value="">Choose...</option>
+        ${stdList.map(w => `<option value="${w.id}" ${String(a.ws_id) === String(w.id) ? 'selected' : ''} ${w.usable ? '' : 'disabled'}>${esc(w.ws_no)} - ${esc(w.substance)} - ${esc(w.potency_pct)}%${w.usable ? ' (exp ' + fmtDate(w.expiry_date) + ')' : ' (cannot be used: ' + (w.expiry_date ? 'expired' : 'no expiry date') + ')'}</option>`).join('')}</select></div>`}
+      <div class="field"><label>Standard weight (mg)</label>${inpNum(`apis.${tid}.std_weight`, 'placeholder="' + esc((P.std || {}).nominal_mg || '') + '"')}
+        <div class="hint">${I.info}<span>${esc(stepsText((P.std || {}).steps, 'mg'))}</span></div></div>
+      <div class="field"><label>Standard peak height</label><div class="lab-areas" data-group="apis.${tid}.std_heights">${a.std_heights.map((v, i) => inpNum(`apis.${tid}.std_heights.${i}`, `placeholder="${a.std_heights.length > 1 ? 'reading ' + (i + 1) : 'height'}"`)).join('')}</div></div>
+      <div class="field"><label>Standard concentration</label><div id="cs-${tid}" class="small" style="padding-top:8px">--</div></div></div>
+      ${(a.ws_changes || []).length ? `<div class="notice">${I.info} <span>${a.ws_changes.map(c => `Standard changed from <b>${esc(c.from_no || '?')}</b> to <b>${esc(c.to_no || 'none')}</b>${c.at ? ' on ' + fmtDateTime(c.at) : ''}: ${esc(c.reason)}`).join('<br>')}</span></div>` : ''}
+    </div></div>` + ws.inputs.samples.map((s, si) => { const x = ws.inputs.values[s.key].ir[tid];
+    return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
+        <div class="sub">Sample concentration: <b id="cu-${tid}-${si}">--</b></div></div><div id="mean-${tid}-${si}" class="strong">--</div></div>
+      <div class="card-b"><div class="grid g3">
+        <div class="field"><label>Weight of sample taken (g)</label>${inpNum(`values.${s.key}.ir.${tid}.weight`, 'placeholder="g"')}
+          <div class="hint">${I.info}<span>About <b id="tw-${tid}-${si}">density x ${esc(P.sample_ml)}</b> g (${esc(P.sample_ml)} mL); ${esc(stepsText((P.sample || {}).steps, 'g'))}.</span></div></div>
+        <div class="field"><label>Sample peak height</label><div class="lab-areas" data-group="values.${s.key}.ir.${tid}.heights">${x.heights.map((v, i) => inpNum(`values.${s.key}.ir.${tid}.heights.${i}`, 'placeholder="height"')).join('')}</div></div>
+      </div><div class="hint">${I.info}<span>% = (sample height / standard height) x (standard conc. / sample conc.) x purity.</span></div></div></div>`; }).join('');
+}
+function wsIdentObsPanel(t){
+  const P = t.parameters || {}, tid = t.id, ro = wsEditable() ? '' : 'disabled';
+  return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - identification</h3>
+      <div class="sub">Template v${esc(t.version)} - write what you observed; you decide whether the sample complies</div></div></div>
+    <div class="card-b">${P.procedure ? `<div class="small" style="margin-bottom:10px;white-space:pre-wrap">${esc(P.procedure)}</div>` : ''}
+      <div class="notice" style="margin-bottom:12px">${I.info} <span><b>Acceptance criteria:</b> ${esc(P.criteria || 'as described in the method')}</span></div>
+      ${ws.inputs.samples.map((s, si) => { const vd = ((ws.inputs.values[s.key] || {}).verdict || {})[tid] || '', ob = ((ws.inputs.values[s.key] || {}).obs || {})[tid] || '';
+        return `<div class="grid g2" style="align-items:start"><div class="field"><label>Sample ${esc(s.label)}: observation</label>
+          <textarea class="inp${wsMiss(ob)}" rows="2" data-k="values.${s.key}.obs.${tid}" ${ro}>${esc(ob)}</textarea></div>
+          <div class="field"><label>Sample ${esc(s.label)}: your conclusion</label><select class="inp${wsMiss(vd)}" data-k="values.${s.key}.verdict.${tid}" ${ro}>${[['', 'Choose...'], ['complies', 'Complies'], ['does_not_comply', 'Does not comply']]
+            .map(([k, l]) => `<option value="${k}" ${vd === k ? 'selected' : ''}>${l}</option>`).join('')}</select><div class="small" id="mean-${tid}-${si}" style="margin-top:6px">--</div></div></div>`; }).join('')}
+    </div></div>`;
+}
+function wsWvContentPanel(t){
+  const P = t.parameters || {}, tid = t.id, unit = P.dosage_form || 'sachet';
+  return ws.inputs.samples.map((s, si) => { const n = (ws.inputs.values[s.key].sachets.gross || []).length;
+    return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - weight variation - sample ${esc(s.label)}</h3>
+        <div class="sub">Template v${esc(t.version)} - content of each ${esc(unit)} = net / mean net x the assay; AV NMT ${esc(P.l1 ?? 15)}, k ${esc(P.k1 ?? 2.4)}</div></div>
+        <div id="mean-${tid}-${si}" class="strong" style="text-align:right">--</div></div>
+      <div class="card-b"><div class="small" style="margin-bottom:10px">Assay used: <span id="assay-${tid}-${si}">--</span></div>
+        ${ws.try ? `<div class="field" style="max-width:260px"><label>Assay of ${esc(t.api)} (%) from the Excel sheet</label>${inpNum(`apis.${tid}.try_assay`, 'placeholder="e.g. 97.2"')}</div>` : ''}
+        <div class="lab-units">${Array.from({ length: n }, (x, i) => `<div class="lab-unit"><div class="tiny muted">${esc(unit.charAt(0).toUpperCase() + unit.slice(1))} ${i + 1}</div><div class="tnum strong" id="e-${tid}-${si}-${i}">--</div></div>`).join('')}</div>
+        <div class="hint" style="margin-top:8px">${I.info}<span>Enter the weights in the Weighing card above; ${ws.try ? 'type the assay result from the Excel sheet.' : 'the assay is the submitted assay worksheet of this batch.'}</span></div></div></div>`; }).join('');
+}
 function wsApiPanel(t){
   const P = t.parameters || {}, tid = t.id, test = ws.ctx.analysis.test_type;
   const samples = ws.inputs.samples, ro = wsEditable() ? '' : 'disabled';
+  if (test === 'assay' && usesDensity(P)) return isTitration(P) ? wsTitrationPanel(t) : wsIrPanel(t);   // 071
+  if (test === 'identification' && isObservation(P)) return wsIdentObsPanel(t);
+  if (test === 'weight_variation' && isWvContent(P)) return wsWvContentPanel(t);
   if (test === 'assay'){
     return wsStandardCard(t) + samples.map((s, si) => {
       const v = ws.inputs.values[s.key], preps = v.preps[tid];
@@ -864,6 +997,7 @@ function viewLabWorksheet(id){
             ${edit ? d.samples.filter(b => perBatch(b.assignment_id) < maxSamples).map(b => `<button class="btn btn-ghost btn-sm" onclick="wsSample(${b.assignment_id},1)">${I.plus} Sample for batch ${esc(b.batch_no)}</button>`).join(' ') : ''}
           </div></div>
       </div>
+      ${a.test_type === 'assay' ? wsDensityCard() : a.test_type === 'weight_variation' ? wsSachetsCard() : ''}
       <div class="tabs">${d.templates.map(x => `<div class="tab ${x.id === ws.tab ? 'active' : ''}" onclick="wsTab(${x.id})">${esc(x.api)}</div>`).join('')}</div>
       ${t ? wsApiPanel(t) : emptyState('alert', 'No method template', '')}
       <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Results</h3><div class="sub">Calculated on the server from the values above (engine <span id="wsEngine">${esc((ws.calc || {}).engine_version || '')}</span>)</div></div>
@@ -998,6 +1132,7 @@ function wsPaint(){
       const rs = r && r.samples ? r.samples[si] : null;
       const m = $(`#mean-${t.id}-${si}`);
       const v = ws.inputs.values[s.key] || {};
+      if (wsPaintSusp(t, r, rs, si, m)) return;   // 071
       if (test === 'assay'){
         if (m) m.innerHTML = rs ? `<span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}` : '--';
         ((v.preps || {})[t.id] || []).forEach((p, pi) => {
@@ -1031,6 +1166,14 @@ function wsPaint(){
       }
     });
   }
+  // 071: the density and the net weights, shared by the APIs of a sample
+  ws.inputs.samples.forEach((s, si) => {
+    const dEl = $('#dens-' + si), d = (c.density || {})[si];
+    if (dEl) dEl.innerHTML = d ? `<b class="tnum">${fmtN(d.reported, 4)} g/mL</b> <span class="muted">(${fmtN(d.sample_g, 4)} g / ${esc(d.volume)} mL)</span> ${verdictBadge(d.pass)}` : '--';
+    const sa = (c.sachets || {})[si], nm = $('#netm-' + si);
+    if (nm) nm.innerHTML = sa ? `mean net <span class="tnum">${fmtN(sa.mean_net_reported, 4)} g</span>${sa.net_min != null ? ` <span class="badge ${sa.net_in_limits ? 'b-ok' : 'b-danger'}" title="IPQA's limit, for information">${sa.net_in_limits ? 'within' : 'outside'} ${esc(sa.net_min)} to ${esc(sa.net_max)} g</span>` : ''}` : '--';
+    ((((ws.inputs.values[s.key] || {}).sachets) || {}).gross || []).forEach((x, i) => { const el = $(`#net-${si}-${i}`); if (el) el.textContent = sa ? fmtN(sa.nets[i], 4) : '--'; });
+  });
   const errs = (c.errors || []).map(e => `<li>${e.api ? `<b>${esc(e.api)}:</b> ` : ''}${esc(e.message)}</li>`).join('');
   const blocked = (c.blocked || []).length ? `<div class="notice" style="color:var(--danger);margin-bottom:10px">${I.alert} System suitability failed for ${esc(c.blocked.join(', '))}: results are blocked until the run is repeated or a justification is entered.</div>` : '';
   if (typeof ws.afterPaint === 'function') setTimeout(ws.afterPaint, 0);
@@ -1038,6 +1181,36 @@ function wsPaint(){
     ${(c.results || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0" data-nosort><thead><tr><th>API</th><th>Sample</th><th style="text-align:right">Reported</th><th>Limit</th><th></th></tr></thead><tbody>
       ${c.results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="tnum strong" style="text-align:right">${esc(resText(x))}</td>
         <td class="small muted">${esc(x.limit_text)}</td><td>${verdictBadge(x.pass)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+}
+// 071: one sample of a titration / IR / observation / weight-variation-by-content template; true when handled here
+function wsPaintSusp(t, r, rs, si, m){
+  const P = t.parameters || {}, test = ws.ctx.analysis.test_type, tid = t.id;
+  const dens = ((ws.calc || {}).density || {})[si];
+  if (test === 'assay' && usesDensity(P)){
+    const tw = $(`#tw-${tid}-${si}`); if (tw) tw.textContent = dens ? fmtN(dens.density * Number(P.sample_ml), 4) : `density x ${P.sample_ml}`;
+    if (m) m.innerHTML = rs ? `<span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}` : '--';
+    if (isTitration(P)){
+      const b = $('#blank-' + tid), bl = r && r.samples && r.samples.find(Boolean); if (b) b.textContent = bl && bl.blank ? `blank titre ${fmtN(bl.blank.titre, 2)} mL` : '';
+      const mg = $(`#mga-${tid}-${si}`); if (mg) mg.textContent = rs ? fmtN(rs.mg_aliquot, 2) + ' mg' : '--';
+      (((ws.inputs.values[ws.inputs.samples[si].key] || {}).titr || {})[tid] || []).forEach((x, i) => { const q = rs && rs.titrations ? rs.titrations[i] : null;
+        const a = $(`#tt-${tid}-${si}-${i}`); if (a) a.textContent = q ? fmtN(q.titre, 2) : '--';
+        const p = $(`#tp-${tid}-${si}-${i}`); if (p) p.textContent = q ? num1(q.pct_reported) + '%' : '--'; });
+    } else {
+      const cs = $('#cs-' + tid), first = r && r.samples && r.samples.find(Boolean); if (cs) cs.textContent = first ? fmtN(first.c_std, 4) + ' mg/mL' : '--';
+      const cu = $(`#cu-${tid}-${si}`); if (cu) cu.textContent = rs ? fmtN(rs.c_spl, 4) + ' mg/mL' : '--';
+    }
+    return true;
+  }
+  if (test === 'identification' && isObservation(P)){ if (m) m.innerHTML = rs ? verdictBadge(rs.pass) : '--'; return true; }
+  if (test === 'weight_variation' && isWvContent(P)){
+    if (m) m.innerHTML = rs ? `mean <span class="tnum">${fmtN(rs.mean_reported, 2)}%</span> - SD ${fmtN(rs.sd, 3)} - M ${fmtN(rs.m, 1)} - AV <b class="tnum">${num1(rs.av_reported)}</b> ${verdictBadge(rs.pass)}` : '--';
+    const as = $(`#assay-${tid}-${si}`);
+    if (as) as.innerHTML = rs && rs.assay_from ? `<b class="tnum">${esc(rs.assay_from.value)}%</b>${rs.assay_from.analysis_id ? ` from <a href="#/lab/worksheet/${esc(rs.assay_from.analysis_id)}">assay worksheet #${esc(rs.assay_from.analysis_id)}</a> (${esc((WS_STATUS[rs.assay_from.status] || [rs.assay_from.status || ''])[0])})` : ' (typed)'}` : '--';
+    ((((ws.inputs.values[ws.inputs.samples[si].key] || {}).sachets) || {}).gross || []).forEach((x, i) => { const el = $(`#e-${tid}-${si}-${i}`);
+      if (el) el.textContent = rs && rs.units_reported ? fmtN(rs.units_reported[i], 2) + '%' : '--'; });
+    return true;
+  }
+  return false;
 }
 function wsBody(extra){
   return Object.assign({ analysis_id: ws.id, inputs: ws.inputs, equipment_id: ws.run.equipment_id, reagents: ws.run.reagents,
@@ -1722,7 +1895,21 @@ function mdParamsHtml(P, test){
          (P.sst || {}).resolution_min != null ? `resolution NLT ${(P.sst || {}).resolution_min}` : ''].filter(Boolean).join(', '))];
   const tail = [kv('Samples per batch', `up to ${(P.samples || {}).max || 1}`), kv('Dosage form', unit), kv('Reported to', `${P.dp ?? 1} decimal place(s)`), ...names];
   let rows;
-  if (test === 'assay') rows = [kv('Label claim', (P.label_claim_mg ?? '--') + ' mg'), kv('Theoretical avg weight', ((P.avg_weight || {}).theoretical_mg ?? '--') + ' mg'),
+  const D = P.density || {};
+  if (test === 'assay' && usesDensity(P)) rows = [kv('Technique', tech === 'titration_back' ? 'Titration with a blank (back-titration)' : tech === 'titration_direct' ? 'Titration, direct' : 'IR with a standard (peak height)'),   // 071
+    kv('Label claim', `${P.label_claim_mg ?? '--'} mg in ${P.label_ml ?? '--'} mL`), kv('Sample', `about ${P.sample_ml ?? '--'} mL of suspension, weighed (g)`),
+    ...(isTitration(P) ? [kv('Solution', `made up to ${P.make_up_ml ?? '--'} mL; ${P.aliquot_ml ?? '--'} mL per titration`), kv('Titrations per sample', P.titrations ?? '--'),
+        kv('Titrant', `${P.titrant || '--'}: ${P.eq_mg ?? '--'} mg per mL`), kv('Calculation', tech === 'titration_back' ? '(blank - sample titre) x factor x mg/mL x 100 / mg in the aliquot' : 'titre x factor x mg/mL x 100 / mg in the aliquot')]
+      : [kv('Standard', `${(P.std || {}).nominal_mg ?? '--'} mg: ${steps((P.std || {}).steps, 'weight')}`), kv('Sample dilution', steps((P.sample || {}).steps, 'weighed sample')),
+         kv('Calculation', '(Au / As) x (Cs / Cu) x purity')]),
+    kv('Density', `${D.min ?? '--'} to ${D.max ?? '--'} g/mL, ${D.flask_ml ?? '--'} mL flask`), kv('Limits', `${(P.limits || {}).min}% to ${(P.limits || {}).max}%`),
+    kv('Samples per batch', `up to ${(P.samples || {}).max || 1}`), kv('Reported to', `${P.dp ?? 1} decimal place(s)`)];
+  else if (test === 'identification' && isObservation(P)) rows = [kv('Technique', 'Observation (the analyst writes what was seen and decides)'),
+    ...(P.procedure ? [kv('Procedure', P.procedure)] : []), kv('Acceptance criteria', P.criteria || '--'), tail[0]];
+  else if (test === 'weight_variation' && isWvContent(P)) rows = [kv('Kind', 'Content by weight: net / mean net x the assay, then AV'),
+    kv('Units weighed', P.units ?? '--'), kv('Acceptance', `AV NMT ${P.l1 ?? 15}, k ${P.k1 ?? 2.4}`),
+    kv('Mean net weight shown against', P.net_limits ? `${P.net_limits.min} to ${P.net_limits.max} g (information)` : 'no limit'), kv('Reported to', `${P.dp ?? 1} decimal place(s)`), tail[0]];
+  else if (test === 'assay') rows = [kv('Label claim', (P.label_claim_mg ?? '--') + ' mg'), kv('Theoretical avg weight', ((P.avg_weight || {}).theoretical_mg ?? '--') + ' mg'),
     ...std, kv('Sample', steps((P.sample || {}).steps, 'weight')), kv('Preparations', P.preparations ?? '--'), rd('preparation'),
     kv('Limits', `${(P.limits || {}).min}% to ${(P.limits || {}).max}%`), ...tail];
   else if (test === 'dissolution') rows = [kv('Label claim', (P.label_claim_mg ?? '--') + ' mg'), ...std,
@@ -1748,7 +1935,7 @@ function tplProblemsHtml(t){
 function tplTryHtml(t){
   const r = t.try_run;
   if (!r) return t.status === 'draft' ? `<div class="notice" style="margin-bottom:12px">${I.info} Not tried with Excel numbers.</div>` : '';
-  const rows = (r.results || []).map((x, i) => { const e = (r.excel || [])[i] || (r.excel || [])[0] || {}; const same = tryMatches(x, e.value);
+  const rows = (r.results || []).filter(x => x.result_name !== 'density').map((x, i) => { const e = (r.excel || [])[i] || (r.excel || [])[0] || {}; const same = tryMatches(x, e.value);
     return `<tr><td>${esc(x.api)}</td><td class="tnum strong">${esc(resText(x))}</td><td class="tnum">${esc(e.value ?? '--')}</td><td>${same ? '<span class="badge b-ok">Same</span>' : '<span class="badge b-danger">Different</span>'}</td></tr>`; }).join('');
   return `<div class="card" style="margin-bottom:12px"><div class="card-h"><div><h3>Tried with Excel numbers</h3>
       <div class="sub">${esc(r.by || '')}, ${fmtDateTime(r.at)}${t.try_current === false ? ' - <b>the method changed after this try-out: try it again</b>' : ''}</div></div></div>
@@ -1792,6 +1979,7 @@ const UNIT_TESTS = ['assay', 'dissolution', 'content_uniformity'];
 // older methods: "injections: 2" means 1 to 2; the technique is written out (065)
 function tplNormalize(P, test){
   if (!UNIT_TESTS.includes(test)) return P;
+  if (test === 'assay' && usesDensity(P)) return P;   // 071: titration / IR: no injections, no system suitability
   if (P.injections == null) P.injections = { min: 1, max: 2 };
   else if (typeof P.injections !== 'object') P.injections = { min: 1, max: Number(P.injections) || 2 };
   P.technique = techOf(P);
@@ -1858,11 +2046,32 @@ function mdTemplate(id, mode, preset){
           ${s.length < 4 ? `<button class="btn btn-ghost btn-sm" data-step="${key}:1">${I.plus} Dilution step</button>` : ''}</div>`; };
       const namesBox = () => `<div class="field"><label>Usual sample names (optional)</label><input class="inp" id="tp_names" type="text" autocomplete="off" placeholder="e.g. Top, Middle, Bottom, Composite"
           value="${esc((P.sample_names || []).join(', '))}"><div class="hint">${I.info}<span>Separated by commas. Offered as the sample names on the worksheet, in this order.</span></div></div>`;
+      const ftext = (path, label, hint, rows) => `<div class="field"><label>${esc(label)}</label>${rows ? `<textarea class="inp" data-p="${path}" rows="${rows}">${esc(getP(path) ?? '')}</textarea>`
+          : `<input class="inp" data-p="${path}" type="text" autocomplete="off" value="${esc(getP(path) ?? '')}">`}${hint ? `<div class="hint">${I.info}<span>${esc(hint)}</span></div>` : ''}</div>`;
+      // 071: a suspension method (titration / IR): the sample is weighed, the density turns it into mL
+      const suspForm = () => {
+        const tech = techOf(P), tit = isTitration(P);
+        const techBox = `<div class="field"><label>Technique</label><select class="inp" data-p="technique">${TECHNIQUES.concat(SUSP_TECHNIQUES).map(([k, l]) => `<option value="${k}" ${tech === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          <div class="hint">${I.info}<span>${tech === 'titration_back' ? 'Burette readings; % from (blank titre - sample titre), e.g. Mintacid aluminium hydroxide.' : tech === 'titration_direct' ? 'Burette readings; % from the sample titre, e.g. Mintacid magnesium hydroxide.' : 'Peak heights from the IR, against a weighed working standard, e.g. Mintacid simethicone.'} The sample is weighed (g) and turned into mL with the density, worked out once per sample on the worksheet.</span></div></div>`;
+        const sample = sec('Sample (weighed suspension)', `<div class="grid g4">${f('label_claim_mg', 'Label claim (mg)')}${f('label_ml', '... in (mL)', 'number', 'e.g. 250 mg in 7 mL')}
+            ${f('sample_ml', 'Suspension weighed (mL)', 'number', 'The analyst weighs about density x this volume, e.g. 22.4 mL')}${formSel()}</div>
+          ${tit ? `<div class="grid g4">${f('make_up_ml', 'Made up to (mL)')}${f('aliquot_ml', 'Taken for each titration (mL)')}${f('titrations', 'Titrations per sample')}</div>`
+            : `<div class="grid g2">${stepRows('sample', 'Sample dilution', 'Weighed sample to')}<div></div></div>`}`);
+        const reagent = tit ? sec('Titrant', `<div class="grid g3">${f('eq_mg', 'mg of API per mL of titrant', 'number', 'e.g. 3.900 for Al(OH)3, 2.916 for Mg(OH)2 with 0.05 M edetate disodium')}
+            ${ftext('titrant', 'Titrant (name)', 'e.g. 0.05 M edetate disodium; its factor is typed on the worksheet')}</div>`)
+          : sec('Standard', `<div class="grid g2">${stepRows('std', 'Standard dilution', 'Weigh into')}<div>${f('std.nominal_mg', 'Standard nominal weight (mg)')}</div></div>
+            <div class="hint">${I.info}<span>One standard peak height (or more: their mean). No system suitability.</span></div>`);
+        const dens = sec('Density (weight per mL)', `<div class="grid g3">${f('density.min', 'Lower limit (g/mL)')}${f('density.max', 'Upper limit (g/mL)')}${f('density.flask_ml', 'Flask volume (mL)')}</div>
+          <div class="hint">${I.info}<span>Reported once per sample with the assay. Keep it the same in every method of this product that uses it.</span></div>`);
+        const limits = sec('Limits', `<div class="grid g3">${f('limits.min', 'Lower limit (%)')}${f('limits.max', 'Upper limit (%)')}${f('dp', 'Reported to (decimal places)')}</div>`);
+        return `<div class="grid g2">${techBox}</div>${sample}${reagent}${dens}${limits}${sec('This product', `<div class="grid g4">${f('samples.max', 'Samples per batch (max)')}</div>`)}`;
+      };
       const draw = () => {
         const unit = P.dosage_form || 'caplet';
-        if (UNIT_TESTS.includes(test)){
+        if (test === 'assay' && usesDensity(P)) box.innerHTML = suspForm();   // 071
+        else if (UNIT_TESTS.includes(test)){
           const tech = techOf(P), W = techWords(P);
-          const techBox = `<div class="field"><label>Technique</label><select class="inp" data-p="technique">${TECHNIQUES.map(([k, l]) => `<option value="${k}" ${tech === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          const techBox = `<div class="field"><label>Technique</label><select class="inp" data-p="technique">${(test === 'assay' ? TECHNIQUES.concat(SUSP_TECHNIQUES) : TECHNIQUES).map(([k, l]) => `<option value="${k}" ${tech === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
             <div class="hint">${I.info}<span>${tech === 'hplc' ? 'Peak areas from Empower / LabSolutions; injections.' : tech === 'uv_std' ? 'Absorbances from the UV; a weighed standard is read too (e.g. Cypron dissolution).' : 'Absorbances from the UV against a fixed A(1%, 1 cm) value: no standard is weighed or read (e.g. Cypron assay and CU).'}</span></div></div>`;
           const product = sec('This product', `<div class="grid g4">${f('label_claim_mg', 'Label claim (mg)')}${test === 'assay' ? f('avg_weight.theoretical_mg', 'Theoretical average weight (mg)') : ''}
               ${formSel()}${f('samples.max', 'Samples per batch (max)', 'number', 'More than 1 for validation batches (LS, MS, HS) or blend locations')}</div>${namesBox()}`,
@@ -1893,7 +2102,13 @@ function mdTemplate(id, mode, preset){
           <div class="field"><label>Organisms that must be absent (one per line)</label>
             <textarea class="inp" id="tp_absent" rows="4">${esc((((P.limits || {}).absent) || []).map(a => a.label).join('\n'))}</textarea></div>
           <div class="grid g3">${f('samples.max', 'Samples per batch (max)')}</div>`;
-        else if (test === 'weight_variation') box.innerHTML = `
+        else if (test === 'weight_variation' && isWvContent(P)) box.innerHTML = `${wvModeBox()}   <!-- 071 -->
+          <div class="notice" style="margin-bottom:12px">${I.info} <span>One method per API, named exactly like its assay method (e.g. <b>Aluminium hydroxide</b>): the worksheet takes that API's submitted assay result of the batch.
+            The units are weighed once (gross and empty) for all the APIs.</span></div>
+          <div class="grid g4">${f('units', 'Units weighed')}${f('k1', 'k (acceptability constant)')}${f('l1', 'AV limit (NMT)')}${f('dp', 'Reported to (decimal places)')}</div>
+          <div class="grid g3">${f('net_limits.min', 'Mean net weight: lower (g, optional)')}${f('net_limits.max', 'Mean net weight: upper (g, optional)')}${formSel()}</div>
+          <div class="hint">${I.info}<span>The mean net weight is shown against these limits for information (IPQA owns that limit); it does not change the result.</span></div>`;
+        else if (test === 'weight_variation') box.innerHTML = `${wvModeBox()}
           <div class="grid g4">${f('limits.units', 'Units weighed')}${f('limits.limit_pct', 'Each unit within ± % of the average')}${f('limits.allowed_out', 'Units allowed outside (none beyond twice)')}
             <div class="field"><label>Unit of weight</label><select class="inp" data-p="unit">${['g', 'mg'].map(u => `<option ${(P.unit || 'g') === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
           <div class="grid g3">${f('limits.target.weight', 'Target average weight (optional)')}${f('limits.target.pct', 'Average within ± % of the target')}${formSel()}</div>`;
@@ -1901,9 +2116,26 @@ function mdTemplate(id, mode, preset){
           <div class="grid g3">${f('limits.min', 'Lower limit (pH)')}${f('limits.max', 'Upper limit (pH)')}${f('readings', 'Readings per sample')}</div>
           <div class="hint">${I.info}<span>For a new pH method the limits are filled in from the product's IPQA pH specification. Change them only if QC's limit is different.</span></div>`;
         else box.innerHTML = `
-          <div class="notice" style="margin-bottom:12px">${I.info} Identification has no calculation: the retention times are recorded and the analyst decides whether the sample complies. One method per API.</div>
+          <div class="grid g2"><div class="field"><label>Technique</label><select class="inp" data-p="technique">${[['hplc', 'HPLC (retention times)'], ['observation', 'Observation (wet chemistry, IR spectrum)']]
+            .map(([k, l]) => `<option value="${k}" ${(isObservation(P) ? 'observation' : 'hplc') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
+          <div class="notice" style="margin-bottom:12px">${I.info} ${isObservation(P) ? 'The analyst writes what was observed and decides whether the sample complies, against the acceptance criteria below. One method per API.'
+            : 'Identification has no calculation: the retention times are recorded and the analyst decides whether the sample complies. One method per API.'}</div>
+          ${isObservation(P) ? `${ftext('procedure', 'Procedure (optional, shown on the worksheet)', '', 3)}${ftext('criteria', 'Acceptance criteria', 'e.g. A white, crystalline precipitate insoluble in 6 N ammonium hydroxide is formed.', 2)}` : ''}
           <div class="grid g3">${f('samples.max', 'Samples per batch (max)')}${formSel()}</div>`;
         drawGroup();
+      };
+      // 071: weight variation: each unit against the average (058) or content by weight (AV with the assay)
+      const wvModeBox = () => `<div class="grid g2"><div class="field"><label>Kind</label><select class="inp" data-p="mode">${[['', 'Each unit against the average (weights)'], ['content', 'Content by weight: AV from the net weights and the assay']]
+        .map(([k, l]) => `<option value="${k}" ${(isWvContent(P) ? 'content' : '') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>`;
+      // 071: the boxes a suspension technique / weight variation by content needs, filled when it is chosen (what is there is kept)
+      const fillDefaults = () => {
+        const put = (path, v) => { if (getP(path) === undefined || getP(path) === null || getP(path) === '') setP(path, v); };
+        if (test === 'assay' && usesDensity(P)){
+          [['label_ml', 7], ['sample_ml', ''], ['density.min', 1.0], ['density.max', 1.2], ['density.flask_ml', 20], ['limits.min', 90.0], ['limits.max', 110.0], ['dp', 1], ['samples.max', 1]].forEach(([k, v]) => put(k, v));
+          if (isTitration(P)) [['make_up_ml', 200], ['aliquot_ml', 10], ['titrations', 2], ['eq_mg', ''], ['titrant', '0.05 M edetate disodium']].forEach(([k, v]) => put(k, v));
+          else { put('std.nominal_mg', ''); setP('std.steps', [[null, 25], [10, 20]]); setP('sample.steps', [[null, 5]]); }   // switched to IR: the Mintacid dilutions to start from
+        } else if (UNIT_TESTS.includes(test)) P = tplNormalize(P, test);
+        if (test === 'weight_variation' && isWvContent(P)) [['units', 10], ['k1', 2.4], ['l1', 15.0], ['dp', 1], ['samples.max', 1]].forEach(([k, v]) => put(k, v));
       };
       // "same change for the group" (065): offered on a new version or a draft edit, for the products of the same group
       const drawGroup = () => {
@@ -1916,7 +2148,11 @@ function mdTemplate(id, mode, preset){
             ${x.ok ? '' : `<span class="tiny muted">${esc(x.why)}</span>`}</label>`).join('')}
           <div class="hint">${I.info}<span>Each ticked product gets its own draft with this change, keeping its own label claim, average weight, dosage form, samples per batch and sample names. Each draft is sent and approved on its own.</span></div></div>`;
       };
-      const sync = e => { const p = e.target.dataset && e.target.dataset.p; if (p) { setP(p, e.target.value); if (p === 'dosage_form' || p === 'technique') draw(); } };
+      const sync = e => { const p = e.target.dataset && e.target.dataset.p; if (!p) return;
+        setP(p, e.target.value);
+        if (p === 'technique' || p === 'mode'){ if (p === 'mode' && !e.target.value) delete P.mode; fillDefaults(); }
+        if (p === 'mode' && e.target.value === 'content'){ const a = $('#tp_api', w); if (a && a.value === 'Weight variation') a.value = ''; }   // named like the assay API
+        if (p === 'dosage_form' || p === 'technique' || p === 'mode') draw(); };
       box.addEventListener('input', sync); box.addEventListener('change', sync);
       box.addEventListener('click', e => { const b = e.target.closest ? e.target.closest('[data-step]') : null; if (!b) return;
         const [key, d] = b.dataset.step.split(':'); const s = getP(key + '.steps');
@@ -1966,8 +2202,24 @@ function mdTemplate(id, mode, preset){
           ph: ['readings', 'limits.min', 'limits.max', 'samples.max', 'dp'] }[test] || [];
         if (UNIT_TESTS.includes(test)) numPaths.push('a1pct', 'std_injections.min', 'std_injections.max', 'sst.limit_rsd', 'sst.tailing_max', 'sst.resolution_min',
           'injections.min', 'injections.max', 'samples.max', 'dp');
+        // 071: suspension methods, weight variation by content
+        const susp = test === 'assay' && usesDensity(P);
+        if (susp) numPaths.push('label_ml', 'sample_ml', 'make_up_ml', 'aliquot_ml', 'eq_mg', 'titrations', 'density.min', 'density.max', 'density.flask_ml');
+        if (test === 'weight_variation' && isWvContent(P)) numPaths.push('units', 'k1', 'l1', 'net_limits.min', 'net_limits.max');
         numPaths.forEach(p => { if (getP(p) !== undefined) setP(p, num(getP(p))); });
-        if (UNIT_TESTS.includes(test)){
+        if (susp){
+          ['std_injections', 'sst', 'injections', 'preparations', 'avg_weight', 'a1pct', 'medium_ml', 'units', 'k1', 'l1', 'sample_names'].forEach(k => delete P[k]);
+          if (isTitration(P)){ delete P.std; delete P.sample; } else ['make_up_ml', 'aliquot_ml', 'eq_mg', 'titrations', 'titrant'].forEach(k => delete P[k]);
+          if (P.samples) P.samples.min = 1;
+        }
+        if (test === 'weight_variation' && isWvContent(P)){ delete P.limits; delete P.unit;
+          if (P.net_limits && P.net_limits.min == null && P.net_limits.max == null) delete P.net_limits; }
+        if (test === 'identification'){
+          if (isObservation(P)){ P.criteria = String(P.criteria || '').trim(); P.procedure = String(P.procedure || '').trim(); if (!P.procedure) delete P.procedure;
+            if (!P.criteria) return fail('Enter the acceptance criteria.'); }
+          else { delete P.technique; delete P.criteria; delete P.procedure; }
+        }
+        if (UNIT_TESTS.includes(test) && !susp){
           const tech = techOf(P);
           if (tech === 'uv_a1'){ delete P.std; delete P.std_injections; delete P.sst; }   // no standard is measured
           else delete P.a1pct;
@@ -1977,7 +2229,7 @@ function mdTemplate(id, mode, preset){
         }
         if (test === 'weight_variation' && P.limits && P.limits.target && !P.limits.target.weight) delete P.limits.target;
         if (test === 'ph' && P.limits && P.limits.min == null && P.limits.max == null) return fail('Enter the pH limits.');
-        if (test === 'weight_variation' && !(P.limits && P.limits.limit_pct > 0)) return fail('Enter the ± % limit for each unit.');
+        if (test === 'weight_variation' && !isWvContent(P) && !(P.limits && P.limits.limit_pct > 0)) return fail('Enter the ± % limit for each unit.');
         const unitFirst = test === 'dissolution' || test === 'content_uniformity';
         ['std', 'sample'].forEach(k => { const s = getP(k + '.steps');
           if (s) s.forEach((x, i) => { s[i] = i === 0 ? [k === 'sample' && unitFirst ? 1 : null, num(x[1])] : [num(x[0]), num(x[1])]; }); });
@@ -2079,16 +2331,17 @@ function viewLabTry(id){
       ${tplProblemsHtml(t)}
       <div class="notice" style="margin-bottom:16px">${I.info} <span>Nothing typed here goes on a batch. ${canSave ? 'When the results match, <b>Save this check</b>: the QC Manager sees it when approving.' : t.status === 'draft' ? 'This draft is with the approvers: the check can be tried but not saved.' : 'This method is approved: you can try it, nothing is saved.'}
         Known Excel errors give a different number: Mixagrip CU (phenylephrine tablet 3 uses tablet 2's area), Medik 55 and Cannon PM dissolution (divide by the 6th standard injection, not the average).</span></div>
+      ${t.test_type === 'assay' ? wsDensityCard() : t.test_type === 'weight_variation' ? wsSachetsCard() : ''}
       ${wsApiPanel(ws.ctx.templates[0])}
       <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Results</h3><div class="sub">Calculated on the server (engine <span id="wsEngine"></span>)</div></div><span id="wsCalcState" class="small muted"></span></div><div id="wsResults" class="card-b"></div></div>
-      <div class="card"><div class="card-h"><div><h3>Your Excel result</h3><div class="sub">${esc(t.test_type === 'content_uniformity' ? 'The acceptance value (AV)' : t.test_type === 'weight_variation' ? 'The average weight' : t.test_type === 'ph' ? 'The pH' : 'The result (mean %)')} on the Excel sheet for the same numbers</div></div></div>
+      <div class="card"><div class="card-h"><div><h3>Your Excel result</h3><div class="sub">${esc(t.test_type === 'content_uniformity' || (t.test_type === 'weight_variation' && isWvContent(t.parameters)) ? 'The acceptance value (AV)' : t.test_type === 'weight_variation' ? 'The average weight' : t.test_type === 'ph' ? 'The pH' : 'The result (mean %)')} on the Excel sheet for the same numbers</div></div></div>
         <div class="card-b"><div class="grid g3"><div class="field"><label for="tryEx">Excel result</label><input class="inp tnum" id="tryEx" inputmode="decimal" autocomplete="off" value="${esc(ex)}"></div>
           <div class="field"><label>Compared</label><div id="tryCmp" style="padding-top:8px">--</div></div>
           <div class="field" style="align-self:end">${canSave ? `<button class="btn btn-primary" id="trySave">Save this check</button>` : ''}</div></div>
           ${tplTryHtml(t)}</div></div>`,
     bind(){
       wsBindInputs();
-      const cmp = () => { const r = ((ws.calc || {}).results || [])[0], el = $('#tryCmp'); if (!el) return;
+      const cmp = () => { const r = ((ws.calc || {}).results || []).find(x => x.result_name !== 'density'), el = $('#tryCmp'); if (!el) return;   // 071: not the density
         el.innerHTML = !r || $('#tryEx').value === '' ? '--' : tryMatches(r, $('#tryEx').value) ? `<span class="badge b-ok">Same</span> QSync ${esc(resText(r))}` : `<span class="badge b-danger">Different</span> QSync ${esc(resText(r))}`; };
       ws.afterPaint = cmp;
       $('#tryEx').addEventListener('input', e => { tryExcel[t.id] = e.target.value; cmp(); });
@@ -2132,7 +2385,7 @@ function resText(x){
   return `${x.value_reported} ${x.unit || ''}`.trim();
 }
 const verdictText = p => (p === true ? 'COMPLIES' : p === false ? 'DOES NOT COMPLY' : '--');
-const testOfResult = n => TEST_TYPES[n] || 'Microbiology';
+const testOfResult = n => (n === 'density' ? 'Weight per mL' : TEST_TYPES[n] || 'Microbiology');   // 071: the density comes with the assay
 
 // opt.only: assignment ids to show (one batch of a run, for the detailed batch report); opt.embedded: no letterhead
 function printWorksheetHtml(d, opt){
@@ -2146,6 +2399,8 @@ function printWorksheetHtml(d, opt){
     const P = t.parameters || {}, r = (c.apis || {})[t.id] || {}, x = (inp.apis || {})[t.id] || {};
     const ws = d.standards.find(w => String(w.id) === String(x.ws_id));
     let html = `<h4>${esc(t.api)} - template v${esc(t.version)}${t.form_ref ? ' (replaces ' + esc(t.form_ref) + ')' : ''}</h4>`;
+    const susp = printSuspPart(t, P, r, x, ws, samples, show, inp, test);   // 071: titration, IR, observation, weight variation by content
+    if (susp !== null) return html + susp;
     if (hplc && techOf(P) === 'uv_a1') html += `<table><tr><td>UV with a fixed specific absorbance: A(1%, 1 cm) = <b>${esc(P.a1pct)}</b>. No standard measured.</td></tr></table>`;
     else if (hplc){
       const s = r.sst || {};
@@ -2219,11 +2474,71 @@ function printWorksheetHtml(d, opt){
       ${test === 'microbiology' ? '' : `<tr><th>Instrument</th><td>${esc(eq ? eq.eq_no + ' ' + (eq.eq_type || '') : '--')}</td><th>Reagent / mobile phase lots</th><td>${reagentList(a.reagents).length ? reagentList(a.reagents).map(x => esc(x)).join('<br>') : '--'}</td></tr>`}
       <tr><th>Started</th><td>${fmtDate(a.started_on)}</td><th>Ended</th><td>${fmtDate(a.ended_on)}</td></tr>
       <tr><th>Method</th><td>${esc([...new Set(d.templates.map(t => t.method_ref).filter(Boolean))].join(', ') || '--')}</td><th>Specification</th><td>${esc([...new Set(d.templates.map(t => t.spec_ref).filter(Boolean))].join(', ') || '--')}</td></tr></table>
+    ${printSharedPart(d, c, inp, samples, show, test)}
     ${parts}
     ${d.attachments.length ? `<h4>Chromatograms</h4><table><tr><th>File</th><th>Fingerprint (sha256)</th><th>Uploaded</th></tr>${d.attachments.map(x => `<tr><td>${esc(x.file_name)}</td><td class="mono">${esc(x.sha256)}</td><td>${esc(x.uploaded_by)} ${fmtDateTime(x.uploaded_at)}</td></tr>`).join('')}</table>` : ''}
     <div class="sign-grid">${signBox('Performed by (analyst)', a.performed_by, a.performed_at)}${signBox('Checked by (QC Supervisor)', a.checked_by, a.checked_at)}</div>
     ${opt.embedded ? '' : `<p class="tiny" style="margin-top:14px">Generated by QSync from the stored record. Every value above was entered once; the results are those calculated and stored by the server (engine ${esc(c.engine_version || a.engine_version || '--')}). Signatures are electronic password sign-offs.</p>`}
   </div>`;
+}
+// 071: the density (assay) and the weighing (weight variation by content), once per sample, before the APIs
+function printSharedPart(d, c, inp, samples, show, test){
+  if (test === 'assay' && d.templates.some(t => usesDensity(t.parameters))){
+    return `<h4>Density (weight per mL)</h4><table><tr><th>Sample</th><th>Empty flask (A)</th><th>Flask + sample (B)</th><th>B - A</th><th>Flask volume</th><th>Weight per mL</th><th>Limit</th><th>Verdict</th></tr>
+      ${samples.map((sm, si) => { if (!show(sm)) return ''; const v = ((inp.values || {})[sm.key] || {}).density || {}, r = (c.density || {})[si] || {};
+        return `<tr><td>${esc(sm.label)}</td><td>${esc(v.empty || '--')} g</td><td>${esc(v.full || '--')} g</td><td>${fmtN(r.sample_g, 4)} g</td><td>${esc(v.volume || '--')} mL</td>
+          <td><b>${fmtN(r.reported, 4)} g/mL</b></td><td>${esc(r.limit_text || '')}</td><td><b>${verdictText(r.pass)}</b></td></tr>`; }).join('')}</table>`;
+  }
+  if (test === 'weight_variation' && d.templates.some(t => isWvContent(t.parameters))){
+    return samples.map((sm, si) => { if (!show(sm)) return ''; const w = ((inp.values || {})[sm.key] || {}).sachets || {}, s = (c.sachets || {})[si] || {};
+      const g = w.gross || [];
+      return `<h4>Weighing - sample ${esc(sm.label)}</h4><table><tr><th>Unit</th>${g.map((x, i) => `<th>${i + 1}</th>`).join('')}<th>Mean</th></tr>
+        <tr><td>Gross (g)</td>${g.map(x => `<td class="mono">${esc(x)}</td>`).join('')}<td>NA</td></tr>
+        <tr><td>Empty (g)</td>${(w.empty || []).map(x => `<td class="mono">${esc(x)}</td>`).join('')}<td>NA</td></tr>
+        <tr><td>Net (g)</td>${g.map((x, i) => `<td>${fmtN((s.nets || [])[i], 4)}</td>`).join('')}<td><b>${fmtN(s.mean_net_reported, 4)}</b></td></tr></table>
+        ${s.net_min != null ? `<p class="small">Mean net weight ${fmtN(s.mean_net_reported, 4)} g: ${s.net_in_limits ? 'within' : 'OUTSIDE'} ${esc(s.net_min)} to ${esc(s.net_max)} g (IPQA's limit, for information).</p>` : ''}`; }).join('');
+  }
+  return '';
+}
+// one API of a 071 method, or null for the others
+function printSuspPart(t, P, r, x, wsd, samples, show, inp, test){
+  if (test === 'assay' && isTitration(P)){
+    const back = techOf(P) === 'titration_back';
+    let h = `<table><tr><td>${back ? 'Titration with a blank' : 'Direct titration'}${P.titrant ? ' (' + esc(P.titrant) + ')' : ''}: ${esc(claimText(P))}; ${esc(P.make_up_ml)} mL sample solution, ${esc(P.aliquot_ml)} mL per titration;
+      ${esc(P.eq_mg)} mg per mL of titrant. Factor <b>${esc(x.factor || '--')}</b>${back ? `; blank ${esc((x.blank || [])[0] ?? '--')} to ${esc((x.blank || [])[1] ?? '--')} mL` : ''}.</td></tr></table>`;
+    h += `<table><tr><th>Sample</th><th>Sample weight</th><th>mg in aliquot</th><th>Titration</th><th>Initial</th><th>Final</th><th>Titre</th><th>%</th><th>Result (mean)</th><th>Limit</th><th>Verdict</th></tr>
+      ${samples.map((sm, si) => { if (!show(sm)) return ''; const v = (inp.values || {})[sm.key] || {}, runs = (v.titr || {})[t.id] || [], rs = (r.samples || [])[si] || {};
+        return runs.map((q, i) => { const z = (rs.titrations || [])[i] || {};
+          return `<tr>${i === 0 ? `<td rowspan="${runs.length}">${esc(sm.label)}</td><td rowspan="${runs.length}">${esc(v.sol_weight || '--')} g</td><td rowspan="${runs.length}">${fmtN(rs.mg_aliquot, 2)} mg</td>` : ''}
+            <td>${i + 1}</td><td>${esc(q[0])}</td><td>${esc(q[1])}</td><td>${fmtN(z.titre, 2)}</td><td>${fmtN(z.pct_reported, 1)}%</td>
+            ${i === 0 ? `<td rowspan="${runs.length}"><b>${fmtN(rs.reported, 1)}%</b></td><td rowspan="${runs.length}">${esc(rs.limit_text || '')}</td><td rowspan="${runs.length}"><b>${verdictText(rs.pass)}</b></td>` : ''}</tr>`; }).join(''); }).join('')}</table>`;
+    return h;
+  }
+  if (test === 'assay' && techOf(P) === 'ir_std'){
+    const w = wsd || {}, first = (r.samples || []).find(Boolean) || {};
+    return `<table><tr><th>Working standard</th><th>Purity</th><th>Weight</th><th>Dilution</th><th>Standard peak height</th><th>Standard conc.</th></tr>
+        <tr><td>${esc(w.ws_no || r.ws_no || '--')}</td><td>${esc(w.potency_pct != null ? w.potency_pct + '%' : '--')}</td><td>${esc(x.std_weight || '--')} mg</td><td>${esc(stepsText((P.std || {}).steps, 'mg'))}</td>
+          <td class="mono">${esc((x.std_heights || []).join(', '))}</td><td>${fmtN(first.c_std, 4)} mg/mL</td></tr>
+        ${(x.ws_changes || []).map(ch => `<tr><td colspan="6">Working standard changed from ${esc(ch.from_no || '?')} to ${esc(ch.to_no || 'none')}${ch.at ? ' (' + fmtDateTime(ch.at) + ')' : ''}: ${esc(ch.reason)}</td></tr>`).join('')}</table>
+      <table><tr><th>Sample</th><th>Sample weight</th><th>Sample peak height</th><th>Sample conc.</th><th>Result</th><th>Limit</th><th>Verdict</th></tr>
+        ${samples.map((sm, si) => { if (!show(sm)) return ''; const s = (((inp.values || {})[sm.key] || {}).ir || {})[t.id] || {}, rs = (r.samples || [])[si] || {};
+          return `<tr><td>${esc(sm.label)}</td><td>${esc(s.weight || '--')} g</td><td class="mono">${esc((s.heights || []).join(', '))}</td><td>${fmtN(rs.c_spl, 4)} mg/mL</td>
+            <td><b>${fmtN(rs.reported, 1)}%</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr>`; }).join('')}</table>`;
+  }
+  if (test === 'identification' && isObservation(P)){
+    return `<table><tr><th>Sample</th><th>Observation</th><th>Acceptance criteria</th><th>Conclusion</th></tr>
+      ${samples.map((sm, si) => { if (!show(sm)) return ''; const rs = (r.samples || [])[si] || {};
+        return `<tr><td>${esc(sm.label)}</td><td>${esc((((inp.values || {})[sm.key] || {}).obs || {})[t.id] || '--')}</td><td>${esc(P.criteria || '')}</td><td><b>${verdictText(rs.pass)}</b> (analyst)</td></tr>`; }).join('')}</table>`;
+  }
+  if (test === 'weight_variation' && isWvContent(P)){
+    return samples.map((sm, si) => { if (!show(sm)) return ''; const rs = (r.samples || [])[si] || {}, af = rs.assay_from || {};
+      return `<table><tr><th>Sample ${esc(sm.label)}</th>${(rs.units_reported || []).map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
+        <tr><td>% estimated content</td>${(rs.units_reported || []).map(u => `<td>${fmtN(u, 2)}</td>`).join('')}</tr></table>
+        <table><tr><th>Assay used</th><th>Mean</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr>
+        <tr><td>${esc(af.value ?? '--')}%${af.analysis_id ? ' (worksheet #' + esc(af.analysis_id) + ')' : ''}</td><td>${fmtN(rs.mean_reported, 2)}%</td><td>${fmtN(rs.sd, 3)}</td><td>${fmtN(rs.m, 1)}</td><td>${esc(rs.k ?? '--')}</td>
+          <td><b>${fmtN(rs.av_reported, 1)}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr></table>`; }).join('');
+  }
+  return null;
 }
 function viewLabPrint(id){
   const d = labGet('/worksheet?id=' + id);
