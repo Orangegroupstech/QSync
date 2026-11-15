@@ -735,7 +735,7 @@ function accessTree(opts){
   const grpOf = pg => { const mt = /^([^:]{2,30}):\s*(.+)$/.exec(pg.label); return mt ? { grp: mt[1], name: mt[2].charAt(0).toUpperCase() + mt[2].slice(1) } : { grp: null, name: pg.label }; };
   const grpKeys = (mod, grp) => childrenOf(mod).filter(pg => grpOf(pg).grp === grp).map(pg => pg.scope);
   const keysState = keys => { const vals = keys.map(eff), set = vals.filter(Boolean), same = vals.every(v => v === vals[0]);
-    return { value: same ? vals[0] : 'mixed', note: !set.length ? '' : same ? 'all ' + keys.length : set.length + ' of ' + keys.length }; };
+    return { value: same ? vals[0] : 'mixed', note: (!set.length ? keys.length + ' pages' : same ? 'all ' + keys.length + ' pages' : set.length + ' of ' + keys.length + ' pages') }; };
   const leafRow = (pg, name, inGrp, shut) => {
     const hide = q && !norm(pg.label).includes(q) && !norm((modulesList().find(x => x.scope === pg.module) || {}).label).includes(q);
     const hint = PAGE_HINT[pg.scope] && window.oklInfo ? window.oklInfo(PAGE_HINT[pg.scope], 'What View and Edit allow here') : '';

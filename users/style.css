@@ -702,15 +702,21 @@ input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
 .tree-page{display:none;border-top:1px dashed var(--line-2)}
 .tree-mod.open .tree-page{display:grid}
 .tree-hide,.tree-mod.open .tree-page.tree-hide{display:none}
-.tree-sub{border-top:1px solid var(--line-2);background:var(--surface-2,#fafbfc)}
-.tree-sub .tree-name{padding-left:16px}
+/* a group inside a console (pages that share a prefix): indented, orange bar, orange arrow, so it never looks like a console */
+.tree-sub{border-top:1px dashed var(--line-2);background:var(--brand-50,#fff4ec);padding-left:40px;box-shadow:inset 3px 0 0 var(--brand)}
+.tree-sub .tree-tog{color:var(--brand)}
+.tree-sub .tree-name .strong{font-weight:600}
+.tree-sub .tree-name .tiny{color:var(--brand)}
 .tree-sub.open .tree-tog svg{transform:rotate(90deg)}
 .tree-mod.open .tree-page.grp-shut{display:none}
-.tree-in .tree-name{padding-left:36px}
+/* pages of a group: indented further, with a thin orange guide line joining them to their group */
+.tree-in{padding-left:40px;background:linear-gradient(to right,transparent 52px,var(--brand) 52px,var(--brand) 54px,transparent 54px)}
+.tree-page.tree-in .tree-name{padding-left:24px}
 .tree-page .tree-name{padding-left:4px}
 .tree-tog{width:24px;height:24px;display:grid;place-items:center;border:0;background:none;cursor:pointer;color:var(--text-3);padding:0}
 .tree-tog svg{width:14px;height:14px;transition:transform .15s}
-.tree-mod.open .tree-tog svg{transform:rotate(90deg)}
+.tree-mod.open .tree-head .tree-tog svg{transform:rotate(90deg)}   /* only the console's own arrow; a group's arrow turns when the group opens */
+.tree-head .tree-name .strong{font-size:14.5px}
 .tree-sel{width:150px;padding:4px 8px}
 .tree-src{font-size:11.5px;white-space:nowrap;padding:2px 8px;border-radius:10px}
 .tree-src.role{background:var(--surface-2,#eef0f2);color:var(--text-3)}
@@ -720,4 +726,6 @@ input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
   .tree-row{grid-template-columns:24px minmax(0,1fr) 120px;row-gap:4px}
   .tree-src-cell{grid-column:2;grid-row:2}
   .tree-sel{width:120px}
+  .tree-sub,.tree-in{padding-left:24px}
+  .tree-in{background:linear-gradient(to right,transparent 34px,var(--brand) 34px,var(--brand) 36px,transparent 36px)}
 }

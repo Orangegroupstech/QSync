@@ -46,7 +46,7 @@
   .bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 22px;font-size:13px;color:var(--text-2);flex-wrap:wrap}
   .bar .who{font-size:20px;color:var(--text-2)}
   .bar .who strong{color:#0F5132;font-size:24px;letter-spacing:-.01em}
-  .hidden{display:none}
+  .hidden, a.tile.hidden{display:none}
 </style>
 </head>
 <body>
@@ -190,7 +190,11 @@
     // a console tile shows only when the person can open it (any page of it); admins see everything
     var access = me.access || {}, any = false;
     Array.prototype.forEach.call(document.querySelectorAll('a.tile[data-module]'), function(t){
-      var can = !!me.user.is_admin || !!access[t.getAttribute('data-module')];
+      var m = t.getAttribute('data-module');
+      // Shop floor: supervisors, live floor, admin controls; the machine screens alone are used at a machine, not here (074)
+      var can = !!me.user.is_admin || (m === 'floor'
+        ? Object.keys(access).some(function(k){ return k.indexOf('floor.') === 0 && k !== 'floor.machine'; })
+        : !!access[m]);
       t.classList.toggle('hidden', !can); any = any || can;
     });
     show('homeView'); resetIdle();
