@@ -34,6 +34,21 @@ function verdictBadge(pass, oos){
 }
 const fmtDate = d => (d ? fmtDateTime(d).split(',')[0] : '--');
 const num1 = v => (v === null || v === undefined || v === '' ? '--' : Number(v).toFixed(1));
+/* A result is shown to its method's "Reported to (decimal places)" (16 Nov 2026: a Cypron method set to 2 still showed 99.6, not 99.65).
+   TPL_DP: method template id -> decimal places, noted whenever methods load; a result whose method is not loaded takes the fewest
+   decimals (at least 1) that its full value rounds to its reported value. */
+const TPL_DP = {};
+function noteTplDp(list){ (Array.isArray(list) ? list : []).forEach(t => { const P = (t && t.parameters) || {}; if (t && t.id != null && P.dp != null && P.dp !== '') TPL_DP[t.id] = Number(P.dp); }); }
+const pdp = P => (P && P.dp != null && P.dp !== '' && !isNaN(Number(P.dp)) ? Number(P.dp) : 1);
+const numDp = (v, dp) => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? '--' : Number(v).toFixed(dp == null ? 1 : dp));
+function resDp(x){
+  if (!x) return 1;
+  if (TPL_DP[x.template_id] != null) return TPL_DP[x.template_id];
+  const full = Number(x.value_full), rep = Number(x.value_reported);
+  if (x.value_full == null || !isFinite(full) || !isFinite(rep)) return 1;
+  for (let d = 1; d <= 4; d++){ const r = Number(Math.round(Number(full.toPrecision(12) + 'e' + d)) + 'e-' + d); if (Math.abs(Math.abs(r) - Math.abs(rep)) < 1e-9) return d; }
+  return 1;
+}
 
 /* ---- data: one cached GET per path; actions clear the cache ---- */
 // labGen: an answer that left before the cache was cleared (an action, Refresh) is dropped, never shown as the new state:
@@ -44,7 +59,7 @@ function labGet(path){
   if (!labLoading[path]){
     const gen = labGen;
     labLoading[path] = gen + 1;
-    api(LAB + path).then(d => { if (gen !== labGen) return; labCache[path] = d; if (d && d.pending) S.pending = d.pending; })
+    api(LAB + path).then(d => { if (gen !== labGen) return; labCache[path] = d; noteTplDp(d && d.templates); if (d && d.pending) S.pending = d.pending; })
       .catch(e => { if (gen === labGen) labCache[path] = { error: e.message }; })
       .finally(() => { if (labLoading[path] === gen + 1) delete labLoading[path]; render(); });
   }
@@ -585,6 +600,7 @@ function viewLabMy(){
 let ws = null;   // { id, src, ctx, inputs, run, calc, tab, dirty, timer }
 function wsInit(d){
   const a = d.analysis;
+  noteTplDp(d.templates);
   ws = { id: a.id, src: d, ctx: d, inputs: JSON.parse(JSON.stringify(a.inputs || {})), calc: a.calc || null, dirty: false, timer: null,
          run: { equipment_id: a.equipment_id || '', reagents: a.reagents || '', started_on: a.started_on || '', ended_on: a.ended_on || '' },
          tab: ws && ws.id === a.id ? ws.tab : (d.templates[0] || {}).id };
@@ -1168,19 +1184,19 @@ function wsPaint(){
       const v = ws.inputs.values[s.key] || {};
       if (wsPaintSusp(t, r, rs, si, m)) return;   // 071
       if (test === 'assay'){
-        if (m) m.innerHTML = rs ? `<span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}` : '--';
+        if (m) m.innerHTML = rs ? `<span class="tnum">${numDp(rs.reported, pdp(t.parameters))}%</span> ${verdictBadge(rs.pass)}` : '--';
         ((v.preps || {})[t.id] || []).forEach((p, pi) => {
-          const el = $(`#pr-${t.id}-${si}-${pi}`); if (el) el.textContent = rs && rs.preparations[pi] ? num1(rs.preparations[pi].pct_reported) + '%' : '--';
+          const el = $(`#pr-${t.id}-${si}-${pi}`); if (el) el.textContent = rs && rs.preparations[pi] ? numDp(rs.preparations[pi].pct_reported, pdp(t.parameters)) + '%' : '--';
         });
       } else if (test === 'dissolution' || test === 'content_uniformity'){
         const below = rs && rs.units_below ? rs.units_below : [];
         if (m) m.innerHTML = !rs || !rs.units ? '--' : test === 'dissolution'
-          ? `mean <span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}${below.length ? ` <span class="badge b-danger">${unitWord(t.parameters)} ${below.join(', ')} below ${esc(r.samples[si].limit_text || '')}</span>` : ''}`
-          : `mean <span class="tnum">${num1(rs.mean_reported)}%</span> - AV <b class="tnum">${num1(rs.av_reported)}</b> ${verdictBadge(rs.pass)}`;
+          ? `mean <span class="tnum">${numDp(rs.reported, pdp(t.parameters))}%</span> ${verdictBadge(rs.pass)}${below.length ? ` <span class="badge b-danger">${unitWord(t.parameters)} ${below.join(', ')} below ${esc(r.samples[si].limit_text || '')}</span>` : ''}`
+          : `mean <span class="tnum">${numDp(rs.mean_reported, pdp(t.parameters))}%</span> - AV <b class="tnum">${numDp(rs.av_reported, pdp(t.parameters))}</b> ${verdictBadge(rs.pass)}`;
         ((v.units || {})[t.id] || []).forEach((u, ui) => {
           const el = $(`#u-${t.id}-${si}-${ui}`); if (!el) return;
           const val = rs && rs.units_reported ? rs.units_reported[ui] : null;
-          el.textContent = val == null ? '--' : num1(val) + '%';
+          el.textContent = val == null ? '--' : numDp(val, pdp(t.parameters)) + '%';
           el.style.color = below.includes(ui + 1) ? 'var(--danger)' : '';
         });
       } else if (test === 'weight_variation'){
@@ -1222,13 +1238,13 @@ function wsPaintSusp(t, r, rs, si, m){
   const dens = ((ws.calc || {}).density || {})[si];
   if (test === 'assay' && usesDensity(P)){
     const tw = $(`#tw-${tid}-${si}`); if (tw) tw.textContent = dens ? fmtN(dens.density * Number(P.sample_ml), 4) : `density x ${P.sample_ml}`;
-    if (m) m.innerHTML = rs ? `<span class="tnum">${num1(rs.reported)}%</span> ${verdictBadge(rs.pass)}` : '--';
+    if (m) m.innerHTML = rs ? `<span class="tnum">${numDp(rs.reported, pdp(P))}%</span> ${verdictBadge(rs.pass)}` : '--';
     if (isTitration(P)){
       const b = $('#blank-' + tid), bl = r && r.samples && r.samples.find(Boolean); if (b) b.textContent = bl && bl.blank ? `blank titre ${fmtN(bl.blank.titre, 2)} mL` : '';
       const mg = $(`#mga-${tid}-${si}`); if (mg) mg.textContent = rs ? fmtN(rs.mg_aliquot, 2) + ' mg' : '--';
       (((ws.inputs.values[ws.inputs.samples[si].key] || {}).titr || {})[tid] || []).forEach((x, i) => { const q = rs && rs.titrations ? rs.titrations[i] : null;
         const a = $(`#tt-${tid}-${si}-${i}`); if (a) a.textContent = q ? fmtN(q.titre, 2) : '--';
-        const p = $(`#tp-${tid}-${si}-${i}`); if (p) p.textContent = q ? num1(q.pct_reported) + '%' : '--'; });
+        const p = $(`#tp-${tid}-${si}-${i}`); if (p) p.textContent = q ? numDp(q.pct_reported, pdp(P)) + '%' : '--'; });
     } else {
       const cs = $('#cs-' + tid), first = r && r.samples && r.samples.find(Boolean); if (cs) cs.textContent = first ? fmtN(first.c_std, 4) + ' mg/mL' : '--';
       const cu = $(`#cu-${tid}-${si}`); if (cu) cu.textContent = rs ? fmtN(rs.c_spl, 4) + ' mg/mL' : '--';
@@ -1237,7 +1253,7 @@ function wsPaintSusp(t, r, rs, si, m){
   }
   if (test === 'identification' && isObservation(P)){ if (m) m.innerHTML = rs ? verdictBadge(rs.pass) : '--'; return true; }
   if (test === 'weight_variation' && isWvContent(P)){
-    if (m) m.innerHTML = rs ? `mean <span class="tnum">${fmtN(rs.mean_reported, 2)}%</span> - SD ${fmtN(rs.sd, 3)} - M ${fmtN(rs.m, 1)} - AV <b class="tnum">${num1(rs.av_reported)}</b> ${verdictBadge(rs.pass)}` : '--';
+    if (m) m.innerHTML = rs ? `mean <span class="tnum">${fmtN(rs.mean_reported, 2)}%</span> - SD ${fmtN(rs.sd, 3)} - M ${fmtN(rs.m, 2)} - AV <b class="tnum">${numDp(rs.av_reported, pdp(P))}</b> ${verdictBadge(rs.pass)}` : '--';
     const as = $(`#assay-${tid}-${si}`);
     if (as) as.innerHTML = rs && rs.assay_from ? `<b class="tnum">${esc(rs.assay_from.value)}%</b>${rs.assay_from.analysis_id ? ` from <a href="#/lab/worksheet/${esc(rs.assay_from.analysis_id)}">assay worksheet #${esc(rs.assay_from.analysis_id)}</a> (${esc((WS_STATUS[rs.assay_from.status] || [rs.assay_from.status || ''])[0])})` : ' (typed)'}` : '--';
     ((((ws.inputs.values[ws.inputs.samples[si].key] || {}).sachets) || {}).gross || []).forEach((x, i) => { const el = $(`#e-${tid}-${si}-${i}`);
@@ -1390,7 +1406,7 @@ function viewLabOos(){
 function labOosClose(id){
   const e = ((labCache['/oos'] || {}).entries || []).find(x => x.id === id); if (!e) return;
   signDialog({
-    title: 'Close OOS entry', sub: `${e.request_no} - ${e.api} ${e.sample_label}: ${num1(e.value_reported)}${e.unit || ''} (${e.limit_text})`, ok: 'Sign and close',
+    title: 'Close OOS entry', sub: `${e.request_no} - ${e.api} ${e.sample_label}: ${numDp(e.value_reported, resDp(e))}${e.unit || ''} (${e.limit_text})`, ok: 'Sign and close',
     body: `<div class="radio-cards" style="margin-bottom:14px"><label class="radio-card"><input type="radio" name="oc" value="confirmed" checked> Confirmed OOS</label>
       <label class="radio-card"><input type="radio" name="oc" value="invalidated"> Invalidated</label></div>`,
     reason: 'Investigation number and reason', reasonRequired: true,
@@ -1970,17 +1986,24 @@ function tplTryHtml(t){
   const r = t.try_run;
   if (!r) return t.status === 'draft' ? `<div class="notice" style="margin-bottom:12px">${I.info} Not tried with Excel numbers.</div>` : '';
   const rows = (r.results || []).filter(x => x.result_name !== 'density').map((x, i) => { const e = (r.excel || [])[i] || (r.excel || [])[0] || {}; const same = tryMatches(x, e.value);
-    return `<tr><td>${esc(x.api)}</td><td class="tnum strong">${esc(resText(x))}</td><td class="tnum">${esc(e.value ?? '--')}</td><td>${same ? '<span class="badge b-ok">Same</span>' : '<span class="badge b-danger">Different</span>'}</td></tr>`; }).join('');
+    return `<tr><td>${esc(x.api)}</td><td class="tnum strong">${esc(resText(x))}</td><td class="tnum">${esc(e.value ?? '--')}</td><td>${same ? '<span class="badge b-ok">Same</span>' : '<span class="badge b-danger">Different</span>' + (tryDpHint(x, e.value) ? `<div class="tiny muted">${esc(tryDpHint(x, e.value))}</div>` : '')}</td></tr>`; }).join('');
   return `<div class="card" style="margin-bottom:12px"><div class="card-h"><div><h3>Tried with Excel numbers</h3>
       <div class="sub">${esc(r.by || '')}, ${fmtDateTime(r.at)}${t.try_current === false ? ' - <b>the method changed after this try-out: try it again</b>' : ''}</div></div></div>
     <div class="tbl-wrap"><table class="tbl" style="min-width:0" data-nosort><thead><tr><th>API</th><th>QSync</th><th>Excel</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 // QSync's reported value against the Excel number, rounded the same way (the method's decimal places)
+// the reason a try-out differs only by its decimals: Excel shows more (or fewer) decimals than the method's "Reported to"
+function tryDpHint(x, excel){
+  const ex = String(excel == null ? '' : excel).trim(); if (!ex || isNaN(Number(ex)) || !x || x.value_reported == null) return '';
+  const dp = resDp(x), exDp = (ex.split('.')[1] || '').length;
+  return exDp > dp ? `Excel shows ${exDp} decimal places; this method reports ${dp}. Set "Reported to (decimal places)" to ${exDp} and try again.` : '';
+}
 function tryMatches(x, excel){
   if (excel === '' || excel == null || isNaN(Number(excel)) || x.value_reported == null) return false;
-  const dp = (String(x.value_reported).split('.')[1] || '').length;
-  const r = Number(Math.round(Number(Number(excel).toPrecision(12) + 'e' + Math.max(dp, 1))) + 'e-' + Math.max(dp, 1));
-  return Math.abs(r - Number(x.value_reported)) < 1e-9 || Math.abs(Number(excel) - Number(x.value_reported)) < 0.05;
+  // 16 Nov 2026: no more 0.05 allowance (Excel 1.87 against QSync 1.9 showed "Same"); Excel's figure must show the same decimals as the method
+  const dp = resDp(x), ex = String(excel).trim(), exDp = (ex.split('.')[1] || '').length;
+  if (exDp > dp) return false;   // Excel shows more decimals than the method reports: set "Reported to" to match
+  return Math.abs(Number(ex) - Number(x.value_reported)) < 1e-9;
 }
 function mdTemplateView(id){
   const t = (labCache['/masterdata'].templates || []).find(x => x.id === id); if (!t) return;
@@ -2376,7 +2399,7 @@ function viewLabTry(id){
     bind(){
       wsBindInputs();
       const cmp = () => { const r = ((ws.calc || {}).results || []).find(x => x.result_name !== 'density'), el = $('#tryCmp'); if (!el) return;   // 071: not the density
-        el.innerHTML = !r || $('#tryEx').value === '' ? '--' : tryMatches(r, $('#tryEx').value) ? `<span class="badge b-ok">Same</span> QSync ${esc(resText(r))}` : `<span class="badge b-danger">Different</span> QSync ${esc(resText(r))}`; };
+        el.innerHTML = !r || $('#tryEx').value === '' ? '--' : tryMatches(r, $('#tryEx').value) ? `<span class="badge b-ok">Same</span> QSync ${esc(resText(r))}` : `<span class="badge b-danger">Different</span> QSync ${esc(resText(r))}${tryDpHint(r, $('#tryEx').value) ? `<div class="tiny muted" style="margin-top:4px">${esc(tryDpHint(r, $('#tryEx').value))}</div>` : ''}`; };
       ws.afterPaint = cmp;
       $('#tryEx').addEventListener('input', e => { tryExcel[t.id] = e.target.value; cmp(); });
       const sv = $('#trySave'); if (sv) sv.onclick = async () => {
@@ -2410,8 +2433,8 @@ const nfix = (v, dp) => (v === null || v === undefined || v === '' || isNaN(Numb
 function signBox(label, name, at){ return `<div class="sign-box"><div class="sl">${esc(label)}</div><div class="sv">${esc(name || '--')}</div><div class="ss">${at ? fmtDateTime(at) : '--'}</div></div>`; }
 function resText(x){
   if (x.value_reported === null || x.value_reported === undefined) return x.unit ? String(x.unit).charAt(0).toUpperCase() + String(x.unit).slice(1) : '--';
-  if (x.unit === '%') return num1(x.value_reported) + '%';
-  if (x.unit === 'AV') return 'AV ' + num1(x.value_reported);
+  if (x.unit === '%') return numDp(x.value_reported, resDp(x)) + '%';
+  if (x.unit === 'AV') return 'AV ' + numDp(x.value_reported, resDp(x));
   if (x.unit === '% RT diff') return nfix(x.value_reported, 2) + '% RT difference';   // results stored before 23 Oct 2026
   if (x.unit === 'min RT') return 'RT ' + nfix(x.value_reported, 2) + ' min';
   if (x.unit === 'pH') return 'pH ' + nfix(x.value_reported, 2);                                 // 058
@@ -2452,8 +2475,8 @@ function printWorksheetHtml(d, opt){
         ${samples.map((sm, si) => { if (!show(sm)) return ''; const v = (inp.values || {})[sm.key] || {}, preps = (v.preps || {})[t.id] || [], rs = (r.samples || [])[si] || {};
           return preps.map((p, pi) => `<tr>${pi === 0 ? `<td rowspan="${preps.length}">${esc(sm.label)}</td><td rowspan="${preps.length}">${esc(v.avg_weight || '--')} mg</td>` : ''}
             <td>${String.fromCharCode(97 + pi)}</td><td>${esc(p.weight || '--')} mg</td><td class="mono">${esc((p.areas || []).join(', '))}</td>
-            <td>${nfix(((rs.preparations || [])[pi] || {}).pct_reported, 1)}%</td>
-            ${pi === 0 ? `<td rowspan="${preps.length}"><b>${nfix(rs.reported, 1)}%</b><div class="tiny">${nfix(rs.mg_reported, 2)} mg</div></td><td rowspan="${preps.length}">${esc(r.limit_text || '')}</td>
+            <td>${nfix(((rs.preparations || [])[pi] || {}).pct_reported, pdp(P))}%</td>
+            ${pi === 0 ? `<td rowspan="${preps.length}"><b>${nfix(rs.reported, pdp(P))}%</b><div class="tiny">${nfix(rs.mg_reported, 2)} mg</div></td><td rowspan="${preps.length}">${esc(r.limit_text || '')}</td>
               <td rowspan="${preps.length}"><b>${verdictText(rs.pass)}</b></td>` : ''}</tr>`).join(''); }).join('')}</table>`;
     } else if (test === 'dissolution' || test === 'content_uniformity'){
       samples.forEach((sm, si) => {
@@ -2461,13 +2484,13 @@ function printWorksheetHtml(d, opt){
         const units = (((inp.values || {})[sm.key] || {}).units || {})[t.id] || [], rs = (r.samples || [])[si] || {};
         html += `<table><tr><th>Sample ${esc(sm.label)}</th>${units.map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
           <tr><td>${techWords(P).Value}${units.some(u => Array.isArray(u) && u.length > 1) ? 's (mean used)' : ''}</td>${units.map(u => `<td class="mono">${esc(Array.isArray(u) ? u.join(' / ') : u)}</td>`).join('')}</tr>
-          <tr><td>${test === 'dissolution' ? '% dissolved' : '% of label claim'}</td>${units.map((u, i) => `<td>${nfix((rs.units_reported || [])[i], 1)}</td>`).join('')}</tr>
+          <tr><td>${test === 'dissolution' ? '% dissolved' : '% of label claim'}</td>${units.map((u, i) => `<td>${nfix((rs.units_reported || [])[i], pdp(P))}</td>`).join('')}</tr>
           ${test === 'dissolution' && rs.units_reported ? `<tr><td>Each ${unitWord(P)} (${esc(rs.limit_text || '')})</td>${units.map((u, i) => `<td><b>${(rs.units_below || []).includes(i + 1) ? 'BELOW' : 'COMPLIES'}</b></td>`).join('')}</tr>` : ''}</table>
           <table><tr>${test === 'dissolution'
-            ? `<th>Mean</th><th>Min</th><th>Max</th><th>Limit</th><th>Verdict</th></tr><tr><td><b>${nfix(rs.reported, 1)}%</b></td><td>${nfix(rs.min_unit, 1)}%</td><td>${nfix(rs.max_unit, 1)}%</td>
+            ? `<th>Mean</th><th>Min</th><th>Max</th><th>Limit</th><th>Verdict</th></tr><tr><td><b>${nfix(rs.reported, pdp(P))}%</b></td><td>${nfix(rs.min_unit, pdp(P))}%</td><td>${nfix(rs.max_unit, pdp(P))}%</td>
                <td>${esc(rs.limit_text || '')}${(rs.units_below || []).length ? ` - ${unitWord(P)} ` + rs.units_below.join(', ') + ' below' : ''}</td><td><b>${verdictText(rs.pass)}</b></td>`
-            : `<th>Mean (X)</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr><tr><td>${nfix(rs.mean_reported, 1)}%</td>
-               <td>${nfix(rs.sd, 2)}</td><td>${nfix(rs.m, 1)}</td><td>${esc(rs.k || '--')}</td><td><b>${nfix(rs.av_reported, 1)}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td>`}</tr></table>`;
+            : `<th>Mean (X)</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr><tr><td>${nfix(rs.mean_reported, pdp(P))}%</td>
+               <td>${nfix(rs.sd, 3)}</td><td>${nfix(rs.m, pdp(P))}</td><td>${esc(rs.k || '--')}</td><td><b>${nfix(rs.av_reported, pdp(P))}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td>`}</tr></table>`;
       });
     } else if (test === 'identification'){
       html += `<table><tr><th>Sample</th><th>Standard RT (min)</th><th>Sample RT (min)</th><th>Conclusion</th></tr>
@@ -2544,8 +2567,8 @@ function printSuspPart(t, P, r, x, wsd, samples, show, inp, test){
       ${samples.map((sm, si) => { if (!show(sm)) return ''; const v = (inp.values || {})[sm.key] || {}, runs = (v.titr || {})[t.id] || [], rs = (r.samples || [])[si] || {};
         return runs.map((q, i) => { const z = (rs.titrations || [])[i] || {};
           return `<tr>${i === 0 ? `<td rowspan="${runs.length}">${esc(sm.label)}</td><td rowspan="${runs.length}">${esc(v.sol_weight || '--')} g</td><td rowspan="${runs.length}">${fmtN(rs.mg_aliquot, 2)} mg</td>` : ''}
-            <td>${i + 1}</td><td>${esc(q[0])}</td><td>${esc(q[1])}</td><td>${fmtN(z.titre, 2)}</td><td>${fmtN(z.pct_reported, 1)}%</td>
-            ${i === 0 ? `<td rowspan="${runs.length}"><b>${fmtN(rs.reported, 1)}%</b></td><td rowspan="${runs.length}">${esc(rs.limit_text || '')}</td><td rowspan="${runs.length}"><b>${verdictText(rs.pass)}</b></td>` : ''}</tr>`; }).join(''); }).join('')}</table>`;
+            <td>${i + 1}</td><td>${esc(q[0])}</td><td>${esc(q[1])}</td><td>${fmtN(z.titre, 2)}</td><td>${fmtN(z.pct_reported, pdp(P))}%</td>
+            ${i === 0 ? `<td rowspan="${runs.length}"><b>${fmtN(rs.reported, pdp(P))}%</b></td><td rowspan="${runs.length}">${esc(rs.limit_text || '')}</td><td rowspan="${runs.length}"><b>${verdictText(rs.pass)}</b></td>` : ''}</tr>`; }).join(''); }).join('')}</table>`;
     return h;
   }
   if (test === 'assay' && techOf(P) === 'ir_std'){
@@ -2557,7 +2580,7 @@ function printSuspPart(t, P, r, x, wsd, samples, show, inp, test){
       <table><tr><th>Sample</th><th>Sample weight</th><th>Sample peak height</th><th>Sample conc.</th><th>Result</th><th>Limit</th><th>Verdict</th></tr>
         ${samples.map((sm, si) => { if (!show(sm)) return ''; const s = (((inp.values || {})[sm.key] || {}).ir || {})[t.id] || {}, rs = (r.samples || [])[si] || {};
           return `<tr><td>${esc(sm.label)}</td><td>${esc(s.weight || '--')} g</td><td class="mono">${esc((s.heights || []).join(', '))}</td><td>${fmtN(rs.c_spl, 4)} mg/mL</td>
-            <td><b>${fmtN(rs.reported, 1)}%</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr>`; }).join('')}</table>`;
+            <td><b>${fmtN(rs.reported, pdp(P))}%</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr>`; }).join('')}</table>`;
   }
   if (test === 'identification' && isObservation(P)){
     return `<table><tr><th>Sample</th><th>Observation</th><th>Acceptance criteria</th><th>Conclusion</th></tr>
@@ -2569,8 +2592,8 @@ function printSuspPart(t, P, r, x, wsd, samples, show, inp, test){
       return `<table><tr><th>Sample ${esc(sm.label)}</th>${(rs.units_reported || []).map((u, i) => `<th>${i + 1}</th>`).join('')}</tr>
         <tr><td>% estimated content</td>${(rs.units_reported || []).map(u => `<td>${fmtN(u, 2)}</td>`).join('')}</tr></table>
         <table><tr><th>Assay used</th><th>Mean</th><th>SD</th><th>M</th><th>k</th><th>AV</th><th>Limit</th><th>Verdict</th></tr>
-        <tr><td>${esc(af.value ?? '--')}%${af.analysis_id ? ' (worksheet #' + esc(af.analysis_id) + ')' : ''}</td><td>${fmtN(rs.mean_reported, 2)}%</td><td>${fmtN(rs.sd, 3)}</td><td>${fmtN(rs.m, 1)}</td><td>${esc(rs.k ?? '--')}</td>
-          <td><b>${fmtN(rs.av_reported, 1)}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr></table>`; }).join('');
+        <tr><td>${esc(af.value ?? '--')}%${af.analysis_id ? ' (worksheet #' + esc(af.analysis_id) + ')' : ''}</td><td>${fmtN(rs.mean_reported, 2)}%</td><td>${fmtN(rs.sd, 3)}</td><td>${fmtN(rs.m, 2)}</td><td>${esc(rs.k ?? '--')}</td>
+          <td><b>${fmtN(rs.av_reported, pdp(P))}</b></td><td>${esc(rs.limit_text || '')}</td><td><b>${verdictText(rs.pass)}</b></td></tr></table>`; }).join('');
   }
   return null;
 }

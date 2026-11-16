@@ -169,7 +169,7 @@ function hasSignoff(role){ return !!(S && S.me && (S.me.is_admin || (S.me.signof
 // Access per page (migration 022): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 const PAGES = [['/lab/oos', 'qsync.oos'], ['/lab/master', 'qsync.master'], ['/lab', 'qsync.lab'], ['/dept', 'qsync.dept'],
-  ['/reports', 'qsync.reports'], ['/products', 'qsync.master'],
+  ['/reports', 'qsync.reports'], ['/apqr', 'qsync.apqr'], ['/products', 'qsync.master'],
   ['/new', 'qsync.requests'], ['/requests', 'qsync.requests'], ['/sheet', 'qsync.requests'], ['/audit', 'qsync.requests']];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
@@ -366,6 +366,7 @@ function navModel(){
     { title:'Records', items:[
       { path:'/requests', label:'All Requests', icon:'layers' },
       { path:'/reports', label:'Reports and Trends', icon:'chart' },
+      { path:'/apqr', label:'Annual product review', icon:'doc' },
     ]},
     { title:'Department requests', items:[
       { path:'/dept/procurement', label:'Make a procurement request', icon:'box' },
@@ -783,14 +784,15 @@ function reportsQueryString(){
 function bindReportsFilters(){
   const yr = $('#reportsYear'); if (yr) yr.onchange = e => { reportsState.year = e.target.value; reportsCache = null; trendsCache = null; render(); };
   const mo = $('#reportsMonth'); if (mo) mo.onchange = e => { reportsState.month = e.target.value; reportsCache = null; trendsCache = null; render(); };
-  const pr = $('#reportsProduct'); if (pr) pr.onchange = e => { reportsState.product = e.target.value; reportsCache = null; trendsCache = null; trendsSeries = ''; render(); };
-  const ts = $('#trendSeries'); if (ts) ts.onchange = e => { trendsSeries = e.target.value; render(); };
+  const pr = $('#reportsProduct'); if (pr) pr.onchange = e => { reportsState.product = e.target.value; reportsCache = null; trendsCache = null; trendsF.stage = ''; trendsF.param = ''; trendsF.sel = ''; render(); };
+  if (reportsTab === 'trends') bindTrendsTab();             // apqr.js (081): the trends filters and the capability summary
+  if (reportsTab === 'products') bindProductPerf();
 }
 
 /* ---- Reports and trends tabs (058, 10 Nov 2026): the cards stay on top; Overview (as before), Timing and durations,
-   Parameter trends and product performance. Data: the QSync Lab "trends" endpoint (page "qsync.reports"). ---- */
-let reportsTab = 'overview', trendsCache = null, trendsLoading = false, trendsSeries = '';
-const REPORT_TABS = [['overview', 'Overview'], ['timing', 'Timing and durations'], ['trends', 'Parameter trends and product performance']];
+   Parameter trends, Product performance (081: two tabs, built like the APQR, in apqr.js). Data: the QSync Lab "trends" endpoint (page "qsync.reports"). ---- */
+let reportsTab = 'overview', trendsCache = null, trendsLoading = false;
+const REPORT_TABS = [['overview', 'Overview'], ['timing', 'Timing and durations'], ['trends', 'Parameter trends'], ['products', 'Product performance']];
 function reportsTabsHtml(){
   return `<div class="tabs">${REPORT_TABS.map(([k, l]) => `<div class="tab ${k === reportsTab ? 'active' : ''}" onclick="reportsTab='${k}';render()">${esc(l)}</div>`).join('')}</div>`;
 }
@@ -808,7 +810,7 @@ function reportsTabBody(){
   const d = trendsData();
   if (!d) return `<div class="card"><div class="card-b">${emptyState('chart', 'Loading...', '')}</div></div>`;
   if (d.error) return `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>`;
-  return reportsTab === 'timing' ? reportsTimingHtml(d) : reportsTrendsHtml(d);
+  return reportsTab === 'timing' ? reportsTimingHtml(d) : reportsTab === 'products' ? reportsProductPerfHtml(d) : reportsParamTrendsHtml(d);
 }
 function reportsTimingHtml(d){
   const t = d.timing || {}, steps = (t.steps || []).filter(s => s.key !== 'total'), total = (t.steps || []).find(s => s.key === 'total') || {};
@@ -837,53 +839,6 @@ function reportsTimingHtml(d){
       ${t.open.slice().sort((a, b) => b.waiting_h - a.waiting_h).slice(0, 25).map(x => `<tr class="clickable" onclick="go('/sheet/${x.request_id}')"><td class="req-no">${esc(x.request_no)}</td>
         <td>${esc(x.product)}<div class="tiny muted mono">${esc(x.batch_no)} - ${esc(x.stage)}</div></td><td class="small">${esc((STATUS[x.status] || {}).label || ((typeof LAB_STATUS !== 'undefined' && LAB_STATUS[x.status]) || {}).label || x.status)}</td>
         <td class="tnum">${hrs(x.waiting_h)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
-}
-// one parameter over the batches: the values (line + points), the limits as dashed lines; hover a point for the batch
-function trendChartSvg(pts, lo, hi, unit){
-  const W = 720, H = 240, L = 48, R = 16, T = 14, B = 30;
-  const vals = pts.map(p => Number(p.value)).concat([lo, hi].filter(v => v != null && v !== '').map(Number));
-  let mn = Math.min(...vals), mx = Math.max(...vals); if (mn === mx){ mn -= 1; mx += 1; }
-  const pad = (mx - mn) * 0.08; mn -= pad; mx += pad;
-  const x = i => L + (pts.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (pts.length - 1)), y = v => T + (mx - v) * (H - T - B) / (mx - mn);
-  const ticks = [0, 1, 2, 3, 4].map(k => mn + k * (mx - mn) / 4);
-  const ref = (v, lab) => v == null || v === '' ? '' : `<line x1="${L}" x2="${W - R}" y1="${y(Number(v))}" y2="${y(Number(v))}" stroke="var(--text-2, #565E6B)" stroke-dasharray="5 4" stroke-width="1"/>
-    <text x="${W - R}" y="${y(Number(v)) - 4}" text-anchor="end" font-size="11" fill="var(--text-2, #565E6B)">${esc(lab)} ${esc(v)}</text>`;
-  const fmt = v => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Trend of the values per batch" style="width:100%;height:auto;display:block">
-    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line, #E4E7EA)" stroke-width="1"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--text-2, #565E6B)">${fmt(v)}</text>`).join('')}
-    ${ref(lo, 'min')}${ref(hi, 'max')}
-    <polyline points="${pts.map((p, i) => `${x(i)},${y(Number(p.value))}`).join(' ')}" fill="none" stroke="var(--brand, #ED6B1F)" stroke-width="2" stroke-linejoin="round"/>
-    ${pts.map((p, i) => `<g><title>${esc(p.batch_no)}${p.sample && p.sample !== p.batch_no ? ' (' + esc(p.sample) + ')' : ''} - ${esc(fmtDate(p.at))}: ${fmt(p.value)} ${esc(unit || '')} - ${p.pass === false ? 'OUT OF SPEC' : 'pass'}</title>
-      <circle cx="${x(i)}" cy="${y(Number(p.value))}" r="10" fill="transparent"/>
-      ${p.pass === false ? `<path d="M${x(i) - 5},${y(Number(p.value)) - 5}L${x(i) + 5},${y(Number(p.value)) + 5}M${x(i) + 5},${y(Number(p.value)) - 5}L${x(i) - 5},${y(Number(p.value)) + 5}" stroke="var(--danger, #C0392B)" stroke-width="2.5"/>`
-        : `<circle cx="${x(i)}" cy="${y(Number(p.value))}" r="4" fill="var(--brand, #ED6B1F)" stroke="var(--surface, #fff)" stroke-width="2"/>`}</g>`).join('')}
-    <text x="${L}" y="${H - 8}" font-size="11" fill="var(--text-2, #565E6B)">${esc(fmtDate(pts[0].at))}</text>
-    <text x="${W - R}" y="${H - 8}" text-anchor="end" font-size="11" fill="var(--text-2, #565E6B)">${esc(fmtDate(pts[pts.length - 1].at))}</text></svg>`;
-}
-function reportsTrendsHtml(d){
-  const series = (d.ipqa_series || []).map(s => ({ key: 'i|' + s.product + '|' + s.stage + '|' + s.parameter, label: `${s.product} - ${s.stage} - ${s.parameter} (IPQA)`,
-      unit: s.unit, lo: s.spec_min, hi: s.spec_max, limit: s.spec_min != null || s.spec_max != null ? `${s.spec_min ?? ''} to ${s.spec_max ?? ''} ${s.unit || ''}` : '', points: s.points }))
-    .concat((d.qc_series || []).map(s => ({ key: 'q|' + s.product + '|' + s.test + '|' + s.api, label: s.test === 'density' ? `${s.product} - weight per mL (QC)` : `${s.product} - ${s.api} ${String(s.test).replace(/_/g, ' ')} (QC)`,
-      unit: s.unit, lo: null, hi: null, limit: s.limit_text, points: s.points })))
-    .filter(s => (s.points || []).length);
-  const cur = series.find(s => s.key === trendsSeries) || series[0];
-  const pts = cur ? cur.points.slice(-60) : [];
-  const fails = pts.filter(p => p.pass === false).length;
-  return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Parameter trend</h3><div class="sub">One parameter across the batches (the last 60). A cross is out of specification; hover a point for the batch.</div></div></div>
-      <div class="card-b">${series.length ? `<div class="field" style="max-width:560px"><label for="trendSeries">Parameter</label><select class="inp" id="trendSeries">${series.map(s => `<option value="${esc(s.key)}" ${cur && s.key === cur.key ? 'selected' : ''}>${esc(s.label)} - ${s.points.length} batches</option>`).join('')}</select></div>
-        <div class="small muted" style="margin:4px 0 10px">${cur.limit ? 'Limit: ' + esc(cur.limit) + ' - ' : ''}${pts.length} values, ${fails} out of specification${cur.unit ? ' - unit ' + esc(cur.unit) : ''}</div>
-        ${trendChartSvg(pts, cur.lo, cur.hi, cur.unit)}
-        <details style="margin-top:10px"><summary class="small">Show the values as a table</summary><div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>Batch</th><th>Date</th><th>Value</th><th></th></tr></thead><tbody>
-          ${pts.slice().reverse().map(p => `<tr><td class="mono small">${esc(p.batch_no)}${p.sample && p.sample !== p.batch_no ? ' (' + esc(p.sample) + ')' : ''}</td><td class="small">${fmtDate(p.at)}</td><td class="tnum">${esc(p.value)} ${esc(cur.unit || '')}</td>
-            <td>${p.pass === false ? '<span class="badge b-danger">Out of spec</span>' : '<span class="badge b-ok">Pass</span>'}</td></tr>`).join('')}</tbody></table></div></details>`
-        : emptyState('chart', 'No values yet', 'Values appear as batches are tested.')}</div></div>
-    <div class="card"><div class="card-h"><div><h3>Product performance</h3><div class="sub">IPQA first pass, QC results, out-of-specification entries and the time QC takes to release</div></div></div>
-      ${(d.products || []).length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product</th><th>Requests</th><th>IPQA first pass</th><th>QC results passed</th><th>OOS</th><th>Released / not</th><th>QC receipt to release</th></tr></thead><tbody>
-        ${d.products.map(p => { const ip = p.ipqa_tested ? Math.round(p.ipqa_first_pass / p.ipqa_tested * 100) : null, qc = p.qc_results ? Math.round(p.qc_pass / p.qc_results * 100) : null;
-          const barc = r => `<div class="row" style="gap:8px"><div class="bar ${r >= 95 ? 'ok' : r >= 80 ? 'warn' : 'danger'}" style="width:66px"><i style="width:${r}%"></i></div><span class="tnum small strong">${r}%</span></div>`;
-          return `<tr><td class="strong">${esc(p.product)}</td><td class="tnum">${p.requests}</td><td>${ip == null ? '<span class="muted">--</span>' : barc(ip) + `<div class="tiny muted">${p.ipqa_first_pass} of ${p.ipqa_tested}</div>`}</td>
-            <td>${qc == null ? '<span class="muted">--</span>' : barc(qc) + `<div class="tiny muted">${p.qc_pass} of ${p.qc_results}</div>`}</td><td class="tnum">${p.oos ? `<span class="badge b-danger">${p.oos}</span>` : '0'}</td>
-            <td class="tnum">${p.released} / ${p.not_released}</td><td class="tnum">${hrs(p.avg_release_h)}</td></tr>`; }).join('')}</tbody></table></div>` : `<div class="card-b">${emptyState('chart', 'No data', '')}</div>`}</div>`;
 }
 function reportsFilterBarHtml(){
   const years = S.request_years || yearsFromDates(S.requests, 'createdAt');
