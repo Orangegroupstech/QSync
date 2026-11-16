@@ -235,17 +235,31 @@
   const groupNew = () => ({ start: '', end: '', duty: '', ids: [] });
   const RESULT = { ok: 'saved', duplicate: 'already recorded for that day', not_in_department: 'not in this department', not_found: 'not found', bad_time: 'times not valid', repeated: 'ticked twice' };
   const mins = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; };
-  // hours each person worked in the group (an end earlier than the start runs past midnight), or null when not set yet
-  const hoursOf = g => { const a = mins(g.start), b = mins(g.end); if (a == null || b == null || a === b) return null; return Math.round(((b > a ? b - a : 1440 - a + b) / 60) * 100) / 100; };
-  const dayType = st => { if (!st.date) return ''; if (st.holiday) return 'a public holiday'; const d = new Date(st.date + 'T12:00:00Z').getUTCDay(); return d === 0 || d === 6 ? 'a weekend' : 'a weekday'; };
+  // 16 Nov 2026 (078): only a night shift runs past midnight (an end earlier than the start is the next morning, at most 16 h).
+  // Without "Night shift" the end must be after the start, as the server checks.
+  const NIGHT_MAX = 16 * 60;
+  const pastMidnight = g => { const a = mins(g.start), b = mins(g.end); return a != null && b != null && b < a; };
+  // the day under "To" on a night shift: the next morning, unless the end typed is later the same evening (e.g. 18:00 to 23:30)
+  const sameEvening = g => { const a = mins(g.start), b = mins(g.end); return a != null && b != null && b > a; };
+  // hours each person worked in the group, or null when not set yet / not valid
+  const hoursOf = (g, night) => { const a = mins(g.start), b = mins(g.end); if (a == null || b == null || a === b) return null;
+    const m = b > a ? b - a : night ? 1440 - a + b : null; return m == null || (night && m > NIGHT_MAX) ? null : Math.round((m / 60) * 100) / 100; };
+  const dayName = iso => { const d = new Date(String(iso || '') + 'T12:00:00Z'); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }); };
+  const dayType = st => { if (!st.date) return ''; const t = st.holiday ? 'a public holiday' : [0, 6].includes(new Date(st.date + 'T12:00:00Z').getUTCDay()) ? 'a weekend' : 'a weekday'; return st.night ? t + ' night shift' : t; };
+  // the line under "To": the hours, or what is wrong with the times
+  const hoursHint = (st, g) => { const h = hoursOf(g, st.night);
+    if (h != null) return h + ' h each' + (st.night && pastMidnight(g) ? ' · ends ' + dayName(addDays(st.date, 1)) + ' morning' : '');
+    if (!g.start || !g.end) return st.night ? 'An end earlier than "From" is the next morning.' : '';
+    if (g.start === g.end) return 'The start and end are the same.';
+    return st.night ? 'Longer than 16 hours: check the times.' : 'Ran past midnight? Tick "Night shift" above.'; };
   const inGroup = (st, id, except) => st.groups.findIndex((x, j) => j !== except && x.ids.includes(id)) + 1;    // 0 = in no other group
   function groupHtml(cfg, st, g, i, n) {
-    const h = hoursOf(g);
+    const endDay = st.night && st.date ? dayName(sameEvening(g) ? st.date : addDays(st.date, 1)) : '';
     return `<div class="card ot-group" style="margin-bottom:10px"><div class="card-b">
       <div class="row between" style="margin-bottom:6px"><span class="strong">Group ${i + 1}</span>${n > 1 ? `<button type="button" class="btn btn-ghost btn-sm" data-ot-rm="${i}">Remove</button>` : ''}</div>
       <div class="grid g3 ot-when">
-        <div class="field"><label>From</label><input class="inp" type="time" data-ot="start" data-i="${i}" value="${esc(g.start)}"></div>
-        <div class="field"><label>To</label><input class="inp" type="time" data-ot="end" data-i="${i}" value="${esc(g.end)}"><div class="tiny muted" data-ot-h="${i}">${h == null ? 'Earlier than "From"? It ends the next day.' : h + ' h each'}</div></div>
+        <div class="field"><label>From${st.night && st.date ? ` <span class="muted" style="font-weight:500">· ${esc(dayName(st.date))}</span>` : ''}</label><input class="inp" type="time" data-ot="start" data-i="${i}" value="${esc(g.start)}"></div>
+        <div class="field"><label>To${endDay ? ` <span class="muted" style="font-weight:500" data-ot-endday="${i}">· ${esc(endDay)}</span>` : ''}</label><input class="inp" type="time" data-ot="end" data-i="${i}" value="${esc(g.end)}"><div class="tiny muted" data-ot-h="${i}">${esc(hoursHint(st, g))}</div></div>
         <div class="field"><label>Work done</label><input class="inp" data-ot="duty" data-i="${i}" maxlength="150" value="${esc(g.duty)}" placeholder="e.g. Weekend PM on Kunlong #2"></div></div>
       <div class="field"><span class="lbl">Who worked <span class="muted" style="font-weight:500" data-ot-n="${i}">(${g.ids.length} ticked)</span></span>
         ${(cfg.people || []).length > 12 ? `<input class="inp" type="search" data-ot-find="${i}" placeholder="Find a name..." style="margin-bottom:8px">` : ''}
@@ -255,19 +269,22 @@
       </div></div>`;
   }
   function overtime(cfg) {
-    const st = state('ot:' + cfg.department, () => ({ date: today(), holiday: false, groups: [groupNew()], results: null }));
+    const st = state('ot:' + cfg.department, () => ({ date: today(), holiday: false, night: false, groups: [groupNew()], results: null }));
+    const endIso = () => st.date ? addDays(st.date, 1) : '';
     const html = `<form class="ot-form" id="otForm" novalidate>
-      <div class="card" style="margin-bottom:12px"><div class="card-b"><div class="grid g2">
-        <div class="field"><label for="otDate">Day of the overtime</label><input class="inp" type="date" id="otDate" max="${today()}" min="${addDays(today(), -31)}" value="${esc(st.date)}"></div>
+      <div class="card" style="margin-bottom:12px"><div class="card-b"><div class="grid g3">
+        <div class="field"><label for="otDate" data-ot-datelbl>${st.night ? 'Night shift started on' : 'Day of the overtime'}</label><input class="inp" type="date" id="otDate" max="${today()}" min="${addDays(today(), -31)}" value="${esc(st.date)}"></div>
+        <div class="field ${st.night ? '' : 'hide'}" data-ot-endbox><label for="otEnd">Ended on (next morning)</label><input class="inp" type="date" id="otEnd" value="${esc(endIso())}" disabled></div>
         <div class="field"><label>Submitted by</label><input class="inp" value="${esc(cfg.requester)}" disabled></div></div>
-        <label class="check"><input type="checkbox" id="otHol" ${st.holiday ? 'checked' : ''}><span>It was a public holiday<span class="hint">Weekends are worked out by themselves.</span></span></label>
+        <label class="check"><input type="checkbox" id="otNight" ${st.night ? 'checked' : ''}><span>Night shift<span class="hint">Starts on the day picked and ends the next morning, e.g. 22:00 to 06:00. Logged as a night shift.</span></span></label>
+        <label class="check"><input type="checkbox" id="otHol" ${st.holiday ? 'checked' : ''}><span>It was a public holiday<span class="hint">Weekends are worked out by themselves. For a night shift, this is the day it started.</span></span></label>
         <div class="tiny muted" style="margin-top:6px">${esc(cfg.department)}. One group per time and task: tick everyone who worked those hours. It goes to the HR overtime log.</div></div></div>
       <div data-ot-groups>${st.groups.map((g, i) => groupHtml(cfg, st, g, i, st.groups.length)).join('')}</div>
       <div class="small muted" data-ot-sum style="margin:4px 0"></div>
       <button type="button" class="btn btn-ghost" data-ot-add>${ic(cfg, 'plus')} Add another group (other hours or task)</button>
       <div class="err-msg hide" data-rq-err style="margin-top:10px"></div>
       ${st.results ? `<div class="card" style="margin-top:12px"><div class="card-b"><div class="strong" style="margin-bottom:6px">Last submission</div>${st.results.map(r => `<div class="row between small" style="padding:3px 0;border-bottom:1px solid var(--line-2)"><span>${esc(r.name || r.enroll_id)}</span>
-          <span class="${r.result === 'ok' ? '' : 'strong'}" style="${r.result === 'ok' ? '' : 'color:var(--danger)'}">${esc(RESULT[r.result] || r.result)}${r.hours != null ? ' · ' + esc(r.hours) + ' h' : ''}${r.day_type ? ' · ' + esc(r.day_type) : ''}</span></div>`).join('')}</div></div>` : ''}
+          <span class="${r.result === 'ok' ? '' : 'strong'}" style="${r.result === 'ok' ? '' : 'color:var(--danger)'}">${esc(RESULT[r.result] || r.result)}${r.hours != null ? ' · ' + esc(r.hours) + ' h' : ''}${r.day_type ? ' · ' + esc(String(r.day_type).replace('_', ' ')) + (r.night ? ' night shift' : '') : ''}</span></div>`).join('')}</div></div>` : ''}
       <div class="row job-actions" style="gap:10px;margin-top:12px"><button type="button" class="btn btn-primary btn-lg" data-ot-send>${ic(cfg, 'check')} Submit overtime</button></div></form>`;
     function bind() {
       const box = $('#otForm'); if (!box) return;
@@ -283,26 +300,35 @@
       const draw = () => { $('[data-ot-groups]', box).innerHTML = st.groups.map((g, i) => groupHtml(cfg, st, g, i, st.groups.length)).join(''); wire(); sum(); };
       const wire = () => {
         $$('[data-ot]', box).forEach(el => { el.oninput = el.onchange = () => { const g = st.groups[+el.dataset.i]; g[el.dataset.ot] = el.value;
-          const h = hoursOf(g), e = $(`[data-ot-h="${el.dataset.i}"]`, box); if (e && el.dataset.ot !== 'duty') e.textContent = h == null ? 'Earlier than "From"? It ends the next day.' : h + ' h each'; sum(); }; });
+          if (el.dataset.ot !== 'duty') { const i = el.dataset.i, e = $(`[data-ot-h="${i}"]`, box), d = $(`[data-ot-endday="${i}"]`, box);
+            if (e) e.textContent = hoursHint(st, g);
+            if (d) d.textContent = '· ' + dayName(sameEvening(g) ? st.date : endIso()); }
+          sum(); }; });
         $$('[data-ot-find]', box).forEach(inp => inp.oninput = () => { const q = inp.value.trim().toLowerCase();
           $$(`[data-ot-chips="${inp.dataset.otFind}"] [data-ot-p]`, box).forEach(c => { c.style.display = !q || c.textContent.toLowerCase().includes(q) || c.classList.contains('on') ? '' : 'none'; }); });
         $$('[data-ot-p]', box).forEach(b => b.onclick = () => { const g = st.groups[+b.dataset.i], k = b.dataset.otP;
           g.ids = g.ids.includes(k) ? g.ids.filter(x => x !== k) : g.ids.concat(k); chips(); sum(); });   // in place: a redraw jumped back to the top
         $$('[data-ot-rm]', box).forEach(b => b.onclick = () => { st.groups.splice(+b.dataset.otRm, 1); draw(); });
       };
-      $('#otDate', box).onchange = e => { st.date = e.target.value; sum(); };
+      // night shift: the second date (the next morning) shows, and each group's times carry their day
+      const nightUi = () => { $('[data-ot-endbox]', box).classList.toggle('hide', !st.night); $('#otEnd', box).value = endIso();
+        $('[data-ot-datelbl]', box).textContent = st.night ? 'Night shift started on' : 'Day of the overtime'; draw(); };
+      $('#otDate', box).onchange = e => { st.date = e.target.value; nightUi(); };
+      $('#otNight', box).onchange = e => { st.night = e.target.checked; nightUi(); };
       $('#otHol', box).onchange = e => { st.holiday = e.target.checked; sum(); };
       $('[data-ot-add]', box).onclick = () => { st.groups.push(groupNew()); draw(); };
       wire(); sum();
       const send = $('[data-ot-send]', box);
       send.onclick = async () => {
         err(box, '');
-        if (!st.date || st.date > today() || st.date < addDays(today(), -31)) return err(box, 'Pick the day of the overtime (within the last 31 days).');
+        if (!st.date || st.date > today() || st.date < addDays(today(), -31)) return err(box, st.night ? 'Pick the day the night shift started (within the last 31 days).' : 'Pick the day of the overtime (within the last 31 days).');
         const groups = [];
         for (let i = 0; i < st.groups.length; i++) {
           const g = st.groups[i], n = st.groups.length > 1 ? 'Group ' + (i + 1) + ': ' : '';
           if (!g.start || !g.end) return err(box, n + 'enter the start and end times.');
           if (g.start === g.end) return err(box, n + 'the start and end times are the same.');
+          if (hoursOf(g, st.night) == null) return err(box, n + (st.night ? 'a night shift can run at most 16 hours into the next morning. Check the times.'
+            : 'the end is before the start. If the work ran past midnight, tick "Night shift".'));
           if (g.duty.trim().length < 3) return err(box, n + 'say what work was done.');
           if (!g.ids.length) return err(box, n + 'tick who worked.');
           groups.push({ start: g.start, end: g.end, duty: g.duty.trim(), enroll_ids: g.ids });
@@ -311,14 +337,14 @@
         if (twice) return err(box, ((cfg.people || []).find(p => p.enroll_id === twice) || { name: twice }).name + ' is ticked in two groups. One entry per person per day.');
         send.disabled = true;
         try {
-          const r = await post(cfg.api + '/webhook/okl/overtime', { department: cfg.department, date: st.date, holiday: st.holiday, groups });
+          const r = await post(cfg.api + '/webhook/okl/overtime', { department: cfg.department, date: st.date, holiday: st.holiday, night: st.night, groups });
           if (r.success === false && !(r.results || []).length) throw new Error(r.error || 'Not saved.');
           const bad = (r.results || []).filter(x => x.result !== 'ok');
           cfg.toast(r.saved ? 'Overtime submitted' : 'Nothing was saved', (r.saved || 0) + ' saved' + (bad.length ? ', ' + bad.length + ' not (see below)' : ''), bad.length ? 'err' : 'ok', 8000);
           const keep = { results: r.results || [] };
           delete STATES['ot:' + cfg.department];
-          if (bad.length) Object.assign(state('ot:' + cfg.department, () => ({ date: st.date, holiday: st.holiday, groups: [groupNew()], results: null })), keep);
-          else state('ot:' + cfg.department, () => ({ date: today(), holiday: false, groups: [groupNew()], results: keep.results }));
+          if (bad.length) Object.assign(state('ot:' + cfg.department, () => ({ date: st.date, holiday: st.holiday, night: st.night, groups: [groupNew()], results: null })), keep);
+          else state('ot:' + cfg.department, () => ({ date: today(), holiday: false, night: false, groups: [groupNew()], results: keep.results }));
           if (cfg.onSent) cfg.onSent();
         } catch (e) { err(box, 'Not submitted: ' + e.message); send.disabled = false; }
       };
@@ -352,12 +378,14 @@
   function recentOvertime(rows, title) {
     rows = rows || [];
     const by = {};
-    rows.forEach(o => { const k = o.date + '|' + (o.submitted_by || ''); const g = by[k] = by[k] || { date: o.date, day_type: o.day_type, submitted_by: o.submitted_by, names: [], hours: 0, duty: o.duty, start: o.start, end: o.end }; g.names.push(o.name); g.hours += Number(o.hours) || 0; });
+    rows.forEach(o => { const k = o.date + '|' + (o.submitted_by || ''); const g = by[k] = by[k] || { date: o.date, day_type: o.day_type, night: o.night === true, submitted_by: o.submitted_by, names: [], hours: 0, duty: o.duty, start: o.start, end: o.end }; g.names.push(o.name); g.hours += Number(o.hours) || 0; });
+    // an end earlier than the start can only be a night shift (078): it ended the next morning
+    const overnight = g => !!(g.start && g.end) && String(g.end).slice(0, 5) < String(g.start).slice(0, 5);
     const list = Object.values(by).sort((x, y) => String(y.date).localeCompare(String(x.date))), n = SHOW.ot ? list.length : 8;
     return `<div class="card" style="margin-top:18px"><div class="card-h"><div><h3>${esc(title || 'Overtime, last 31 days')}</h3></div></div>${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Day</th><th>Who</th><th>Time</th><th style="text-align:right">Total hours</th><th>Submitted by</th></tr></thead><tbody>${list.slice(0, n).map(g => `<tr>
-      <td data-label="Day" class="small">${esc(String(g.date).slice(0, 10))}${g.day_type ? `<div class="tiny muted">${esc(String(g.day_type).replace('_', ' '))}</div>` : ''}</td>
+      <td data-label="Day" class="small">${esc(String(g.date).slice(0, 10))}${g.day_type ? `<div class="tiny muted">${esc(String(g.day_type).replace('_', ' '))}${g.night || overnight(g) ? ' night shift' : ''}</div>` : ''}</td>
       <td data-label="Who" class="small">${esc(g.names.length + (g.names.length === 1 ? ' person: ' : ' people: ') + g.names.slice(0, 3).join(', ') + (g.names.length > 3 ? ' and ' + (g.names.length - 3) + ' more' : ''))}</td>
-      <td data-label="Time" class="mono small">${esc(String(g.start || '').slice(0, 5))} - ${esc(String(g.end || '').slice(0, 5))}</td><td data-label="Hours" style="text-align:right">${Math.round(g.hours * 100) / 100}</td>
+      <td data-label="Time" class="mono small">${esc(String(g.start || '').slice(0, 5))} - ${esc(String(g.end || '').slice(0, 5))}${overnight(g) ? ' <span class="tiny muted">+1 day</span>' : ''}</td><td data-label="Hours" style="text-align:right">${Math.round(g.hours * 100) / 100}</td>
       <td data-label="Submitted by" class="small">${esc(g.submitted_by || '')}</td></tr>`).join('')}</tbody></table></div>${more('ot', list.length, n)}` : '<div class="card-b small muted">None in the last 31 days.</div>'}</div>`;
   }
   /* page(kind, cfg, recent): kind 'item' | 'overtime'. cfg as for the forms, plus

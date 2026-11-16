@@ -160,6 +160,40 @@ function labRecall(kind, id, label, after){
       };
     } });
 }
+/* 079: void a request raised by mistake. QA Supervisor or QA Manager, with a reason and their password, until QC receives the
+   sample. It goes through the Recall endpoint (kind 'void'); the server checks the role, the stage and the password. */
+const VOIDABLE = ['pending_ipqa', 'returned_to_ipqa', 'pending_qa_review', 'pending_qc_notify', 'sent_to_qc'];
+function canVoid(status){ return VOIDABLE.includes(status) && (hasLabRole('qa_supervisor') || hasLabRole('qa_manager')); }
+function labVoid(id, label, after){
+  openModal({ title: 'Void this request', sub: label || '', size: 'narrow',
+    body: `<div class="notice warn" style="margin-bottom:12px">${I.info} Use this only when the request was raised by mistake (e.g. twice for the same batch, or the wrong product).
+        It stays in the records as <b>Void</b> and is no longer counted. It cannot be undone; if the batch still needs testing, raise a new request.</div>
+      <div class="field"><label for="vdWhy">Why is it void?</label><textarea class="inp" id="vdWhy" rows="3" placeholder="e.g. raised twice for batch I26055"></textarea></div>
+      <div class="field"><label for="vdPw">Your password</label><input type="text" autocomplete="username" tabindex="-1" aria-hidden="true" data-okl-ac="1" value="${esc((S && S.me && S.me.name) || '')}" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0"><input class="inp" type="password" id="vdPw" autocomplete="current-password"></div>
+      <div class="err-msg hide" id="vdErr" style="color:var(--danger);font-size:12.5px"></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-danger" id="vdOk">Void request</button>`,
+    onMount: (w, close) => {
+      setTimeout(() => $('#vdWhy', w).focus(), 30);
+      $('#vdOk', w).onclick = async () => {
+        const err = $('#vdErr', w), btn = $('#vdOk', w), why = $('#vdWhy', w).value.trim(), p = $('#vdPw', w).value;
+        err.classList.add('hide');
+        if (why.length < 10){ err.textContent = 'Say why it is void (at least 10 characters).'; err.classList.remove('hide'); return; }
+        if (!p){ err.textContent = 'Enter your password.'; err.classList.remove('hide'); return; }
+        btn.disabled = true;
+        try {
+          await labPost('/recall', { kind: 'void', id, reason: why, password: p, seen: labSeen('/inbox') });
+          close(); toast('Request void', (label || 'The request') + ' is void. The person who raised it, IPQA and QA have been told.', 'ok');
+          const r = ((S && S.requests) || []).find(x => Number(x.id) === Number(id));   // the records list shows it as Void straight away
+          if (r) Object.assign(r, { status: 'void', voidReason: why, voidedBy: (S.me && S.me.name) || '' });
+          labRefresh();
+          if (after) go(after);
+        } catch (e) { err.textContent = e.message; err.classList.remove('hide'); btn.disabled = false; }
+      };
+    } });
+}
+function voidBtn(id, label, small, after){
+  return `<button class="btn btn-ghost${small ? ' btn-sm' : ''}" style="color:var(--danger)" onclick="event.stopPropagation();labVoid(${Number(id)}, ${esc(JSON.stringify(label || ''))}, ${esc(JSON.stringify(after || ''))})">Void</button>`;
+}
 function recallBtn(kind, id, label, small, after){
   return `<button class="btn btn-ghost${small ? ' btn-sm' : ''}" onclick="event.stopPropagation();labRecall('${kind}', ${Number(id)}, ${esc(JSON.stringify(label || ''))}, ${esc(JSON.stringify(after || ''))})">${I.undo || I.chevL} Recall</button>`;
 }
@@ -215,7 +249,7 @@ function viewLabInbox(){
         <td data-label="Stage"><span class="chip">${esc(r.stage)}</span></td>
         <td data-label="Tests for QC" class="small">${esc(r.test_required || '--')}</td>
         <td data-label="Status"><span class="badge ${st[1]}">${esc(st[0])}</span>${r.ipqa_signed_at ? `<div class="tiny muted" style="margin-top:3px">IPQA signed: ${esc(r.ipqa_signed_by || '')}, ${fmtDateTime(r.ipqa_signed_at)}</div>` : ''}${r.returns ? `<div class="tiny" style="color:var(--danger)">returned ${r.returns}x</div>` : ''}</td>
-        <td style="text-align:right;white-space:nowrap">${act} ${rec}</td></tr>`; }).join('')}</tbody></table></div>`
+        <td style="text-align:right;white-space:nowrap">${act} ${rec} ${canVoid(r.status) ? voidBtn(r.id, r.request_no, true) : ''}</td></tr>`; }).join('')}</tbody></table></div>`
     : (d.ipqa || []).length ? hiddenBySearch((d.ipqa || []).length)
     : `<div class="card-b">${emptyState('inbox', 'Nothing with IPQA', 'Samples appear here from the moment they are raised until the QA Supervisor approves them.')}</div>`;
   const body = !tab[2] ? ipqaBody : rows.length ? `<div class="tbl-wrap"><table class="tbl">
@@ -2582,7 +2616,8 @@ function labBatchHead(d, title, docNo, sub){
     ${r.qa_comments ? `<p class="small">QA Supervisor comments: ${esc(r.qa_comments)}</p>` : ''}`;
 }
 function labStatusText(st){ return { pending_ipqa: 'Pending IPQA', pending_qa_review: 'Pending QA review', rejected: 'Rejected by QA', pending_qc_notify: 'Sent to QC',
-  sent_to_qc: 'Waiting for QC receipt', qc_received: 'In the QC lab', qc_released: 'QC released', qc_not_released: 'QC not released', qa_acknowledged: 'Closed (QA acknowledged)' }[st] || st; }
+  sent_to_qc: 'Waiting for QC receipt', qc_received: 'In the QC lab', qc_released: 'QC released', qc_not_released: 'QC not released', qa_acknowledged: 'Closed (QA acknowledged)',
+  void: 'Void (wrongly raised)' }[st] || st; }
 function labOpenTests(r){
   const done = new Set((r.results || []).map(x => String(x.analysis_id)));
   return r.assignments.filter(a => !a.cancelled && !(a.analysis_id && done.has(String(a.analysis_id)) && ['submitted', 'checked'].includes(a.analysis_status)))

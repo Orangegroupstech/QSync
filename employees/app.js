@@ -1051,20 +1051,27 @@ const DAY_TYPES = [['weekday', 'Weekday'], ['weekend', 'Weekend'], ['public_holi
 const dayTypeLabel = t => (DAY_TYPES.find(x => x[0] === t) || DAY_TYPES[0])[1];
 const otDayType = r => r.day_type || ([0, 6].includes(new Date(String(r.work_date).slice(0, 10) + 'T12:00:00Z').getUTCDay()) ? 'weekend' : 'weekday');
 const dayBadge = t => `<span class="badge ${t === 'public_holiday' ? 'b-warn' : t === 'weekend' ? 'b-info' : 'b-slate'}">${esc(dayTypeLabel(t))}</span>`;
+/* Night shift (078): ticked on the form; the day type is the day it started. An end earlier than the start can only be a
+   night (it ended the next morning), so rows from before the flag still read right. */
+const otEarlyEnd = r => !!(r.start_time && r.end_time) && hhmm(r.end_time) < hhmm(r.start_time);
+const otNight = r => r.night === true || otEarlyEnd(r);
+const otTypeCell = r => dayBadge(otDayType(r)) + (otNight(r) ? ' <span class="badge b-info">Night</span>' : '');
+const otTypeText = r => dayTypeLabel(otDayType(r)) + (otNight(r) ? ', night' : '');
 
 let otListState = { preset:'last30', from:'', to:'', department:[], dayTypes:[], day:'', q:'', type:'', showVoid:false, mode:'overview', records:null, key:'' };
 function filteredOvertime(){
   const s = otListState, q = s.q.trim().toLowerCase(), types = empTypeMap();
   return (s.records || []).filter(r =>
     (s.showVoid || r.status !== 'void') && deptPick(s.department, r.department) && (!s.type || types.get(r.enroll_id) === s.type) &&
-    (!s.dayTypes.length || s.dayTypes.includes(otDayType(r))) &&
+    (!s.dayTypes.length || s.dayTypes.includes(otDayType(r)) || (s.dayTypes.includes('night') && otNight(r))) &&
     (!q || String(r.name).toLowerCase().includes(q) || String(r.enroll_id).toLowerCase().includes(q)))
     .sort((a, b) => (String(a.work_date) < String(b.work_date) ? 1 : String(a.work_date) > String(b.work_date) ? -1 : 0) || byEnroll(a, b));   // newest day first, then by ID
 }
 function otPersonTotals(live){
   const by = new Map();
-  live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), dates:new Set(), hours:0, byType:{ weekday:0, weekend:0, public_holiday:0 }, dayBy:{ weekday:new Set(), weekend:new Set(), public_holiday:new Set() } }); const x = by.get(k), d = String(r.work_date).slice(0, 10), t = otDayType(r);
-    x.depts.add(r.department); x.dates.add(d); x.dayBy[t].add(d); x.hours += Number(r.hours || 0); x.byType[t] += Number(r.hours || 0); });
+  live.forEach(r => { const k = r.enroll_id; if (!by.has(k)) by.set(k, { name:r.name, id:k, depts:new Set(), dates:new Set(), hours:0, nightHours:0, nights:0, byType:{ weekday:0, weekend:0, public_holiday:0 }, dayBy:{ weekday:new Set(), weekend:new Set(), public_holiday:new Set() } }); const x = by.get(k), d = String(r.work_date).slice(0, 10), t = otDayType(r);
+    x.depts.add(r.department); x.dates.add(d); x.dayBy[t].add(d); x.hours += Number(r.hours || 0); x.byType[t] += Number(r.hours || 0);
+    if (otNight(r)) { x.nights++; x.nightHours += Number(r.hours || 0); } });   // night hours are also in their day type
   // days = distinct dates (two entries on one day count once)
   return [...by.values()].map(x => Object.assign(x, { days:x.dates.size, daysBy:{ weekday:x.dayBy.weekday.size, weekend:x.dayBy.weekend.size, public_holiday:x.dayBy.public_holiday.size } })).sort((a, b) => idCmp(a.id, b.id));
 }
@@ -1077,13 +1084,13 @@ function openOtPerson(id){
     title: rows[0].name, size:'wide', sub: [...new Set(rows.map(r => r.department).filter(Boolean))].join(', ') + (rows.some(r => r.department) ? ' - ' : '') + s.from + ' to ' + s.to,
     body: `<div class="grid g3" style="margin-bottom:12px">${[['Days of overtime', nDays], ['Total hours', fmtHours(total)], ['Average per day', fmtHours(nDays ? total / nDays : 0)]].map(([l, v]) => `<div class="stat"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Day type</th><th>Time</th><th>Hours</th><th>Submitted by</th>${rows.length !== live.length ? '<th>Status</th>' : ''}</tr></thead>
-      <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}><td data-label="Date" class="strong">${esc(fmtDayShort(String(r.work_date).slice(0, 10)))}</td><td data-label="Day type">${dayBadge(otDayType(r))}</td><td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
+      <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}><td data-label="Date" class="strong">${esc(fmtDayShort(String(r.work_date).slice(0, 10)))}</td><td data-label="Day type">${otTypeCell(r)}</td><td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
         <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>${rows.length !== live.length ? `<td data-label="Status">${r.status === 'void' ? '<span class="badge b-slate">Void</span>' : '<span class="badge b-ok">Recorded</span>'}</td>` : ''}</tr>`).join('')}
         <tr><td class="strong">Total</td><td></td><td></td><td class="tnum strong">${fmtHours(total)}</td><td></td>${rows.length !== live.length ? '<td></td>' : ''}</tr></tbody></table></div>`,
     footer: `<button class="btn btn-ghost" data-close>Close</button>`,
   });
 }
-function otTimes(r){ return r.start_time ? hhmm(r.start_time) + ' - ' + hhmm(r.end_time) : '--'; }
+function otTimes(r){ return r.start_time ? hhmm(r.start_time) + ' - ' + hhmm(r.end_time) + (otEarlyEnd(r) ? ' (+1 day)' : '') : '--'; }
 function paintOtList(){
   const box = $('#otListBody'); if (!box) return;
   const s = otListState;
@@ -1103,6 +1110,7 @@ function paintOtList(){
     const topPeople = group(r => r.enroll_id).sort((a, b) => b.hours - a.hours).slice(0, 10);
     const byTypeMap = group(r => otDayType(r)), typeRows = DAY_TYPES.map(([k]) => byTypeMap.find(x => x.key === k) || { key:k, hours:0, entries:0, people:new Set() });
     const maxT = Math.max(1, ...typeRows.map(x => x.hours));
+    const nightRow = live.filter(otNight).reduce((a, r) => { a.hours += Number(r.hours || 0); a.entries++; a.people.add(r.enroll_id); return a; }, { hours:0, entries:0, people:new Set() });
     const maxD = depts[0].hours || 1, maxW = Math.max(1, ...weeks.map(x => x.hours)), maxP = topPeople[0].hours || 1;
     const bar = (label, right, pct) => `<div><div class="row between small"><span class="strong">${esc(label)}</span><span class="muted">${right}</span></div><div class="bar" style="margin-top:4px"><i style="width:${pct}%"></i></div></div>`;
     box.innerHTML = `<div class="card-b">
@@ -1116,7 +1124,8 @@ function paintOtList(){
         <div><div class="strong" style="margin-bottom:8px">Most overtime</div><div class="stack" style="gap:11px">${topPeople.map(x => bar(nameOf.get(x.key) || x.key, fmtHours(x.hours) + ' h - ' + x.entries + ' ' + (x.entries === 1 ? 'day' : 'days'), Math.round(x.hours / maxP * 100))).join('')}</div></div>
       </div>
       <div class="strong" style="margin:20px 0 8px">Hours by day type</div>
-      <div class="stack" style="gap:11px">${typeRows.map(x => bar(dayTypeLabel(x.key), fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people') + ' - ' + x.entries + ' ' + (x.entries === 1 ? 'entry' : 'entries'), Math.round(x.hours / maxT * 100))).join('')}</div>
+      <div class="stack" style="gap:11px">${typeRows.map(x => bar(dayTypeLabel(x.key), fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people') + ' - ' + x.entries + ' ' + (x.entries === 1 ? 'entry' : 'entries'), Math.round(x.hours / maxT * 100))).join('')}
+        ${nightRow.entries ? bar('Night shift (also counted above)', fmtHours(nightRow.hours) + ' h - ' + nightRow.people.size + ' ' + (nightRow.people.size === 1 ? 'person' : 'people') + ' - ' + nightRow.entries + ' ' + (nightRow.entries === 1 ? 'entry' : 'entries'), Math.round(nightRow.hours / maxT * 100)) : ''}</div>
       <div class="strong" style="margin:20px 0 8px">Hours by week</div>
       <div class="stack" style="gap:11px">${weeks.map(x => bar('Week of ' + fmtDayShort(x.key), fmtHours(x.hours) + ' h - ' + x.people.size + ' ' + (x.people.size === 1 ? 'person' : 'people'), Math.round(x.hours / maxW * 100))).join('')}</div></div>`;
     return;
@@ -1131,9 +1140,9 @@ function paintOtList(){
         <div class="row" style="gap:8px"><button class="btn btn-ghost btn-sm" id="odPrev" ${k >= days.length - 1 ? 'disabled' : ''} aria-label="Previous day">${I.chevL}</button>
           <select class="inp" id="odDay" style="width:auto">${days.map(d => `<option value="${d}" ${d === s.day ? 'selected' : ''}>${esc(fmtDay(d))}</option>`).join('')}</select>
           <button class="btn btn-ghost btn-sm" id="odNext" ${k <= 0 ? 'disabled' : ''} aria-label="Next day">${I.chevR}</button></div>
-        <div class="row small muted" style="gap:8px">${[...new Set(recs.map(otDayType))].map(dayBadge).join(' ')} <span>${recs.length} ${recs.length === 1 ? 'person' : 'people'}, ${fmtHours(dayTotal)} hours</span></div></div>
+        <div class="row small muted" style="gap:8px">${[...new Set(recs.map(otDayType))].map(dayBadge).join(' ')}${recs.some(otNight) ? ' <span class="badge b-info">Night</span>' : ''} <span>${recs.length} ${recs.length === 1 ? 'person' : 'people'}, ${fmtHours(dayTotal)} hours</span></div></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Day type</th><th>Time</th><th>Hours</th><th>Submitted by</th></tr></thead>
-        <tbody>${recs.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department || '--')}</td><td data-label="Day type">${dayBadge(otDayType(r))}</td>
+        <tbody>${recs.map(r => `<tr><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department || '--')}</td><td data-label="Day type">${otTypeCell(r)}</td>
           <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td><td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td></tr>`).join('')}</tbody></table></div>`;
     $('#odDay').onchange = e => { s.day = e.target.value; paintOtList(); };
     $('#odPrev').onclick = () => { s.day = days[k + 1]; paintOtList(); };
@@ -1142,16 +1151,16 @@ function paintOtList(){
   }
   if (s.mode === 'totals') {
     const list = otPersonTotals(live);
-    box.innerHTML = `<div class="small muted" style="padding:12px 14px 0">Click a name to see the days and hours behind the total.</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days</th><th>Hours</th><th>Weekday h</th><th>Weekend h</th><th>Public holiday h</th></tr></thead>
+    box.innerHTML = `<div class="small muted" style="padding:12px 14px 0">Click a name to see the days and hours behind the total.</div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Department</th><th>Days</th><th>Hours</th><th>Weekday h</th><th>Weekend h</th><th>Public holiday h</th><th>Night shift h ${hInfo('Hours on night shifts, by the day each night started.\nThey are already in the weekday, weekend or public holiday hours, so they are not added again.', 'Night shift hours')}</th></tr></thead>
       <tbody>${list.map(x => `<tr class="clickable" onclick="openOtPerson('${esc(x.id)}')"><td data-label="Name"><div class="strong">${esc(x.name)}</div><div class="tiny muted mono">${otIdLine(x.id)}</div></td>
         <td data-label="Department">${esc([...x.depts].filter(Boolean).join(', ') || '--')}</td><td data-label="Days" class="tnum">${x.days}</td><td data-label="Hours" class="tnum strong">${fmtHours(x.hours)}</td>
-        <td data-label="Weekday h" class="tnum">${fmtHours(x.byType.weekday)}</td><td data-label="Weekend h" class="tnum">${fmtHours(x.byType.weekend)}</td><td data-label="Public holiday h" class="tnum">${fmtHours(x.byType.public_holiday)}</td></tr>`).join('')}</tbody></table></div>${foot}`;
+        <td data-label="Weekday h" class="tnum">${fmtHours(x.byType.weekday)}</td><td data-label="Weekend h" class="tnum">${fmtHours(x.byType.weekend)}</td><td data-label="Public holiday h" class="tnum">${fmtHours(x.byType.public_holiday)}</td><td data-label="Night shift h" class="tnum">${x.nights ? fmtHours(x.nightHours) : '--'}</td></tr>`).join('')}</tbody></table></div>${foot}`;
     return;
   }
   box.innerHTML = `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Date</th><th>Day type</th><th>Name</th><th>Department</th><th>Time</th><th>Hours</th><th>Submitted by</th><th>Status</th>${canEdit ? '<th></th>' : ''}</tr></thead>
       <tbody>${rows.map(r => `<tr ${r.status === 'void' ? 'style="opacity:.55"' : ''}>
-        <td data-label="Date">${esc(r.work_date)}</td><td data-label="Day type">${dayBadge(otDayType(r))}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
+        <td data-label="Date">${esc(r.work_date)}</td><td data-label="Day type">${otTypeCell(r)}</td><td data-label="Name"><div class="strong">${esc(r.name)}</div><div class="tiny muted mono">${otIdLine(r.enroll_id)}</div></td><td data-label="Department">${esc(r.department||'--')}</td>
         <td data-label="Time" class="tnum">${esc(otTimes(r))}</td><td data-label="Hours" class="tnum strong">${esc(fmtHours(r.hours))}</td>
         <td data-label="Submitted by" class="small">${esc(r.submitted_by || r.recorded_by || '--')}</td>
         <td data-label="Status">${r.status === 'void' ? `<span class="badge b-slate" title="${esc(r.void_reason||'')}">Void</span>` : '<span class="badge b-ok">Recorded</span>'}</td>
@@ -1176,14 +1185,14 @@ function exportOvertimeCSV(){
   let head, data, tag = '';
   if (s.mode === 'entries') {
     head = ['Date','Day type','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by','Status'];
-    data = rows.map(r => [r.work_date, dayTypeLabel(otDayType(r)), r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by, r.status]);
+    data = rows.map(r => [r.work_date, otTypeText(r), r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by, r.status]);
   } else if (s.mode === 'daily') {
     tag = '_' + s.day;
     head = ['Date','Day type','Name','Enroll ID','Department','Type','Start','End','Hours','Submitted by'];
-    data = live.filter(r => String(r.work_date).slice(0, 10) === s.day).map(r => [r.work_date, dayTypeLabel(otDayType(r)), r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by]);
+    data = live.filter(r => String(r.work_date).slice(0, 10) === s.day).map(r => [r.work_date, otTypeText(r), r.name, r.enroll_id, r.department, types.get(r.enroll_id), hhmm(r.start_time), hhmm(r.end_time), fmtHours(r.hours), r.submitted_by || r.recorded_by]);
   } else {
-    head = ['Enroll ID','Name','Department','Type','Weekdays','Weekday hours','Weekends','Weekend hours','Public holidays','Public holiday hours','Total days','Total hours'];
-    data = otPersonTotals(live).map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), types.get(x.id), x.daysBy.weekday, fmtHours(x.byType.weekday), x.daysBy.weekend, fmtHours(x.byType.weekend), x.daysBy.public_holiday, fmtHours(x.byType.public_holiday), x.days, fmtHours(x.hours)]);
+    head = ['Enroll ID','Name','Department','Type','Weekdays','Weekday hours','Weekends','Weekend hours','Public holidays','Public holiday hours','Total days','Total hours','Night shifts','Night shift hours (already in the above)'];
+    data = otPersonTotals(live).map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), types.get(x.id), x.daysBy.weekday, fmtHours(x.byType.weekday), x.daysBy.weekend, fmtHours(x.byType.weekend), x.daysBy.public_holiday, fmtHours(x.byType.public_holiday), x.days, fmtHours(x.hours), x.nights, fmtHours(x.nightHours)]);
   }
   download('okl_overtime_' + (s.mode === 'entries' ? 'entries' : s.mode === 'daily' ? 'day' : 'by_person') + '_' + s.from + '_to_' + s.to + tag + '.csv', [head.join(',')].concat(data.map(r => r.map(cell).join(','))).join('\n'), 'text/csv;charset=utf-8');
 }
@@ -1196,10 +1205,11 @@ function otReportSheets(records, from, to, type){
   const rows = live.slice().sort((a, b) => byEnroll(a, b) || (String(a.work_date) < String(b.work_date) ? -1 : String(a.work_date) > String(b.work_date) ? 1 : 0) || String(a.start_time || '').localeCompare(String(b.start_time || '')));
   return [
     // each day type as a pair (days, hours), then the totals
-    { name:'Summary', head:['Enroll ID', 'Name', 'Department', 'Type', 'Weekdays', 'OT weekday h', 'Weekends', 'OT weekend h', 'Public holidays', 'OT holiday h', 'Total days', 'Total OT'], widths:[12, 30, 20, 9, 10, 14, 10, 14, 15, 14, 11, 10],
-      rows: people.map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), typeOf(x.id), x.daysBy.weekday, hoursNum(x.byType.weekday), x.daysBy.weekend, hoursNum(x.byType.weekend), x.daysBy.public_holiday, hoursNum(x.byType.public_holiday), x.days, hoursNum(x.hours)]) },
-    { name:'Daily detail', head:['Enroll ID', 'Name', 'Department', 'Type', 'Date', 'Day', 'Day type', 'Start', 'End', 'Hours', 'Submitted by'], widths:[12, 30, 20, 9, 12, 6, 15, 8, 8, 8, 22],
-      rows: rows.map(r => { const d = String(r.work_date).slice(0, 10); return [r.enroll_id, r.name, r.department || '', typeOf(r.enroll_id), d, dayName(d), dayTypeLabel(otDayType(r)), hhmm(r.start_time), hhmm(r.end_time), hoursNum(r.hours), r.submitted_by || r.recorded_by || '']; }) },
+    // night shifts (078): their hours are already in the day type columns; the last two columns say how many of them were nights
+    { name:'Summary', head:['Enroll ID', 'Name', 'Department', 'Type', 'Weekdays', 'OT weekday h', 'Weekends', 'OT weekend h', 'Public holidays', 'OT holiday h', 'Total days', 'Total OT', 'Night shifts', 'Of which night h'], widths:[12, 30, 20, 9, 10, 14, 10, 14, 15, 14, 11, 10, 12, 15],
+      rows: people.map(x => [x.id, x.name, [...x.depts].filter(Boolean).join(' / '), typeOf(x.id), x.daysBy.weekday, hoursNum(x.byType.weekday), x.daysBy.weekend, hoursNum(x.byType.weekend), x.daysBy.public_holiday, hoursNum(x.byType.public_holiday), x.days, hoursNum(x.hours), x.nights, hoursNum(x.nightHours)]) },
+    { name:'Daily detail', head:['Enroll ID', 'Name', 'Department', 'Type', 'Date', 'Day', 'Day type', 'Start', 'End', 'Hours', 'Submitted by'], widths:[12, 30, 20, 9, 12, 6, 22, 8, 8, 8, 22],
+      rows: rows.map(r => { const d = String(r.work_date).slice(0, 10); return [r.enroll_id, r.name, r.department || '', typeOf(r.enroll_id), d, dayName(d), otTypeText(r), hhmm(r.start_time), hhmm(r.end_time) + (otEarlyEnd(r) ? ' (+1 day)' : ''), hoursNum(r.hours), r.submitted_by || r.recorded_by || '']; }) },
   ];
 }
 function openOtReport(){
@@ -1245,7 +1255,7 @@ function viewOvertimeWaiting(){
           <div class="sub">${esc(g.people)} ${g.people === 1 ? 'person' : 'people'} · ${esc(String(g.day_type || '').replace('_', ' '))} · submitted by ${esc(g.submitted_by || '')}</div></div>
           ${d.can_confirm ? `<button class="btn btn-primary btn-sm" onclick='otwConfirm(${esc(JSON.stringify(JSON.stringify(g.ids)))})'>${I.check} Confirm</button>` : ''}</div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Who</th><th>Time</th><th style="text-align:right">Hours</th><th>Work</th></tr></thead><tbody>${(g.rows || []).map(r => `<tr><td data-label="Who">${esc(r.name || '')}</td>
-          <td data-label="Time" class="mono small">${esc(r.start || '')} - ${esc(r.end || '')}</td><td data-label="Hours" style="text-align:right">${esc(r.hours)}</td><td data-label="Work" class="small">${esc(r.duty || '')}</td></tr>`).join('')}</tbody></table></div></div>`).join('');
+          <td data-label="Time" class="mono small">${esc(r.start || '')} - ${esc(r.end || '')}${r.start && r.end && String(r.end) < String(r.start) ? ' <span class="tiny muted">night, +1 day</span>' : ''}</td><td data-label="Hours" style="text-align:right">${esc(r.hours)}</td><td data-label="Work" class="small">${esc(r.duty || '')}</td></tr>`).join('')}</tbody></table></div></div>`).join('');
   return { title:'Overtime', crumb:'Attendance', keepScroll: true,
     html: `${pageHead('Overtime', 'Hours submitted on the department forms: confirm what was submitted, then see the overview, day by day, totals by person and every entry.', `<button class="btn btn-ghost" onclick="OTW.data=null;oklWaiting.refresh('employees');render()">Refresh</button>`)}
       ${hrTabs(otTabs(), 'waiting')}${body}` };
@@ -1264,7 +1274,7 @@ function viewOvertimeList(mode){
     bind(){
       bindHrFilters(s, 'ol', loadOtList, paintOtList);
       msRender('olDept', 'All departments', [], s.department, () => {});
-      msRender('olDay', 'All day types', DAY_TYPES.map(([v, l]) => ({ v, l })), s.dayTypes, v => { s.dayTypes = v; paintOtList(); }, 'day types');
+      msRender('olDay', 'All day types', DAY_TYPES.map(([v, l]) => ({ v, l })).concat([{ v:'night', l:'Night shift' }]), s.dayTypes, v => { s.dayTypes = v; paintOtList(); }, 'day types');
       $('#olVoid').onchange = e => { s.showVoid = e.target.checked; paintOtList(); };
       if ($('#olCsv')) $('#olCsv').onclick = exportOvertimeCSV;
       if ($('#olReport')) $('#olReport').onclick = openOtReport;
@@ -1279,32 +1289,38 @@ route('/overtime/records/entries', () => viewOvertimeList('entries'));
 
 function openEditOvertime(id){
   const r = (otListState.records || []).find(x => Number(x.id) === Number(id)); if (!r) return;
-  const calc = (a, b) => { const m = t => { const x = /^(\d{1,2}):(\d{2})/.exec(t || ''); return x ? (+x[1]) * 60 + (+x[2]) : null; };
-    const s = m(a), e = m(b); return (s == null || e == null || e <= s) ? null : Math.round((e - s) / 60 * 100) / 100; };
+  // the server's rule (078): end after start; on a night shift an earlier end is the next morning, at most 16 h
+  const calc = (a, b, night) => { const m = t => { const x = /^(\d{1,2}):(\d{2})/.exec(t || ''); return x ? (+x[1]) * 60 + (+x[2]) : null; };
+    const s = m(a), e = m(b); if (s == null || e == null || e === s) return null;
+    const d = e > s ? e - s : night ? 1440 - s + e : null; return d == null || d > 16 * 60 ? null : Math.round(d / 60 * 100) / 100; };
+  const badMsg = night => night ? 'On a night shift the end can be the next morning, at most 16 hours after the start.' : 'End must be after start. Ran past midnight? Tick Night shift.';
   openModal({
     title:'Edit overtime', size:'narrow', sub: r.name + ' · ' + r.work_date + ' · ' + (r.department || ''),
     body:`<div class="grid g2">
         <div class="field"><label for="eoStart">Start time</label><input class="inp" type="time" id="eoStart" value="${esc(hhmm(r.start_time))}"></div>
         <div class="field"><label for="eoEnd">End time</label><input class="inp" type="time" id="eoEnd" value="${esc(hhmm(r.end_time))}"></div></div>
       <div class="small muted" id="eoHours"></div><div class="err-msg hide" data-err="eoStart"></div>
-      <label class="check" style="margin:12px 0 0;font-weight:600"><input type="checkbox" id="eoHol" ${otDayType(r) === 'public_holiday' ? 'checked' : ''}> Tick here if date is a public holiday</label>
+      <label class="check" style="margin:12px 0 0;font-weight:600"><input type="checkbox" id="eoNight" ${otNight(r) ? 'checked' : ''}> Night shift (started on ${esc(String(r.work_date).slice(0, 10))}, may end the next morning)</label>
+      <label class="check" style="margin:8px 0 0;font-weight:600"><input type="checkbox" id="eoHol" ${otDayType(r) === 'public_holiday' ? 'checked' : ''}> Tick here if date is a public holiday</label>
       <div class="small muted" id="eoDay" style="margin-top:4px"></div>
       ${r.start_time ? '' : `<div class="hint">${I.info}<span>This entry was recorded with hours only (${esc(fmtHours(r.hours))} h). Enter start and end times to replace it.</span></div>`}`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Save</button>`,
     onMount:(w, close) => {
       const dayNow = () => $('#eoHol', w).checked ? 'public_holiday' : ([0, 6].includes(new Date(String(r.work_date).slice(0, 10) + 'T12:00:00Z').getUTCDay()) ? 'weekend' : 'weekday');
-      const showDay = () => { $('#eoDay', w).textContent = 'Recorded as: ' + dayTypeLabel(dayNow()); };
-      $('#eoHol', w).onchange = showDay; showDay();
-      const upd = () => { const h = calc($('#eoStart', w).value, $('#eoEnd', w).value); $('#eoHours', w).textContent = h == null ? 'End must be after start.' : 'Duration: ' + fmtHours(h) + ' h'; };
+      const night = () => $('#eoNight', w).checked;
+      const showDay = () => { $('#eoDay', w).textContent = 'Recorded as: ' + dayTypeLabel(dayNow()) + (night() ? ', night shift' : ''); };
+      const upd = () => { const s = $('#eoStart', w).value, e = $('#eoEnd', w).value, h = calc(s, e, night());
+        $('#eoHours', w).textContent = h == null ? badMsg(night()) : 'Duration: ' + fmtHours(h) + ' h' + (night() && e < s ? ' (ends the next morning)' : ''); };
+      $('#eoHol', w).onchange = showDay; $('#eoNight', w).onchange = () => { showDay(); upd(); }; showDay();
       $('#eoStart', w).oninput = upd; $('#eoEnd', w).oninput = upd; upd();
       $('[data-save]', w).onclick = async () => {
         clearErrors(w);
         const start = $('#eoStart', w).value, end = $('#eoEnd', w).value;
-        if (calc(start, end) == null) return setErr('eoStart', 'End must be after start.', w);
+        if (calc(start, end, night()) == null) return setErr('eoStart', badMsg(night()), w);
         const btn = $('[data-save]', w); btn.disabled = true;
         try {
-          const res = await api('/webhook/employees/api/overtime/update', { method:'POST', body:{ id: r.id, start, end, holiday: $('#eoHol', w).checked } });
-          r.start_time = start + ':00'; r.end_time = end + ':00'; r.hours = res.hours != null ? res.hours : calc(start, end); r.day_type = res.day_type || dayNow();
+          const res = await api('/webhook/employees/api/overtime/update', { method:'POST', body:{ id: r.id, start, end, holiday: $('#eoHol', w).checked, night: night() } });
+          r.start_time = start + ':00'; r.end_time = end + ':00'; r.hours = res.hours != null ? res.hours : calc(start, end, night()); r.day_type = res.day_type || dayNow(); r.night = night();
           close(); paintOtList(); toast('Overtime updated', r.name + ' now has ' + fmtHours(r.hours) + ' h on ' + r.work_date + '.', 'ok');
         } catch (err) { setErr('eoStart', err.message, w); btn.disabled = false; }
       };
@@ -2686,7 +2702,7 @@ route('/my-approvals', viewMyApprovals);
 const HELP = [
   ['plus', 'Submit overtime', [
     'Menu > Attendance > <b>Submit overtime</b>. Pick the department first: its active staff appear.',
-    'Pick the day (within the last 31 days); tick public holiday if it was one. Weekends are worked out by themselves.',
+    'Pick the day (within the last 31 days); tick public holiday if it was one. Weekends are worked out by themselves. Worked through the night? Tick <b>Night shift</b>: pick the day it started, the date of the next morning shows, and an end such as 06:00 counts into the next morning.',
     'Set the start and end time and tick everyone who worked those hours. A person can be in one group per day. Other hours or other work? <b>Add another group</b>.',
     '<b>Submit overtime</b>: it goes into the overtime records and the HR Manager is told of the day\'s submissions at midday.']],
   ['check', 'Overtime waiting to be confirmed (HR Manager)', [

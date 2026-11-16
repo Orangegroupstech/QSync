@@ -410,7 +410,7 @@ const RQ_HELP = [
     '<b>Send for approval</b>: your manager, then the plant manager approve; you get the result by e-mail.',
     'What you sent shows below the form, with where each line is: waiting for order, ordered (and when it is expected), partly received, or closed.']],
   ['users', 'Submit overtime', [
-    'Menu > <b>Submit overtime</b>. Pick the day (within the last 31 days); tick public holiday if it was one.',
+    'Menu > <b>Submit overtime</b>. Pick the day (within the last 31 days); tick public holiday if it was one. Worked through the night? Tick <b>Night shift</b>: pick the day it started, the date of the next morning shows, and an end such as 06:00 counts into the next morning.',
     'Set the start and end time and tick everyone who worked those hours. Other hours or other work? <b>Add another group</b>.',
     '<b>Submit overtime</b>: it goes into the HR overtime log; the HR Manager is told of the day\'s submissions at midday.']],
   ['info', 'Signing in', [

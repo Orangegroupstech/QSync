@@ -3565,7 +3565,7 @@ const HELP = [
   ['edit', 'Requests (manager and storekeeper)', [
     '<b>Make a procurement request</b>: spares or any item, to Procurement. Pick a store part and its material type, specification and brand fill in; or type a new item and give its specification. The <b>brand</b> is needed for every Engineering item.',
     '<b>Needed by</b> must be at least 1 month from today. Each department can send at most <b>10 items a week</b> (Monday to Sunday); the form shows how many are left.',
-    '<b>Submit overtime</b>: the date, the times, the work and who; it goes to the HR overtime log.',
+    '<b>Submit overtime</b>: the date, the times, the work and who; it goes to the HR overtime log. Worked through the night? Tick <b>Night shift</b>: pick the day it started, the date of the next morning shows, and an end such as 06:00 counts into the next morning.',
     '<b>My approvals</b> (see below) lists the requisitions waiting for your decision; <b>Open</b> goes to the approval page.']],
   ['check', 'My approvals', [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',

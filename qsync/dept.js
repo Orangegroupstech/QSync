@@ -111,6 +111,11 @@ const QSYNC_HELP = [
     'On a draft, <b>Save this check</b>: the QC Manager sees the QSync result next to the Excel result when approving. Change the method afterwards and the check must be done again.',
     'Known Excel errors give a different number: Mixagrip CU (phenylephrine tablet 3 uses the area of tablet 2), Medik 55 and Cannon PM dissolution (divide by the 6th standard injection, not the average).',
     'On a worksheet, system suitability (%RSD) now shows as soon as the standard readings are in.']],
+  ['x', 'Void a request raised by mistake (QA)', [
+    'For a request that should never have been raised: twice for the same batch, the wrong product or batch. Only the <b>QA Supervisor</b> or the <b>QA Manager</b>, and only until QC receives the sample.',
+    'QC inbox > <b>With IPQA</b>: <b>Void</b> on the request\'s row (or open the request: <b>Void</b> at the top).',
+    'Say why (at least 10 characters) and enter your password. The person who raised it, IPQA and QA are told by e-mail.',
+    'It stays in the records as <b>Void (wrongly raised)</b>, with who and why in its history, and is no longer counted in Reports. It cannot be undone: if the batch still needs testing, raise a new request.']],
   ['users', 'Relievers (someone away)', [
     'Administration > <b>Relievers</b>: the QC Manager, QA Manager or an admin sets who signs for whom, and the dates.',
     'The reliever gets the role on the first day and loses it after the last.']],
@@ -135,13 +140,13 @@ const QSYNC_HELP = [
     '<b>Send for approval</b>: your manager, then the plant manager approve; you are told by e-mail. What you sent shows in the list below the form.']],
   ['clock', 'Submit overtime (QC / QA)', [
     'Department requests > <b>Submit overtime</b>.',
-    'Pick the day (within the last 31 days) and tick public holiday if it was one. Weekends are worked out by themselves.',
+    'Pick the day (within the last 31 days) and tick public holiday if it was one. Weekends are worked out by themselves. Worked through the night? Tick <b>Night shift</b>: pick the day it started, the date of the next morning shows, and an end such as 06:00 counts into the next morning.',
     'Set the start and end time, tick the people who worked. Different times or work? <b>Add another group</b>. A person can be in one group per day.',
     '<b>Submit overtime</b>: it goes into HR overtime records, and the HR Manager is told at midday. Anyone already recorded for that day is listed as not saved.']],
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Change a product\'s IPQA checks': '/lab/master', 'Approvals and History (Lab master data)': '/lab/master', 'Method templates and working standards': '/lab/master', 'Set up a method: HPLC or UV': '/lab/master', 'Suspension methods (Mintacid): titration, IR, density': '/lab/master', 'Try a method with Excel numbers': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime', 'What waits for you': true, 'IPQA: fill the in-process sheet': () => hasSignoff('ipqa'), 'QA Supervisor: review an IPQA sheet': () => hasSignoff('qa_supervisor'), 'Recall something you sent': () => canRaiseRequest() || !!S.lab || hasSignoff('ipqa') || hasSignoff('qa_supervisor') || hasSignoff('qa_manager') || hasSignoff('qc_manager'), 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Change a product\'s IPQA checks': '/lab/master', 'Approvals and History (Lab master data)': '/lab/master', 'Method templates and working standards': '/lab/master', 'Set up a method: HPLC or UV': '/lab/master', 'Suspension methods (Mintacid): titration, IR, density': '/lab/master', 'Try a method with Excel numbers': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Void a request raised by mistake (QA)': () => !!S.lab && typeof hasLabRole === 'function' && (hasLabRole('qa_supervisor') || hasLabRole('qa_manager')), 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime', 'What waits for you': true, 'IPQA: fill the in-process sheet': () => hasSignoff('ipqa'), 'QA Supervisor: review an IPQA sheet': () => hasSignoff('qa_supervisor'), 'Recall something you sent': () => canRaiseRequest() || !!S.lab || hasSignoff('ipqa') || hasSignoff('qa_supervisor') || hasSignoff('qa_manager') || hasSignoff('qc_manager'), 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const QSYNC_HELP_MINE = () => QSYNC_HELP.filter(h => { const g = QSYNC_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewQsyncHelp(){
   return { title: 'How to use', crumb: 'Help', html: pageHead('How to use', 'The short version of each task. Ask the QC or QA Supervisor if something is not clear.')

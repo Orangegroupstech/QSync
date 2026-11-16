@@ -102,6 +102,7 @@ const STATUS = {
   qc_released:       { label:'Released by QC',     badge:'b-ok' },
   qc_not_released:   { label:'Not released',       badge:'b-danger' },
   qa_acknowledged:   { label:'Closed (QA)',        badge:'b-slate' },
+  void:              { label:'Void (wrongly raised)', badge:'b-slate' },   // 079: voided by QA before QC received it; never counted
 };
 const PRODUCTS_META = {
   Mixagrip:       { prefix:'A', type:'OSD', defaultBatchSize:1200000 },
@@ -752,6 +753,8 @@ function viewSheet(id){
   if (r.status === 'pending_qa_review' && !(meName && r.ipqaSignedBy === meName)) next.push(`<a class="btn btn-primary" href="#/qa/${esc(r.requestNo)}">Review and approve</a>`);
   if (r.status === 'pending_qa_review' && meName && r.ipqaSignedBy === meName && typeof recallBtn === 'function') next.push(recallBtn('ipqa', r.id, r.requestNo, false, '/ipqa/' + r.requestNo));
   if (['pending_qc_notify', 'sent_to_qc'].includes(r.status) && meName && r.qaSupervisorSignedBy === meName && typeof recallBtn === 'function') next.push(recallBtn('qa_review', r.id, r.requestNo));
+  if (typeof canVoid === 'function' && canVoid(r.status)) next.push(voidBtn(r.id, r.requestNo, false, '/sheet/' + r.id));   // 079: QA, before QC receives it
+  const voided = r.status === 'void' ? `<div class="notice warn" style="margin-bottom:12px">${I.info} <span><b>Void (wrongly raised).</b> ${r.voidedBy ? 'Voided by ' + esc(r.voidedBy) + '. ' : ''}${r.voidReason ? 'Reason: ' + esc(r.voidReason) + '. ' : ''}Nothing more is done on this request, and it is not counted in Reports.</span></div>` : '';
   return {
     title:`QSync sheet - ${r.requestNo}`, crumb:'Records',
     html: `${pageHead(`QSync sheet - ${esc(r.requestNo)}`, '',
@@ -759,7 +762,7 @@ function viewSheet(id){
           ? `<a class="btn btn-ghost" href="#/lab/request/${r.id}">${I.inbox} QC lab view</a>` : ''}
        <button class="btn btn-primary" onclick="window.print()">${I.print} Print / save as PDF</button>
        <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`)}
-      ${qsyncSheetHtml(r)}`
+      ${voided}${qsyncSheetHtml(r)}`
   };
 }
 
