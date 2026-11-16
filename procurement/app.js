@@ -76,7 +76,7 @@ function meFromAuth(auth, scope){
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 // 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
-const PAGES = [["/my-approvals", "procurement"], ["/help", "procurement"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/stock", "procurement.spares"], ["/prd-stock", "procurement.prd_store"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "procurement"], ["/help", "procurement"], ["/items", "procurement.requests"], ["/new-request", "procurement"], ["/stock", "procurement.spares"], ["/prd-stock", "procurement.prd_store"], ["/settings", "procurement.settings"], ["/spares", "procurement"], ["/", "procurement.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -215,6 +215,7 @@ function navModel(){
       { path:'/stock', label:'Spares stock (Engineering)', icon:'box' },
       { path:'/prd-stock', label:'Production store stock', icon:'box' },
     ] },
+    { title:'Admin', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },
   ];
   groups.push({ title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] });
   return groups;
@@ -361,25 +362,29 @@ window.addEventListener('hashchange', render);
 })();
 
 /* ============================================================
-   Procurement log
+   Procurement log (redesigned 16 Nov 2026, migration 077), the same for every department:
+   Request date, Requestor, Material, Material type, Brand, Specification, Quantity, Needed by, Stage, Received on.
+   Filters: search, request date, department, material type, stage; Download Excel gives the rows shown.
+   What the requester sent is read only. Procurement fills in vendor / PO / note (no vendor delivery date any more: Received on replaces it), records what actually
+   arrived from the vendor (date, quantity, brand, specification: fewer than asked = Partly received), undoes a wrong entry
+   with a reason, and closes / reopens a line. The stores' receipts count too: Received on = the first day anything arrived.
    ============================================================ */
 let itemQuery = '';
 let itemDeptFilter = '';
-let itemStatusFilter = '';
+let itemTypeFilter = '';
 let itemDateFrom = '';
 let itemDateTo = '';
-
 let itemStageFilter = '';
 
 // 072 (15 Nov 2026): what Procurement fills in. Term of payment, RFP, ODL and the management remark are no longer asked
-// (their old values still show, read only). The department receival status is written by the stores.
+// (their old values still show, read only). The department receival status is written by the stores and by Procurement's receipts.
 const EDITABLE_FIELDS = [
-  { key: 'vendor', label: 'Vendor' },
-  { key: 'po_number', label: 'PO number' },
-  { key: 'vendor_delivery_date', label: 'Vendor delivery date (if known)', type: 'date' },
-  { key: 'procurement_note', label: 'Procurement note', type: 'area' },
+  { key: 'vendor', label: 'Vendor', max: 120 },
+  { key: 'po_number', label: 'PO number', max: 60 },
+  { key: 'procurement_note', label: 'Procurement note', type: 'area', max: 500 },
 ];
 const OLD_FIELDS = [
+  { key: 'vendor_delivery_date', label: 'Vendor delivery date (old)', type: 'date' },
   { key: 'term_of_payment', label: 'Term of payment (old)' },
   { key: 'rfp_number', label: 'RFP number (old)' },
   { key: 'management_review_odl', label: 'Management review ODL (old)' },
@@ -390,11 +395,24 @@ const STAGES = [
   ['approval', 'Waiting for approval'], ['waiting_order', 'Waiting for order'], ['ordered', 'Ordered'], ['partly', 'Partly received'],
   ['closed', 'Closed'], ['rejected', 'Rejected'], ['old', 'Old sheet line'],
 ];
+// 077: one list for every department (the same as the request form and the server)
+const MATERIAL_TYPES = (window.oklRequests && oklRequests.MATERIAL_TYPES) || ['Mechanical part', 'Electrical part', 'Pneumatic part', 'Accessories part',
+  'Tools & equipment', 'Chemical / reagent', 'Consumable', 'Lab glassware & supplies', 'Safety equipment', 'Packaging material', 'Fabrication', 'Building materials', 'Office & IT', 'Other'];
+const RECEIVABLE = ['waiting_order', 'ordered', 'partly'];
+const LOG_INFO = {
+  stage: 'Where the line is now, from Waiting for approval to Closed.\n'
+    + 'Received = the larger of what Procurement recorded and what the store received; fewer than asked = Partly received, all of it = Closed.\n'
+    + 'Overdue = the needed-by date has passed and not everything has arrived.',
+  need: 'The date the requester needs it by.\nIt must be at least 1 month after the day the request was sent.',
+  received: 'The first day anything of this line arrived.\nIt is whoever recorded it first: Procurement (from the vendor) or the Engineering or Production store.',
+  brand: 'What the requester asked for.\nWhen a different brand or specification arrived, Procurement records it and it shows underneath as "received: ...".',
+};
+const logInfo = t => window.oklInfo ? window.oklInfo(t) : '';
 const stageOf = it => it.stage || { key: '', label: it.request_status || '' };
 function stageBadge(it){
   const st = stageOf(it);
   const cls = { approval: 'b-slate', waiting_order: 'b-warn', ordered: 'b-info', partly: 'b-warn', closed: 'b-ok', rejected: 'b-slate', old: 'b-slate' }[st.key] || 'b-slate';
-  return `<span class="badge ${cls}" title="${esc(st.text || '')}">${esc(st.label || '--')}</span>${st.overdue ? ' <span class="badge b-danger" title="The vendor delivery date has passed">Overdue</span>' : ''}`;
+  return `<span class="badge ${cls}" title="${esc(st.text || '')}">${esc(st.label || '--')}</span>${st.overdue ? ' <span class="badge b-danger" title="The needed-by date has passed and not everything has arrived">Overdue</span>' : ''}`;
 }
 
 function formatQty(item){
@@ -404,10 +422,20 @@ function formatQty(item){
 }
 function formatDate(v){
   if (!v) return '--';
-  try { return new Date(v).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }); }
-  catch (e) { return String(v); }
+  // a plain date (YYYY-MM-DD) is a calendar day: never shift it by the time zone
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? new Date(v + 'T12:00:00Z') : new Date(v);
+  if (isNaN(d)) return String(v);
+  return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', timeZone: /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? 'UTC' : 'Africa/Lagos' });
 }
 function dateOnly(v){ return v ? String(v).slice(0, 10) : ''; }
+// the day in Lagos (UTC+1) as YYYY-MM-DD
+const lagosDay = v => { const d = v ? new Date(v) : new Date(); return isNaN(d) ? '' : new Date(d.getTime() + 3600000).toISOString().slice(0, 10); };
+// old lines have one combined "item detail"; new ones a brand and a specification
+const specOf = it => it.specification || (!it.brand ? it.item_detail || '' : '');
+// the type in the one list (the server maps old lines, 077; any old spelling still left reads the same way here)
+const typeOf = it => { const t = String(it.material_type || '').trim().toLowerCase();
+  return MATERIAL_TYPES.find(x => x.toLowerCase() === t) || { chemical: 'Chemical / reagent', tools: 'Tools & equipment' }[t] || 'Other'; };
+const differs = (a, b) => a && String(a).trim().toLowerCase() !== String(b || '').trim().toLowerCase();
 function statusBadgeClass(status){
   const s = String(status||'').toLowerCase();
   if (s.includes('approved')) return 'b-brand';
@@ -415,28 +443,26 @@ function statusBadgeClass(status){
 }
 function matchesItemQuery(it, q){
   if (!q) return true;
-  const haystack = [it.item_id, it.requestor, it.material_name, it.item_detail, it.material_type, it.department, it.purpose, it.vendor, it.po_number].map(v => String(v||'').toLowerCase()).join(' ');
+  const haystack = [it.item_id, it.requestor, it.material_name, it.item_detail, it.brand, it.specification, it.received_brand, it.received_specification,
+    it.material_type, it.department, it.purpose, it.vendor, it.po_number].map(v => String(v||'').toLowerCase()).join(' ');
   return haystack.includes(q);
 }
 function inDateRange(dateStr, from, to){
-  if (!dateStr) return !from && !to;
-  const d = new Date(dateStr);
-  if (from && d < new Date(from)) return false;
-  if (to){
-    const toEnd = new Date(to);
-    toEnd.setHours(23, 59, 59, 999);
-    if (d > toEnd) return false;
-  }
+  if (!from && !to) return true;
+  const d = lagosDay(dateStr);
+  if (!d) return false;
+  if (from && d < from) return false;
+  if (to && d > to) return false;
   return true;
 }
-// the server answers a save with the whole line (stage and history too)
+// the server answers a save with the whole line (stage, receipts and history too)
 function replaceItem(item){
   const i = S.items.findIndex(x => String(x.id) === String(item.id));
   if (i >= 0) S.items[i] = item;
 }
 const PATCH_URL = id => '/webhook/e3705766-d634-4852-ba77-62ccfdfb0786/procurement/api/items/' + id;   // n8n serves a ':id' path under its webhook id
 
-// Detail + edit in one wide modal: the request, where it is (stage), what Procurement fills in, and close / reopen.
+// Detail + edit in one wide modal: the request (read only), where it is (stage), what arrived, what Procurement fills in, and close / reopen.
 function openItemDetail(id){
   // Postgres bigserial ids come back as strings: compare as strings
   const it = S.items.find(x => String(x.id) === String(id));
@@ -450,53 +476,72 @@ function openItemDetail(id){
       <span class="muted">· ${esc(l.by || '')} · ${esc(formatDate(l.at))}</span></div>`).join('');
   const canClose = canEdit && !['closed', 'rejected'].includes(st.key);
   const canReopen = canEdit && st.key === 'closed' && st.reopen;
+  const asked = lagosDay(it.request_date), today = lagosDay();
+  const procGot = Number(it.proc_received || 0), storeGot = Number(it.store_received || 0);
+  const left = it.quantity == null ? null : Math.max(Number(it.quantity) - procGot, 0);
+  const canReceive = canEdit && RECEIVABLE.includes(st.key) && (left == null || left > 0);
+  const receipts = (it.receipts || []).map(r => `<tr class="${r.undone_at ? 'muted' : ''}">
+      <td data-label="Received on">${esc(formatDate(r.received_on))}</td><td data-label="Quantity" class="tnum">${esc(r.qty)} ${esc(it.unit || '')}</td>
+      <td data-label="Brand / specification" class="small">${esc([r.brand, r.specification].filter(Boolean).join(' · ') || 'as asked')}${r.note ? `<div class="tiny muted">${esc(r.note)}</div>` : ''}</td>
+      <td data-label="By" class="small">${esc(r.by || '')}<div class="tiny muted">${esc(formatDate(r.at))}</div></td>
+      <td data-label="">${r.undone_at ? `<span class="tiny">Undone by ${esc(r.undone_by || '')}: ${esc(r.undo_reason || '')}</span>`
+        : canEdit && st.key !== 'closed' || canEdit && st.key === 'closed' && !st.manual ? `<button class="btn btn-ghost btn-sm" type="button" data-undo="${esc(r.id)}">Undo</button>` : ''}</td></tr>`).join('');
 
   const body = `
     <div class="card" style="margin-bottom:14px"><div class="card-b">
       <div class="row between" style="flex-wrap:wrap;gap:8px"><div>${stageBadge(it)} <span class="small" style="margin-left:6px">${esc(st.text || '')}</span></div>
-        <div class="row" style="gap:8px">${canClose ? `<button class="btn btn-ghost btn-sm" id="closeLineBtn">Close this line</button>` : ''}${canReopen ? `<button class="btn btn-ghost btn-sm" id="reopenLineBtn">Open it again</button>` : ''}</div></div>
-      ${st.key === 'closed' && !st.reopen ? '<div class="tiny muted" style="margin-top:6px">Closed by the store: everything asked for was received.</div>' : ''}
+        <div class="row" style="gap:8px">${canReceive ? `<button class="btn btn-primary btn-sm" id="receiveBtn">${I.check} Record what arrived</button>` : ''}${canClose ? `<button class="btn btn-ghost btn-sm" id="closeLineBtn">Close this line</button>` : ''}${canReopen ? `<button class="btn btn-ghost btn-sm" id="reopenLineBtn">Open it again</button>` : ''}</div></div>
+      ${st.key === 'closed' && !st.reopen ? '<div class="tiny muted" style="margin-top:6px">Closed: everything asked for was received. Undo a receipt (or the store reverses its receipt) to open it again.</div>' : ''}
       ${log}
       <div id="stageForm" style="display:none;margin-top:12px"></div>
     </div></div>
+    <div class="small muted" style="margin-bottom:8px">What the requester sent (it cannot be changed)</div>
     <div class="kv-grid">
       ${readonlyRow('Item ID', it.item_id)}
       ${readonlyRow('Department', it.department)}
       ${readonlyRow('Requestor', it.requestor)}
       ${readonlyRow('Requestor email', it.requestor_email)}
       ${readonlyRow('Material', it.material_name)}
-      ${readonlyRow('Material type', it.material_type)}
-      ${readonlyRow('Item detail', it.item_detail)}
-      ${readonlyRow('Purchase category', it.purchase_category)}
+      ${readonlyRow('Material type', typeOf(it))}
+      ${readonlyRow('Brand', it.brand)}
+      ${readonlyRow('Specification', specOf(it))}
       ${readonlyRow('Purpose', it.purpose)}
       ${readonlyRow('Quantity', formatQty(it))}
       ${readonlyRow('Request date', formatDate(it.request_date))}
-      ${readonlyRow('Requirement date', formatDate(it.requirement_date))}
-      ${readonlyRow('Management review (OKL)', it.management_review_okl)}
-      ${readonlyRow('Remarks', it.remarks)}
+      ${readonlyRow('Needed by', formatDate(it.requirement_date))}
+      ${it.purchase_category && it.purchase_category !== it.material_type ? readonlyRow('Category (old)', it.purchase_category) : ''}
+      ${it.management_review_okl ? readonlyRow('Management review (OKL)', it.management_review_okl) : ''}
+      ${it.remarks ? readonlyRow('Remarks', it.remarks) : ''}
       ${readonlyRow('Request status', it.request_status)}
-      ${readonlyRow('Received (from the stores)', it.department_receival_status)}
     </div>
+    <div class="divider"></div>
+    <div class="row between" style="margin-bottom:8px;flex-wrap:wrap;gap:6px"><div class="small muted">What arrived ${logInfo(LOG_INFO.received)}</div>
+      <div class="small">Received on: <b>${esc(it.received_on ? formatDate(it.received_on) : 'not yet')}</b> · ${esc(it.department_receival_status || 'Not received yet')}</div></div>
+    ${storeGot ? `<div class="tiny muted" style="margin-bottom:6px">The store received ${esc(storeGot)} ${esc(it.unit || '')} against this line.</div>` : ''}
+    ${it.received_brand || it.received_specification ? `<div class="kv-grid" style="margin-bottom:8px">${readonlyRow('Brand received', it.received_brand || it.brand)}${readonlyRow('Specification received', it.received_specification || specOf(it))}</div>` : ''}
+    ${receipts ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Received on</th><th>Quantity</th><th>Brand / specification</th><th>Recorded by</th><th></th></tr></thead><tbody>${receipts}</tbody></table></div>`
+      : '<div class="small muted">Procurement has recorded nothing from the vendor yet.</div>'}
     <div class="divider"></div>
     <div class="row between" id="procDetailsHead" style="margin-bottom:12px">
       <div class="small muted">Filled in by Procurement</div>
       ${canEdit ? `<button class="btn btn-primary btn-sm" id="startEditBtn">${I.edit} Edit</button>` : ''}
     </div>
-    ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access: filling in the vendor and PO needs an editor account.</div></div>` : ''}
+    ${!canEdit ? `<div class="notice info">${I.info}<div>You have viewer access: filling in the vendor and PO and recording deliveries needs an editor account.</div></div>` : ''}
     <div class="kv-grid" id="procDetailsView">
       ${EDITABLE_FIELDS.map(f => readonlyRow(f.label, f.type === 'date' ? (it[f.key] ? formatDate(it[f.key]) : '') : it[f.key])).join('')}
-      ${olds.map(f => readonlyRow(f.label, it[f.key])).join('')}
+      ${olds.map(f => readonlyRow(f.label, f.type === 'date' ? formatDate(it[f.key]) : it[f.key])).join('')}
     </div>
     <form id="editItemForm" novalidate style="display:none">
       <datalist id="vendorList">${vendors.map(v => `<option value="${esc(v)}">`).join('')}</datalist>
       <div class="grid g2">
         ${EDITABLE_FIELDS.map(f => `
           <div class="field" ${f.type === 'area' ? 'style="grid-column:1/-1"' : ''}><label for="ei_${f.key}">${esc(f.label)}</label>
-            ${f.type === 'area' ? `<textarea class="inp" id="ei_${f.key}" rows="2" maxlength="500">${esc(it[f.key]||'')}</textarea>`
-              : `<input class="inp" id="ei_${f.key}" ${f.type === 'date' ? 'type="date"' : 'maxlength="' + (f.key === 'vendor' ? 120 : 60) + '"'} ${f.key === 'vendor' ? 'list="vendorList" autocomplete="off"' : ''}
+            ${f.type === 'area' ? `<textarea class="inp" id="ei_${f.key}" rows="2" maxlength="${f.max}">${esc(it[f.key]||'')}</textarea>`
+              : `<input class="inp" id="ei_${f.key}" ${f.type === 'date' ? `type="date" min="${esc(asked)}"` : 'maxlength="' + f.max + '"'} ${f.key === 'vendor' ? 'list="vendorList" autocomplete="off"' : ''}
                  value="${esc(f.type === 'date' ? dateOnly(it[f.key]) : (it[f.key]||''))}">`}</div>`).join('')}
       </div>
-      <div class="tiny muted">With a PO number the line shows as Ordered. The delivery date can stay empty; when it is given and has passed, the line shows Overdue.</div>
+      <div class="tiny muted">With a PO number the line shows as Ordered. When it arrives, use <b>Record what arrived</b> (the received date).</div>
+      <div class="err-msg hide" id="editErr" style="margin-top:8px"></div>
       <div class="row end" style="margin-top:6px">
         <button class="btn btn-ghost" type="button" id="cancelEditBtn">Cancel</button>
         <button class="btn btn-primary" type="submit">${I.check} Save changes</button>
@@ -520,8 +565,50 @@ function openItemDetail(id){
           render(); toast(okTitle, it.item_id || '', 'ok'); openItemDetail(id);
         } catch (err) { toast('Could not save', err.message, 'err', 7000); if (btn) btn.disabled = false; }
       };
-      // close (a reason from the list) or open again (say why)
       const stageForm = $('#stageForm', wrap);
+      const showErr = (box, msg) => { const e = $('[data-err]', box); if (e) { e.textContent = msg; e.classList.toggle('hide', !msg); } };
+      // what arrived from the vendor: date, quantity, and the brand / specification that actually came
+      const receiveBtn = $('#receiveBtn', wrap);
+      if (receiveBtn) receiveBtn.onclick = () => {
+        stageForm.style.display = 'block';
+        stageForm.innerHTML = `<div class="grid g2">
+            <div class="field"><label for="rcOn">Received on</label><input class="inp" type="date" id="rcOn" min="${esc(asked)}" max="${esc(today)}" value="${esc(today)}"></div>
+            <div class="field"><label for="rcQty">Quantity received${it.unit ? ' (' + esc(it.unit) + ')' : ''}</label><input class="inp" type="number" id="rcQty" min="0.001" step="any" ${left != null ? `max="${left}" value="${left}"` : ''}>
+              ${left != null ? `<div class="tiny muted">${esc(left)} still to come of ${esc(formatQty(it))}. Fewer = Partly received.</div>` : ''}</div>
+            <div class="field"><label for="rcBrand">Brand received</label><input class="inp" id="rcBrand" maxlength="120" value="${esc(it.received_brand || it.brand || '')}"></div>
+            <div class="field"><label for="rcSpec">Specification received</label><input class="inp" id="rcSpec" maxlength="300" value="${esc(it.received_specification || it.specification || '')}"></div>
+            <div class="field" style="grid-column:1/-1"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300" placeholder="e.g. delivered to the main gate, invoice 1234"></div></div>
+          <div class="tiny muted">Change the brand or specification only if what came differs from the request; the request itself keeps what was asked.</div>
+          <div class="err-msg hide" data-err style="margin-top:6px"></div>
+          <div class="row end"><button class="btn btn-ghost btn-sm" type="button" id="rcCancel">Cancel</button><button class="btn btn-primary btn-sm" type="button" id="rcGo">Save what arrived</button></div>`;
+        $('#rcCancel', stageForm).onclick = () => { stageForm.style.display = 'none'; };
+        $('#rcGo', stageForm).onclick = (e) => {
+          const on = $('#rcOn', stageForm).value, qs = String($('#rcQty', stageForm).value).trim(), q = Number(qs);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(on)) return showErr(stageForm, 'Give the date it was received.');
+          if (on > today) return showErr(stageForm, 'The received date cannot be in the future.');
+          if (on < asked) return showErr(stageForm, 'The received date is before the request date (' + formatDate(asked) + ').');
+          if (!/^\d+(\.\d{1,3})?$/.test(qs) || !(q > 0)) return showErr(stageForm, 'Give the quantity received (a number more than 0, up to 3 decimals).');
+          if (left != null && q > left + 1e-9) return showErr(stageForm, 'That is more than is still to come (' + left + ').');
+          const brand = $('#rcBrand', stageForm).value.trim(), spec = $('#rcSpec', stageForm).value.trim();
+          send({ action: 'receive', received_on: on, qty: qs,
+                 brand: differs(brand, it.brand) ? brand : '', specification: differs(spec, it.specification || '') ? spec : '',
+                 note: $('#rcNote', stageForm).value.trim() }, 'Saved what arrived', e.target);
+        };
+      };
+      // undo a receipt entered by mistake (with a reason)
+      $$('[data-undo]', wrap).forEach(b => b.onclick = () => {
+        stageForm.style.display = 'block';
+        stageForm.innerHTML = `<div class="field"><label for="unReason">Why is this receipt undone?</label><input class="inp" id="unReason" maxlength="300" placeholder="e.g. wrong quantity typed"></div>
+          <div class="err-msg hide" data-err></div>
+          <div class="row end"><button class="btn btn-ghost btn-sm" type="button" id="unCancel">Cancel</button><button class="btn btn-primary btn-sm" type="button" id="unGo">Undo the receipt</button></div>`;
+        stageForm.scrollIntoView({ block: 'nearest' });
+        $('#unCancel', stageForm).onclick = () => { stageForm.style.display = 'none'; };
+        $('#unGo', stageForm).onclick = (e) => {
+          const reason = $('#unReason', stageForm).value.trim(); if (reason.length < 3) return showErr(stageForm, 'Say why the receipt is undone.');
+          send({ action: 'undo_receipt', receipt_id: String(b.dataset.undo), reason }, 'Receipt undone', e.target);
+        };
+      });
+      // close (a reason from the list) or open again (say why)
       const closeBtn = $('#closeLineBtn', wrap), reopenBtn = $('#reopenLineBtn', wrap);
       if (closeBtn) closeBtn.onclick = () => {
         stageForm.style.display = 'block';
@@ -549,11 +636,15 @@ function openItemDetail(id){
         startEditBtn.onclick = () => { viewGrid.hidden = true; startEditBtn.hidden = true; form.style.display = 'block'; };
       }
       if (form){
+        const editErr = msg => { const e = $('#editErr', form); e.textContent = msg; e.classList.toggle('hide', !msg); };
         $('#cancelEditBtn', form).onclick = () => { form.style.display = 'none'; viewGrid.hidden = false; if (startEditBtn) startEditBtn.hidden = false; };
         form.onsubmit = (ev) => {
           ev.preventDefault();
           const payload = {};
           EDITABLE_FIELDS.forEach(f => { payload[f.key] = $('#ei_' + f.key, form).value.trim(); });
+          if (payload.vendor && !/[A-Za-z].*[A-Za-z]/.test(payload.vendor)) return editErr('Give the vendor\'s name (with letters).');
+          if (payload.po_number && (!/[A-Za-z0-9]/.test(payload.po_number) || /[<>"]/.test(payload.po_number))) return editErr('Give the PO number as on the PO.');
+          editErr('');
           send(payload, 'Changes saved', form.querySelector('button[type=submit]'));
         };
       }
@@ -585,52 +676,102 @@ function closeShown(ids){
 }
 window.closeShownLines = () => { const ids = (window.__shownIds || []); if (ids.length) closeShown(ids); };
 
-function viewItems(){
+// the lines the filters show now (the table and the Excel file use the same list)
+function filteredItems(){
   const q = itemQuery.trim().toLowerCase();
   // the approval e-mail's button opens #/items?batch=<request>: only that request's lines (072)
   const onlyBatch = new URLSearchParams(currentPath().split('?')[1] || '').get('batch') || '';
   // the server returns the lines newest first: filtering keeps that order
-  const rows = S.items.filter(it => (!onlyBatch || it.batch_id === onlyBatch) &&
+  return { onlyBatch, rows: S.items.filter(it => (!onlyBatch || it.batch_id === onlyBatch) &&
     (!itemDeptFilter || it.department === itemDeptFilter) &&
-    (!itemStatusFilter || it.request_status === itemStatusFilter) &&
+    (!itemTypeFilter || typeOf(it) === itemTypeFilter) &&
     (!itemStageFilter || stageOf(it).key === itemStageFilter || (itemStageFilter === 'overdue' && stageOf(it).overdue)) &&
     inDateRange(it.request_date, itemDateFrom, itemDateTo) &&
-    matchesItemQuery(it, q));
+    matchesItemQuery(it, q)) };
+}
+
+/* ---- Download Excel: exactly the rows the filters show ---- */
+const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+function loadSheetJS(){
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script'); s.src = SHEETJS_URL;
+    s.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error('The spreadsheet maker did not load.'));
+    s.onerror = () => reject(new Error('Could not load the spreadsheet maker. Check your connection and try again.'));
+    document.head.appendChild(s);
+  });
+}
+async function downloadLogExcel(btn){
+  const { rows, onlyBatch } = filteredItems();
+  if (!rows.length) { toast('Nothing to download', 'No line matches the filters.', 'err'); return; }
+  if (btn) btn.disabled = true;
+  try {
+    const XLSX = await loadSheetJS();
+    const d = v => v ? lagosDay(v) : '';
+    const head = ['Request date', 'Item ID', 'Department', 'Requestor', 'Material', 'Material type', 'Brand', 'Specification', 'Quantity', 'Unit',
+      'Needed by', 'Stage', 'Received on', 'Received', 'Brand received', 'Specification received', 'Vendor', 'PO number', 'Purpose'];
+    const data = rows.map(it => [d(it.request_date), it.item_id || '', it.department || '', it.requestor || '', it.material_name || '', typeOf(it),
+      it.brand || '', specOf(it), it.quantity == null ? '' : Number(it.quantity), it.unit || '', dateOnly(it.requirement_date),
+      (stageOf(it).label || '') + (stageOf(it).overdue ? ' (overdue)' : ''), dateOnly(it.received_on), stageOf(it).received != null ? Number(stageOf(it).received) : '',
+      it.received_brand || '', it.received_specification || '', it.vendor || '', it.po_number || '', it.purpose || '']);
+    const ws = XLSX.utils.aoa_to_sheet([head].concat(data));
+    ws['!cols'] = [12, 22, 18, 20, 30, 18, 16, 36, 9, 9, 12, 18, 12, 9, 16, 30, 22, 14, 36].map(w => ({ wch: w }));
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: data.length, c: head.length - 1 } }) };
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Procurement log');
+    const stageName = itemStageFilter === 'overdue' ? 'Overdue' : (STAGES.find(s => s[0] === itemStageFilter) || [0, ''])[1];
+    const tag = [onlyBatch, itemDeptFilter, itemTypeFilter, stageName, itemDateFrom || itemDateTo ? (itemDateFrom || 'start') + '_to_' + (itemDateTo || lagosDay()) : '',
+      itemQuery.trim() ? 'search-' + itemQuery.trim() : ''].filter(Boolean).join('_');
+    const name = ('procurement_log' + (tag ? '_' + tag : '') + '_' + lagosDay()).replace(/[^\w.&-]+/g, '_').replace(/_+/g, '_').slice(0, 150) + '.xlsx';
+    XLSX.writeFile(wb, name);
+    toast('Excel downloaded', rows.length + ' line' + (rows.length === 1 ? '' : 's') + ' · ' + name, 'ok', 6000);
+  } catch (e) { toast('Could not make the file', e.message, 'err', 7000); }
+  finally { if (btn) btn.disabled = false; }
+}
+window.downloadLogExcel = downloadLogExcel;
+
+function viewItems(){
+  const { rows, onlyBatch } = filteredItems();
   const departments = [...new Set(S.items.map(it => it.department).filter(Boolean))].sort();
-  const statuses = [...new Set(S.items.map(it => it.request_status).filter(Boolean))].sort();
   const count = k => S.items.filter(it => stageOf(it).key === k).length;
   const overdue = S.items.filter(it => stageOf(it).overdue).length;
+  const typeCount = t => S.items.filter(it => typeOf(it) === t).length;
   const closable = rows.filter(it => !['closed', 'rejected'].includes(stageOf(it).key));
   window.__shownIds = closable.map(it => it.id);
   const bulk = canEditHere() && itemStageFilter === 'old' && closable.length
     ? `<div class="notice info" style="margin-bottom:14px">${I.info}<div>${closable.length} old sheet line${closable.length === 1 ? '' : 's'} shown (from before the console). If they are finished, close them in one go.
         <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="closeShownLines()">Close the ${closable.length} shown</button></div></div>` : '';
+  const filtered = itemQuery || itemDeptFilter || itemTypeFilter || itemStageFilter || itemDateFrom || itemDateTo;
+  // brand / specification as asked, and what came when it differs
+  const got = (asked, recv) => differs(recv, asked) ? `<div class="tiny" style="color:var(--warn-700,#9A3412)" title="What arrived">received: ${esc(recv)}</div>` : '';
 
   return {
     title:'Procurement Log', crumb:'Modules',
     html: `
-    ${pageHead('Procurement Log', 'Every procured item across all departments, newest first. Each line shows where it is: waiting for order, ordered, received or closed.')}
+    ${pageHead('Procurement Log', 'Every procured item across all departments, newest first. Each line shows where it is: waiting for order, ordered, received or closed.',
+      `<button class="btn btn-primary" id="logXlsx" onclick="downloadLogExcel(this)">${I.arrowDown} Download Excel</button>`)}
     <div class="row filter-bar" style="margin-bottom:14px;flex-wrap:wrap;row-gap:10px">
       <div class="search filter-search">
         <span class="ic">${I.search}</span>
-        <input class="inp" id="itemSearch" placeholder="Search item ID, requestor, material, vendor, PO..." value="${esc(itemQuery)}">
+        <input class="inp" id="itemSearch" placeholder="Search material, brand, specification, requestor, item ID, vendor, PO..." value="${esc(itemQuery)}">
       </div>
-      <select class="inp filter-sel-status" id="itemStageFilter">
+      <input type="date" class="inp" id="itemDateFrom" value="${esc(itemDateFrom)}" title="Request date from" aria-label="Request date from" style="max-width:150px">
+      <input type="date" class="inp" id="itemDateTo" value="${esc(itemDateTo)}" title="Request date to" aria-label="Request date to" style="max-width:150px">
+      <select class="inp filter-sel-status" id="itemDeptFilter" aria-label="Department">
+        <option value="">All departments</option>
+        ${departments.map(d => `<option value="${esc(d)}" ${itemDeptFilter===d?'selected':''}>${esc(d)}</option>`).join('')}
+      </select>
+      <select class="inp filter-sel-status" id="itemTypeFilter" aria-label="Material type">
+        <option value="">All material types</option>
+        ${MATERIAL_TYPES.filter(t => typeCount(t) || itemTypeFilter === t).map(t => `<option value="${esc(t)}" ${itemTypeFilter===t?'selected':''}>${esc(t)} (${typeCount(t)})</option>`).join('')}
+      </select>
+      <select class="inp filter-sel-status" id="itemStageFilter" aria-label="Stage">
         <option value="">All stages</option>
         ${STAGES.map(([k, l]) => `<option value="${k}" ${itemStageFilter===k?'selected':''}>${esc(l)} (${count(k)})</option>`).join('')}
         <option value="overdue" ${itemStageFilter==='overdue'?'selected':''}>Overdue (${overdue})</option>
       </select>
-      <select class="inp filter-sel-status" id="itemDeptFilter">
-        <option value="">All departments</option>
-        ${departments.map(d => `<option value="${esc(d)}" ${itemDeptFilter===d?'selected':''}>${esc(d)}</option>`).join('')}
-      </select>
-      <select class="inp filter-sel-status" id="itemStatusFilter">
-        <option value="">All approval statuses</option>
-        ${statuses.map(s => `<option value="${esc(s)}" ${itemStatusFilter===s?'selected':''}>${esc(s)}</option>`).join('')}
-      </select>
-      <input type="date" class="inp" id="itemDateFrom" value="${esc(itemDateFrom)}" title="From date" style="max-width:150px">
-      <input type="date" class="inp" id="itemDateTo" value="${esc(itemDateTo)}" title="To date" style="max-width:150px">
+      ${filtered ? `<button class="btn btn-ghost btn-sm" id="itemClear" type="button">Clear filters</button>` : ''}
       <div class="spacer"></div>
+      <span class="small muted">${rows.length} of ${S.items.length} line${S.items.length === 1 ? '' : 's'}</span>
     </div>
     ${bulk}
     ${onlyBatch ? `<div class="notice info" style="margin-bottom:14px">${I.info}<div>Showing request <b>${esc(onlyBatch)}</b> only: open each line, <b>Edit</b>, put the PO number and vendor.
@@ -638,20 +779,22 @@ function viewItems(){
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr>
-          <th>Request Date</th><th>Item ID</th><th>Requestor</th><th>Material</th><th>Item Detail</th>
-          <th>Qty &amp; Unit</th><th>Stage ${stockInfo('Where the line is after it was requested: Waiting for approval > Waiting for order (approved) > Ordered (a PO number is in) > Partly received / Received (from the store receipts) > Closed.\nA line closes by itself when fully received, or by hand with a reason; it can be reopened with a reason.\nOverdue = a vendor delivery date was given and has passed. Old sheet line = copied from the old Google Sheet.')}</th><th>Vendor / PO</th>
+          <th>Request date</th><th>Requestor</th><th>Material</th><th>Material type</th><th>Brand ${logInfo(LOG_INFO.brand)}</th><th>Specification</th>
+          <th>Quantity</th><th>Needed by ${logInfo(LOG_INFO.need)}</th><th>Stage ${logInfo(LOG_INFO.stage)}</th><th>Received on ${logInfo(LOG_INFO.received)}</th>
         </tr></thead>
         <tbody>${rows.length ? rows.map(it => `
           <tr class="clickable" onclick="openItemDetail(${it.id})">
-            <td data-label="Request Date">${esc(formatDate(it.request_date))}</td>
-            <td class="mono" data-label="Item ID">${esc(it.item_id||'--')}</td>
+            <td data-label="Request date">${esc(formatDate(it.request_date))}</td>
             <td data-label="Requestor"><div class="person">${avatarEl(it.requestor)}<div class="person-txt"><span class="strong" title="${esc(it.requestor)}">${esc(it.requestor)}</span><span class="tiny muted">${esc(it.department||'')}</span></div></div></td>
-            <td data-label="Material">${esc(it.material_name||'--')}</td>
-            <td data-label="Item Detail" style="max-width:280px;white-space:normal" title="${esc(it.item_detail||'')}">${esc(it.item_detail||'--')}</td>
-            <td data-label="Qty & Unit">${esc(formatQty(it))}</td>
+            <td data-label="Material" style="max-width:240px;white-space:normal">${esc(it.material_name||'--')}<div class="tiny muted mono">${esc(it.item_id||'')}</div></td>
+            <td data-label="Material type" class="small">${esc(typeOf(it))}</td>
+            <td data-label="Brand" class="small">${esc(it.brand||'--')}${got(it.brand, it.received_brand)}</td>
+            <td data-label="Specification" class="small" style="max-width:260px;white-space:normal" title="${esc(specOf(it))}">${esc(specOf(it)||'--')}${got(specOf(it), it.received_specification)}</td>
+            <td data-label="Quantity">${esc(formatQty(it))}</td>
+            <td data-label="Needed by">${esc(formatDate(it.requirement_date))}</td>
             <td data-label="Stage">${stageBadge(it)}</td>
-            <td data-label="Vendor / PO" class="small">${esc(it.vendor||'')}${it.po_number ? `<div class="tiny muted mono">PO ${esc(it.po_number)}</div>` : ''}${it.vendor_delivery_date ? `<div class="tiny muted">due ${esc(formatDate(it.vendor_delivery_date))}</div>` : ''}</td>
-          </tr>`).join('') : `<tr><td colspan="8">${emptyState('box','No items match', 'Try a different search or filter.')}</td></tr>`}
+            <td data-label="Received on">${it.received_on ? esc(formatDate(it.received_on)) : '<span class="tiny muted">--</span>'}</td>
+          </tr>`).join('') : `<tr><td colspan="10">${emptyState('box','No items match', 'Try a different search or filter.')}</td></tr>`}
         </tbody>
       </table></div>
     </div>`,
@@ -661,14 +804,72 @@ function viewItems(){
       $('#itemSearch').setSelectionRange(itemQuery.length, itemQuery.length);
       $('#itemStageFilter').onchange = (e) => { itemStageFilter = e.target.value; render(); };
       $('#itemDeptFilter').onchange = (e) => { itemDeptFilter = e.target.value; render(); };
-      $('#itemStatusFilter').onchange = (e) => { itemStatusFilter = e.target.value; render(); };
-      $('#itemDateFrom').onchange = (e) => { itemDateFrom = e.target.value; render(); };
-      $('#itemDateTo').onchange = (e) => { itemDateTo = e.target.value; render(); };
+      $('#itemTypeFilter').onchange = (e) => { itemTypeFilter = e.target.value; render(); };
+      $('#itemDateFrom').onchange = (e) => { itemDateFrom = e.target.value; if (itemDateTo && itemDateFrom > itemDateTo) itemDateTo = itemDateFrom; render(); };
+      $('#itemDateTo').onchange = (e) => { itemDateTo = e.target.value; if (itemDateFrom && itemDateTo && itemDateTo < itemDateFrom) itemDateFrom = itemDateTo; render(); };
+      const clr = $('#itemClear'); if (clr) clr.onclick = () => { itemQuery = itemDeptFilter = itemTypeFilter = itemStageFilter = itemDateFrom = itemDateTo = ''; render(); };
     },
   };
 }
 route('/', () => viewItems());
 route('/items', () => viewItems());
+
+/* ============================================================
+   Settings (077): the request rules every department's request form follows. Page procurement.settings: view to see, edit to
+   change. GET procurement/api/settings, POST procurement/api/settings/save {week_limit, lead_months}. The server checks the
+   numbers again and keeps every change (who, when, from / to) in the audit.
+   ============================================================ */
+const PS = { data: null };
+async function psLoad(){
+  try { PS.data = await api('/webhook/procurement/api/settings'); } catch (e) { PS.data = { error: e.message }; }
+  render();
+}
+function viewSettings(){
+  if (!PS.data) { PS.data = 'loading'; psLoad(); }
+  const d = PS.data;
+  const head = pageHead('Settings', 'The rules every department\'s procurement request follows. A change applies to the next request at once.');
+  if (d === 'loading') return { title: 'Settings', crumb: 'Admin', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
+  if (d.error) return { title: 'Settings', crumb: 'Admin', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load', esc(d.error))}</div></div>` };
+  const can = !!d.can_edit;
+  const hist = (d.history || []).map(h => `<tr><td data-label="When" class="small">${esc(formatDate(h.at))} <span class="tiny muted">${esc(new Date(h.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' }))}</span></td>
+      <td data-label="Who" class="small">${esc(h.by || '')}</td><td data-label="Change" class="small">${esc(h.detail || '')}</td></tr>`).join('');
+  return { title: 'Settings', crumb: 'Admin', html: head + `
+    <div class="card" style="max-width:640px"><div class="card-b">
+      <form id="psForm" novalidate>
+        <div class="grid g2">
+          <div class="field"><label for="psLimit">Items per department per week ${logInfo('How many items one department may ask for from Monday to Sunday, in one request or several.\nRejected items do not count.')}</label>
+            <input class="inp" type="number" id="psLimit" min="1" max="100" step="1" value="${esc(d.week_limit)}" ${can ? '' : 'disabled'}></div>
+          <div class="field"><label for="psLead">"Needed by" at least ... months ahead ${logInfo('How far ahead a request must be needed.\nThe request form starts on that day and the server refuses anything sooner.')}</label>
+            <input class="inp" type="number" id="psLead" min="0" max="6" step="1" value="${esc(d.lead_months)}" ${can ? '' : 'disabled'}>
+            <div class="tiny muted">Today that is ${esc(formatDate(d.min_need))} or later.</div></div>
+        </div>
+        <div class="err-msg hide" id="psErr" style="margin-top:6px"></div>
+        ${can ? `<div class="row end" style="margin-top:8px"><button class="btn btn-primary" type="submit">${I.check} Save</button></div>`
+              : `<div class="notice info" style="margin-top:8px">${I.info}<div>View only: changing these needs edit on Procurement > Settings.</div></div>`}
+      </form>
+    </div></div>
+    <div class="card" style="max-width:640px;margin-top:14px"><div class="card-h"><div><h3>Changes</h3></div></div>
+      ${hist ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>Change</th></tr></thead><tbody>${hist}</tbody></table></div>`
+             : '<div class="card-b small muted">No changes yet.</div>'}</div>`,
+    bind(){
+      const f = document.getElementById('psForm'); if (!f || !can) return;
+      const err = m => { const e = document.getElementById('psErr'); e.textContent = m || ''; e.classList.toggle('hide', !m); };
+      f.onsubmit = async ev => {
+        ev.preventDefault();
+        const lim = String(document.getElementById('psLimit').value).trim(), lead = String(document.getElementById('psLead').value).trim();
+        if (!/^\d{1,3}$/.test(lim) || +lim < 1 || +lim > 100) return err('Items per department per week: a whole number from 1 to 100.');
+        if (!/^\d{1,2}$/.test(lead) || +lead > 6) return err('"Needed by" months ahead: a whole number from 0 to 6.');
+        err('');
+        const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
+        try {
+          const r = await api('/webhook/procurement/api/settings/save', { method: 'POST', body: { week_limit: lim, lead_months: lead } });
+          PS.data = r; render();
+          toast(r.changed ? 'Settings saved' : 'Nothing changed', r.changed ? 'The next request follows them.' : '', 'ok');
+        } catch (e) { err(e.message); btn.disabled = false; }
+      };
+    } };
+}
+route('/settings', viewSettings);
 
 /* ============================================================
    New Request (unified 7 Nov 2026): the shared procurement request form (../requests.js), the same page, checks and
@@ -946,7 +1147,8 @@ route('/approve/:batch', viewApprove);
 const HELP = [
   ['box', 'Make a procurement request', [
     'Menu > <b>Make a procurement request</b>. Pick the department the request is for, then the date it is needed by.',
-    'Add each item: name, description, category, quantity, why. <b>Send for approval</b>: that department\'s manager, then the plant manager.',
+    'Add each item: material, material type, brand and specification (optional), quantity, why. <b>Send for approval</b>: that department\'s manager, then the plant manager.',
+    '<b>Needed by</b> must be at least 1 month from today. Each department can send at most <b>10 items a week</b> (Monday to Sunday); the form shows how many are left.',
     'Engineering requests (with the store parts list) are made in the Engineering console.']],
   ['check', 'Approve a request', [
     'An approval e-mail now links to the request in this console. Sign in with your e-mail or staff number and your PIN and you land on it. You can also open it from <b>My approvals</b>.',
@@ -959,11 +1161,21 @@ const HELP = [
     'The orange number on the menu is the number of items on this page. It falls as you act.',
     '<b>Open</b> takes you straight to the item. A link in an e-mail or WhatsApp message does the same: sign in once with your e-mail or staff number and your PIN and you land on that item.']],
   ['box', 'Procurement log: stages and closing', [
-    'Menu > <b>Procurement Log</b>. Every line shows its <b>stage</b>: Waiting for approval, <b>Waiting for order</b> (approved), <b>Ordered</b> (a PO number is in), <b>Partly received</b>, <b>Closed</b>, Rejected, or <b>Old sheet line</b> (from before the console). Filter by stage at the top; <b>Overdue</b> = ordered and the delivery date has passed.',
-    'Open a line > <b>Edit</b>: vendor (earlier vendors are suggested), PO number, the vendor delivery date if you know it (it can stay empty) and a note. Term of payment, RFP and ODL are no longer asked; old values still show.',
-    'Received and partly received come from the stores by themselves (when the storekeeper receives against the request). Everything received = closed by itself.',
+    'Menu > <b>Procurement Log</b>: request date, requestor, material, material type, brand, specification, quantity, <b>needed by</b>, stage and <b>received on</b>. Open a line for the rest.',
+    'Filters, left to right: <b>search</b> (material, brand, specification, requestor, item ID, vendor, PO), the <b>request date</b> from / to, <b>department</b>, <b>material type</b> and <b>stage</b>. <b>Clear filters</b> shows everything again.',
+    'Stages: Waiting for approval, <b>Waiting for order</b> (approved), <b>Ordered</b> (a PO number is in), <b>Partly received</b>, <b>Closed</b>, Rejected, or <b>Old sheet line</b> (from before the console). <b>Overdue</b> = the needed-by date has passed and not everything has arrived.',
+    'Open a line > <b>Edit</b>: vendor (earlier vendors are suggested), PO number and a note. What the requester sent cannot be changed. The vendor delivery date is no longer asked: <b>Received on</b> replaces it (old values still show).',
     '<b>Close this line</b> when it is finished another way: delivered outside the stores, service done, cancelled, not needed any more. A closed line can be <b>opened again</b> with a reason. Who did it, and why, stays on the line.',
     'Old sheet lines: pick <b>Old sheet line</b> in the stage filter, narrow it down if needed, then <b>Close the ... shown</b> to close them in one go.']],
+  ['check', 'Procurement log: what arrived and Excel', [
+    'Open a line > <b>Record what arrived</b>: the date it came (not in the future, not before the request), the quantity, and the brand and specification <b>if they differ</b> from the request. Fewer than asked = <b>Partly received</b>; all of it closes the line.',
+    'The stores count too: when the Engineering or Production storekeeper receives against the request, the line moves by itself. <b>Received on</b> = the first day anything arrived, whoever recorded it first.',
+    'A wrong entry: <b>Undo</b> beside it, with a reason. The request keeps what was asked; the log shows "received: ..." under the brand or specification when something else came.',
+    '<b>Download Excel</b> (top right) gives exactly the lines the filters show, with the received date, vendor and PO. The file name says which filters were on.']],
+  ['settings', 'Settings: the request rules', [
+    'Menu > Admin > <b>Settings</b>: how many items each department may ask for in a week (Monday to Sunday), and how many months ahead "needed by" must be.',
+    'People with <b>edit</b> on Procurement (or on the Settings page, given in Users) change them; everyone else sees them. A change applies to the next request at once.',
+    'Every change is kept below the form: who, when, from what to what.']],
   ['box', 'Production store stock', [
     'Menu > <b>Production store stock</b>: every Production store material (coding fluids, cartridges, ribbons, characters ...) with its stock, use per week, weeks left, reorder level and order quantity.',
     'Red and orange first: <b>Out of stock</b> and <b>Reorder now</b> are what Production will ask for. Their requests carry the store code (e.g. CF 001), so you can find the material here.',
@@ -983,7 +1195,7 @@ const HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/', 'Procurement log: stages and closing': '/items', 'Spares stock (Engineering store)': '/stock', 'Production store stock': '/prd-stock', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_PAGE = { 'Make a procurement request': '/new-request', 'Approve a request': '/', 'Procurement log: stages and closing': '/items', 'Procurement log: what arrived and Excel': '/items', 'Settings: the request rules': '/settings', 'Spares stock (Engineering store)': '/stock', 'Production store stock': '/prd-stock', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')

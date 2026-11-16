@@ -350,8 +350,9 @@ function stOpen(code){
 function stRequestMore(code){
   const x = stByCode(code); if (!x || !window.oklRequests) return;
   const U = oklRequests.UNIT_OF_STORE || {};
-  oklRequests.prefill('Production', [{ part: stLabel(x), detail: [x.name, x.brand, x.part_number ? 'P/N ' + x.part_number : ''].filter(Boolean).join(', '),
-    category: oklRequests.CATEGORIES.includes(x.category) ? x.category : 'Consumable', unit: U[x.unit] || 'Pieces', qty: String(+x.order_qty || ''),
+  const spec = [x.name, x.part_number ? 'P/N ' + x.part_number : ''].filter(Boolean).join(', ');   // 077: brand and specification are separate
+  oklRequests.prefill('Production', [{ part: stLabel(x), spec, auto_spec: spec, brand: x.brand || '', auto_brand: x.brand || '',
+    type: 'Consumable', auto_type: 'Consumable', unit: U[x.unit] || 'Pieces', qty: String(+x.order_qty || ''),
     purpose: 'Store: ' + (x.stock_known ? stNum(x.stock) + ' ' + x.unit + ' left' : 'stock not known') + (x.weeks_left != null ? ', about ' + x.weeks_left + ' weeks' : '') + ' (' + x.status + ')' }]);
   go('/requests');
   toast('Request filled in', x.code + ': check the quantity and send it for approval.', 'ok', 6000);

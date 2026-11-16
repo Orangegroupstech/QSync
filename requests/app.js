@@ -405,7 +405,8 @@ route('/', () => viewRequest('item'));
 const RQ_HELP = [
   ['box', 'Make a procurement request', [
     'Menu > <b>Make a procurement request</b>. You are the requester (your own name is filled in). If you may raise for more than one department, pick it first.',
-    'Pick the date it is needed by, then each item: name, description, category, quantity and why it is needed. <b>Add another item</b> for more.',
+    'Pick the date it is needed by, then each item: material, material type, brand and specification (optional), quantity and why it is needed. <b>Add another item</b> for more.',
+    '<b>Needed by</b> must be at least 1 month from today. Each department can send at most <b>10 items a week</b> (Monday to Sunday); the form shows how many are left.',
     '<b>Send for approval</b>: your manager, then the plant manager approve; you get the result by e-mail.',
     'What you sent shows below the form, with where each line is: waiting for order, ordered (and when it is expected), partly received, or closed.']],
   ['users', 'Submit overtime', [

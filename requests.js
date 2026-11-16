@@ -4,13 +4,14 @@
 
    The forms send to the same public addresses as the hosted forms, so the approvals, e-mails, Google Sheets and the HR
    overtime log are unchanged:
-     POST <api>/webhook/procurement/intake?flow=engineering   {name, requirementDate, items: [{sku, itemDetail, category, materialType, purpose, quantity}]}
-     POST <api>/webhook/procurement/intake                    {name, department, requirementDate, items: [{material, itemDetail, category, purpose, quantity, unit}]}
+     POST <api>/webhook/okl/request (the console forwards it to procurement/intake after checking the person and the rules, 077)
+       Engineering: {department, requirementDate, items: [{sku, material, materialType, category, brand, specification, itemDetail, purpose, quantity}]}
+       others:      {department, requirementDate, items: [{material, materialType, category, brand, specification, itemDetail, purpose, quantity, unit}]}
      POST <api>/webhook/employees/overtime-submit              {department, date, holiday, submitted_by, groups: [{start, end, duty, enroll_ids}]}
 
    oklRequests.requisition(cfg) and oklRequests.overtime(cfg) return { html, bind() } for a console page.
    cfg: { api, department, flow ('engineering' | 'dept'), requester, parts [{sku, description, brand, part_number}] (Engineering: the
-          store list; picking one fills the description, the material type and the category, as the hosted form does),
+          store list; picking one fills the material type, specification and brand),
           people [{enroll_id, name}] (overtime: the department's staff), icons, toast(title, msg, kind, ms), onSent() }
    The state of a form lives in the object returned by oklRequests.state(key), so a page drawn again keeps what was typed. */
 (function () {
@@ -23,13 +24,17 @@
   const ic = (cfg, k) => (cfg.icons && cfg.icons[k]) || '';
   const err = (box, msg) => { const e = $('[data-rq-err]', box); if (e) { e.textContent = msg || ''; e.classList.toggle('hide', !msg); if (msg && e.scrollIntoView) e.scrollIntoView({ block: 'nearest' }); } };
 
-  // the choices of the hosted requisition form (Procurement - Requisitions), kept the same
-  const CATEGORIES = ['Spare part', 'Change part', 'Fabrication', 'Consumable', 'Tool / Equipment', 'Safety Equipment', 'Building Materials', 'Other'];
-  const MATERIAL_TYPES = ['Electrical Part', 'Mechanical Part', 'Pneumatic Part', 'Accessories Part', 'Chemical', 'Tools'];
+  // 077 (16 Nov 2026): one Material type list for every department (it replaced Category and Engineering's material type)
+  const MATERIAL_TYPES = ['Mechanical part', 'Electrical part', 'Pneumatic part', 'Accessories part', 'Tools & equipment', 'Chemical / reagent',
+    'Consumable', 'Lab glassware & supplies', 'Safety equipment', 'Packaging material', 'Fabrication', 'Building materials', 'Office & IT', 'Other'];
   const UNITS = ['Pieces', 'Sets', 'Pairs', 'Boxes', 'Packs', 'Rolls', 'Bottles', 'Cans', 'Tubes', 'Litres', 'Kg', 'Metres'];
   // a store unit (Production store, 066) as the request form says it
   const UNIT_OF_STORE = { pcs: 'Pieces', set: 'Sets', pair: 'Pairs', box: 'Boxes', pack: 'Packs', roll: 'Rolls', bottle: 'Bottles', can: 'Cans', tube: 'Tubes', L: 'Litres', kg: 'Kg', m: 'Metres' };
-  const TYPE_OF_SKU = { MP: 'Mechanical Part', EP: 'Electrical Part', PP: 'Pneumatic Part', AP: 'Accessories Part', CH: 'Chemical', TG: 'Tools' };
+  const TYPE_OF_SKU = { MP: 'Mechanical part', EP: 'Electrical part', PP: 'Pneumatic part', AP: 'Accessories part', CH: 'Chemical / reagent', TG: 'Tools & equipment' };
+  // "needed by" is at least 1 month ahead (the server checks the same: okl_proc_min_need_date): 31 Jan -> 28 Feb, as Postgres does
+  const addMonth = iso => { const [y, m, d] = iso.split('-').map(Number); const ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+    const last = new Date(Date.UTC(ny, nm, 0)).getUTCDate(); return ny + '-' + String(nm).padStart(2, '0') + '-' + String(Math.min(d, last)).padStart(2, '0'); };
+  const fmtDate = iso => { const d = new Date(String(iso || '') + 'T12:00:00Z'); return isNaN(d) ? String(iso || '') : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }); };
 
   // the look every console shares for these forms (the consoles' own stylesheets differ a little)
   (function () {
@@ -58,15 +63,22 @@
   }
   const opts = (list, cur, first) => (first ? `<option value="">${esc(first)}</option>` : '') + list.map(v => `<option ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('');
 
-  /* ---------------- Make a request (requisition) ---------------- */
-  const itemNew = () => ({ part: '', detail: '', category: '', type: '', purpose: '', qty: '', unit: 'Pieces' });
+  /* ---------------- Make a request (requisition) ----------------
+     077 (16 Nov 2026), every department: Material type (one list), Brand (needed for Engineering), Specification, "needed by" at
+     least 1 month ahead, and at most 10 items per department per week (Monday to Sunday). The server checks the same rules. */
+  const itemNew = () => ({ part: '', brand: '', spec: '', type: '', purpose: '', qty: '', unit: 'Pieces' });
   function partOf(cfg, text) {
     const m = /^\s*([A-Z]{2}) ?(\d{3,4})\b/.exec(String(text || '').toUpperCase());
     return m ? (cfg.parts || []).find(p => p.sku === m[1] + ' ' + m[2]) : null;
   }
-  // the materials this department has asked for before (server list, one per name); a picked name fills the rest, a near-miss spelling is corrected on send
+  // the materials this department has asked for before (server list, one per name); a picked name fills the rest, a near-miss spelling is corrected on send.
+  // The same answer carries the department's week (how many items are left) and the earliest "needed by" date.
   const CATS = {};
   const catOf = cfg => (CATS[cfg.department] && CATS[cfg.department].items) || [];
+  const weekOf = cfg => (CATS[cfg.department] && CATS[cfg.department].week) || null;
+  const minNeed = cfg => { const w = weekOf(cfg); return (w && w.min_need) || addMonth(today()); };
+  // the months ahead come from Procurement > Settings (1 unless changed there)
+  const leadTxt = cfg => { const w = weekOf(cfg), m = w && w.lead_months != null ? +w.lead_months : 1; return m === 0 ? 'From today' : 'At least ' + m + ' month' + (m === 1 ? '' : 's') + ' from today'; };
   const lev = (a, b) => { const m = a.length, n = b.length; if (Math.abs(m - n) > 2) return 9; let prev = Array.from({ length: n + 1 }, (_, j) => j);
     for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; } return prev[n]; };
   const normName = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -78,13 +90,21 @@
   const infoDept = (cfg, t) => { t = String(t || '').trim(); if (!t) return '';
     const sx = storeOf(cfg, t); if (sx) return 'Store material <b>' + esc(sx.code) + '</b>' + (sx.stock != null ? ': ' + esc(sx.stock) + ' ' + esc(sx.unit) + ' in stock' : '') + (sx.order_qty ? ', suggested order ' + esc(sx.order_qty) : '') + '. Sent by its code, so the delivery is received against this request.'; if (exactCat(cfg, t)) return 'Asked for before: the details are filled in.'; const n = nearCat(cfg, t); return n ? 'Did you mean "' + esc(n.name) + '"? It is used on send, so one item keeps one spelling.' : 'New item: it joins this department\'s list once requested.'; };
   async function loadCatalog(cfg, then) {
-    if (cfg.flow === 'engineering' || !cfg.api || CATS[cfg.department]) return;
+    if (!cfg.api || !cfg.department || CATS[cfg.department]) return;
     CATS[cfg.department] = { items: [] };
     try {
       const res = await fetch(cfg.api + '/webhook/okl/catalog?department=' + encodeURIComponent(cfg.department), { headers: { Authorization: (function () { try { return sessionStorage.getItem('okl.token') || ''; } catch (e) { return ''; } })() } });
       const j = await res.json().catch(() => ({}));
-      if (res.ok && j.items) { CATS[cfg.department] = { items: j.items }; if (then) then(); } else delete CATS[cfg.department];
+      if (res.ok && j.items) { CATS[cfg.department] = { items: cfg.flow === 'engineering' ? [] : j.items, week: j.week || null }; if (then) then(); } else delete CATS[cfg.department];
     } catch (e) { delete CATS[cfg.department]; }
+  }
+  // "This week: 4 of 10 sent, 6 left" above the items
+  function weekHtml(cfg, n) {
+    const w = weekOf(cfg); if (!w) return '';
+    const left = +w.left, over = n > left;
+    return `<div class="notice ${over || !left ? 'warn' : 'info'}" style="margin-bottom:12px">${ic(cfg, 'info')}<div><b>This week (${esc(fmtDate(w.week_start))} to ${esc(fmtDate(w.week_end))}):</b>
+      ${esc(cfg.department)} has sent ${esc(w.used)} of its ${esc(w.limit)} items, <b>${esc(left)} left</b>.${over ? ` This request has ${n}: remove ${n - left} or send them from Monday.` : ''}
+      ${!left ? ' No more can be sent until Monday.' : ''}</div></div>`;
   }
   function itemHtml(cfg, it, i, n) {
     const eng = cfg.flow === 'engineering', p = eng ? partOf(cfg, it.part) : null;
@@ -93,24 +113,29 @@
       <div class="field"><label>${eng ? 'Part (from the store list, or type a new item)' : 'Material'}</label>
         <input class="inp" data-rq="part" data-i="${i}" list="rqParts" autocomplete="off" maxlength="160" value="${esc(it.part)}" placeholder="${eng ? 'Type the SKU or the part name' : 'Type to pick one asked for before, or a new item'}">
         ${!eng ? `<div class="tiny muted" data-rq-info="${i}">${infoDept(cfg, it.part)}</div>` : ''}
-        ${eng ? `<div class="tiny muted" data-rq-info="${i}">${p ? 'Store part ' + esc(p.sku) + '.' : it.part.trim() ? 'Not in the store list: sent as a new item ("Others"); describe it below.' : ''}</div>` : ''}</div>
-      <div class="field"><label>Description (specification, brand)${eng && !p ? '' : ' (optional)'}</label><input class="inp" data-rq="detail" data-i="${i}" maxlength="300" value="${esc(it.detail)}" placeholder="e.g. SKF 6205 2RS, 25 mm bore"></div>
+        ${eng ? `<div class="tiny muted" data-rq-info="${i}">${p ? 'Store part ' + esc(p.sku) + '.' : it.part.trim() ? 'Not in the store list: sent as a new item; give its specification below.' : ''}</div>` : ''}</div>
       <div class="grid g2">
-        <div class="field"><label>Category</label><select class="inp" data-rq="category" data-i="${i}">${opts(CATEGORIES, it.category, 'Choose...')}</select></div>
-        ${eng ? `<div class="field"><label>Material type</label><select class="inp" data-rq="type" data-i="${i}">${opts(MATERIAL_TYPES, it.type, 'Choose...')}</select></div>`
-              : `<div class="field"><label>Unit</label><select class="inp" data-rq="unit" data-i="${i}">${opts(UNITS, it.unit)}</select></div>`}
+        <div class="field"><label>Material type</label><select class="inp" data-rq="type" data-i="${i}">${opts(MATERIAL_TYPES, it.type, 'Choose...')}</select></div>
+        <div class="field"><label>Brand${eng ? '' : ' (optional)'}</label><input class="inp" data-rq="brand" data-i="${i}" maxlength="120" value="${esc(it.brand)}" placeholder="e.g. SKF"></div>
+      </div>
+      <div class="field"><label>Specification${eng && !p ? '' : ' (optional)'}</label><input class="inp" data-rq="spec" data-i="${i}" maxlength="300" value="${esc(it.spec)}" placeholder="e.g. 6205 2RS, 25 mm bore"></div>
+      <div class="grid g2">
+        ${eng ? '' : `<div class="field"><label>Unit</label><select class="inp" data-rq="unit" data-i="${i}">${opts(UNITS, it.unit)}</select></div>`}
         <div class="field"><label>Quantity</label><input class="inp" type="number" min="1" step="1" data-rq="qty" data-i="${i}" value="${esc(it.qty)}"></div>
-        <div class="field"><label>Why it is needed</label><input class="inp" data-rq="purpose" data-i="${i}" maxlength="300" value="${esc(it.purpose)}" placeholder="e.g. Kunlong #2 sealing jaw"></div>
+        <div class="field"${eng ? '' : ' style="grid-column:1/-1"'}><label>Why it is needed</label><input class="inp" data-rq="purpose" data-i="${i}" maxlength="300" value="${esc(it.purpose)}" placeholder="e.g. Kunlong #2 sealing jaw"></div>
       </div></div></div>`;
   }
   function requisition(cfg) {
-    const st = state('req:' + cfg.department, () => ({ date: addDays(today(), 7), items: [itemNew()] }));
+    const st = state('req:' + cfg.department, () => ({ date: '', items: [itemNew()] }));
+    if (!st.date || st.date < minNeed(cfg)) st.date = minNeed(cfg);
     const eng = cfg.flow === 'engineering';
     const html = `<form class="rq-form" id="rqForm" novalidate>
+      <div data-rq-week>${weekHtml(cfg, st.items.length)}</div>
       <div class="card" style="margin-bottom:12px"><div class="card-b"><div class="grid g2">
         <div class="field"><label>Requested by</label><input class="inp" value="${esc(cfg.requester)}" disabled></div>
-        <div class="field"><label for="rqDate">Needed by</label><input class="inp" type="date" id="rqDate" min="${today()}" value="${esc(st.date)}"></div></div>
-        <div class="tiny muted">${esc(cfg.department)}. It goes for approval as the ${eng ? 'Engineering requisition (Engineering Manager, Operations Manager, Plant Manager)' : 'department requisition'}; you get the result by e-mail.</div></div></div>
+        <div class="field"><label for="rqDate">Needed by</label><input class="inp" type="date" id="rqDate" min="${esc(minNeed(cfg))}" value="${esc(st.date)}">
+          <div class="tiny muted" data-rq-min>${esc(leadTxt(cfg))}: ${esc(fmtDate(minNeed(cfg)))} or later.</div></div></div>
+        <div class="tiny muted">${esc(cfg.department)}. It goes for approval as the ${eng ? 'Engineering requisition (Engineering Manager, Operations Manager, Plant Manager)' : 'department requisition'}; you get the result by e-mail. At most 10 items a week per department.</div></div></div>
       <div data-rq-items>${st.items.map((it, i) => itemHtml(cfg, it, i, st.items.length)).join('')}</div>
       <button type="button" class="btn btn-ghost" data-rq-add>${ic(cfg, 'plus')} Add another item</button>
       <datalist id="rqParts">${eng ? (cfg.parts || []).map(p => `<option value="${esc(p.sku + ' - ' + p.description)}">`).join('') : (cfg.store || []).map(x => `<option value="${esc(storeLabel(x))}">`).join('') + catOf(cfg).filter(c => !storeOf(cfg, c.name)).map(c => `<option value="${esc(c.name)}">`).join('')}</datalist>
@@ -118,80 +143,94 @@
       <div class="row job-actions" style="gap:10px;margin-top:12px"><button type="button" class="btn btn-primary btn-lg" data-rq-send>${ic(cfg, 'check')} Send for approval</button></div></form>`;
     function bind() {
       const box = $('#rqForm'); if (!box) return;
-      const draw = () => { $('[data-rq-items]', box).innerHTML = st.items.map((it, i) => itemHtml(cfg, it, i, st.items.length)).join(''); wire(); };
+      const showWeek = () => { const w = $('[data-rq-week]', box); if (w) w.innerHTML = weekHtml(cfg, st.items.length); };
+      const draw = () => { $('[data-rq-items]', box).innerHTML = st.items.map((it, i) => itemHtml(cfg, it, i, st.items.length)).join(''); wire(); showWeek(); };
+      // fill a field from a picked part / material, unless the person typed their own
+      const fill = (it, i, key, v) => { const auto = 'auto_' + key;
+        if (!it[key] || it[key] === it[auto]) { it[key] = it[auto] = v || ''; const x = $(`[data-rq="${key}"][data-i="${i}"]`, box); if (x) x.value = it[key]; } };
       const wire = () => {
         $$('[data-rq]', box).forEach(el => { el.oninput = el.onchange = () => {
-          const it = st.items[+el.dataset.i], k = el.dataset.rq; it[k] = el.value;
-          if (k === 'part' && !eng && storeOf(cfg, el.value)) {
-            const sx = storeOf(cfg, el.value), i = el.dataset.i, set = (key, v) => { it[key] = v; const x = $(`[data-rq="${key}"][data-i="${i}"]`, box); if (x) x.value = v; };
+          const i = el.dataset.i, it = st.items[+i], k = el.dataset.rq; it[k] = el.value;
+          if (k !== 'part') return;
+          const info = $(`[data-rq-info="${i}"]`, box);
+          if (!eng && storeOf(cfg, el.value)) {
+            const sx = storeOf(cfg, el.value);
             if (el.value.trim() !== storeLabel(sx) && /^\s*[A-Za-z]{2} ?\d{3,4}\s*$/.test(el.value)) { el.value = storeLabel(sx); it.part = el.value; }
-            const auto = [sx.name, sx.brand, sx.part_number ? 'P/N ' + sx.part_number : ''].filter(Boolean).join(', ');
-            if (!it.detail || it.detail === it.autoDetail) { it.autoDetail = auto; set('detail', auto); }
-            if (!it.category) set('category', CATEGORIES.includes(sx.category) ? sx.category : 'Consumable');
-            if (UNIT_OF_STORE[sx.unit] && (it.unit === 'Pieces' || !it.unit)) set('unit', UNIT_OF_STORE[sx.unit]);
-            const info = $(`[data-rq-info="${i}"]`, box); if (info) info.innerHTML = infoDept(cfg, el.value);
-          } else if (k === 'part' && !eng) {
+            fill(it, i, 'spec', [sx.name, sx.part_number ? 'P/N ' + sx.part_number : ''].filter(Boolean).join(', '));
+            fill(it, i, 'brand', sx.brand || '');
+            fill(it, i, 'type', 'Consumable');
+            if (UNIT_OF_STORE[sx.unit] && (it.unit === 'Pieces' || !it.unit)) { it.unit = UNIT_OF_STORE[sx.unit]; const x = $(`[data-rq="unit"][data-i="${i}"]`, box); if (x) x.value = it.unit; }
+            if (info) info.innerHTML = infoDept(cfg, el.value);
+          } else if (!eng) {
             const c = exactCat(cfg, el.value);
             if (c) {
-              if (!it.detail || it.detail === it.autoDetail) { it.detail = it.autoDetail = c.detail; const dd = $(`[data-rq="detail"][data-i="${el.dataset.i}"]`, box); if (dd) dd.value = it.detail; }
-              if (!it.category && c.category && CATEGORIES.includes(c.category)) { it.category = c.category; const x = $(`[data-rq="category"][data-i="${el.dataset.i}"]`, box); if (x) x.value = it.category; }
-              if (c.unit && it.unit === 'Pieces' && UNITS.includes(c.unit)) { it.unit = c.unit; const x = $(`[data-rq="unit"][data-i="${el.dataset.i}"]`, box); if (x) x.value = it.unit; }
+              fill(it, i, 'spec', c.specification || (c.brand ? '' : c.detail));
+              fill(it, i, 'brand', c.brand);
+              if (MATERIAL_TYPES.includes(c.type)) fill(it, i, 'type', c.type);
+              if (c.unit && it.unit === 'Pieces' && UNITS.includes(c.unit)) { it.unit = c.unit; const x = $(`[data-rq="unit"][data-i="${i}"]`, box); if (x) x.value = it.unit; }
             }
-            const info = $(`[data-rq-info="${el.dataset.i}"]`, box); if (info) info.innerHTML = infoDept(cfg, el.value);
-          }
-          if (k === 'part' && eng) {
+            if (info) info.innerHTML = infoDept(cfg, el.value);
+          } else {
+            // Engineering: the store list fills the type, specification (description, part number) and brand
             const p = partOf(cfg, el.value);
-            if (p && !it.type && TYPE_OF_SKU[p.sku.slice(0, 2)]) { it.type = TYPE_OF_SKU[p.sku.slice(0, 2)]; const t = $(`[data-rq="type"][data-i="${el.dataset.i}"]`, box); if (t) t.value = it.type; }
-            // the description comes from the store list (name, brand, part number), unless it was typed by hand
-            if (p && (!it.detail || it.detail === it.autoDetail)) {
-              it.detail = it.autoDetail = [p.description, p.brand, p.part_number ? 'P/N ' + p.part_number : ''].filter(Boolean).join(', ');
-              const dd = $(`[data-rq="detail"][data-i="${el.dataset.i}"]`, box); if (dd) dd.value = it.detail;
-            } else if (!p && it.autoDetail && it.detail === it.autoDetail) {
-              it.detail = it.autoDetail = ''; const dd = $(`[data-rq="detail"][data-i="${el.dataset.i}"]`, box); if (dd) dd.value = '';
-            }
-            if (p && !it.category) { it.category = 'Spare part'; const c = $(`[data-rq="category"][data-i="${el.dataset.i}"]`, box); if (c) c.value = it.category; }
-            const info = $(`[data-rq-info="${el.dataset.i}"]`, box);
-            if (info) info.textContent = p ? 'Store part ' + p.sku + '.' : el.value.trim() ? 'Not in the store list: sent as a new item ("Others"); describe it below.' : '';
+            fill(it, i, 'type', p ? TYPE_OF_SKU[p.sku.slice(0, 2)] || '' : '');
+            fill(it, i, 'spec', p ? [p.description, p.part_number ? 'P/N ' + p.part_number : ''].filter(Boolean).join(', ') : '');
+            fill(it, i, 'brand', p ? p.brand || '' : '');
+            if (info) info.textContent = p ? 'Store part ' + p.sku + '.' : el.value.trim() ? 'Not in the store list: sent as a new item; give its specification below.' : '';
           } }; });
         $$('[data-rq-rm]', box).forEach(b => b.onclick = () => { st.items.splice(+b.dataset.rqRm, 1); draw(); });
       };
       $('#rqDate', box).onchange = e => { st.date = e.target.value; };
       $('[data-rq-add]', box).onclick = () => { st.items.push(itemNew()); draw(); const p = $$('[data-rq="part"]', box); p[p.length - 1].focus(); };
       wire();
-      loadCatalog(cfg, () => { const dl = $('#rqParts'); if (dl) dl.innerHTML = (cfg.store || []).map(x => `<option value="${esc(storeLabel(x))}">`).join('') + catOf(cfg).filter(c => !storeOf(cfg, c.name)).map(c => `<option value="${esc(c.name)}">`).join(''); $$('[data-rq-info]', box).forEach(x => { const it = st.items[+x.dataset.rqInfo]; if (it) x.innerHTML = infoDept(cfg, it.part); }); });
+      loadCatalog(cfg, () => {
+        const dl = $('#rqParts'); if (dl && !eng) dl.innerHTML = (cfg.store || []).map(x => `<option value="${esc(storeLabel(x))}">`).join('') + catOf(cfg).filter(c => !storeOf(cfg, c.name)).map(c => `<option value="${esc(c.name)}">`).join('');
+        $$('[data-rq-info]', box).forEach(x => { const it = st.items[+x.dataset.rqInfo]; if (it && !eng) x.innerHTML = infoDept(cfg, it.part); });
+        const d = $('#rqDate', box), mn = minNeed(cfg);
+        if (d) { d.min = mn; if (!st.date || st.date < mn) { st.date = mn; d.value = mn; } }
+        const m = $('[data-rq-min]', box); if (m) m.textContent = leadTxt(cfg) + ': ' + fmtDate(mn) + ' or later.';
+        showWeek();
+      });
       const send = $('[data-rq-send]', box);
       send.onclick = async () => {
         err(box, '');
-        if (!st.date || st.date < today()) return err(box, 'Pick the date it is needed by (today or later).');
+        const mn = minNeed(cfg);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(st.date || '')) return err(box, 'Pick the date it is needed by.');
+        if (st.date < mn) return err(box, 'The "needed by" date must be ' + leadTxt(cfg).toLowerCase() + ': ' + fmtDate(mn) + ' or later.');
         if (st.items.length > 30) return err(box, 'At most 30 items in one request.');
+        const w = weekOf(cfg);
+        if (w && st.items.length > +w.left) return err(box, +w.left ? 'Only ' + w.left + ' more item' + (+w.left === 1 ? '' : 's') + ' can be sent this week (' + w.limit + ' per department, Monday to Sunday). Remove ' + (st.items.length - w.left) + ' or send them from Monday.' : 'This week\'s ' + w.limit + ' items for ' + cfg.department + ' are used. Send it from Monday.');
         const items = [];
         for (let i = 0; i < st.items.length; i++) {
           const it = st.items[i], n = st.items.length > 1 ? 'Item ' + (i + 1) + ': ' : '', p = eng ? partOf(cfg, it.part) : null;
+          const brand = it.brand.trim().replace(/\s+/g, ' '), spec = it.spec.trim().replace(/\s+/g, ' ');
           if (!it.part.trim()) return err(box, n + (eng ? 'pick the part, or type the new item.' : 'name the material.'));
-          if (eng && !p && it.detail.trim().length < 3) return err(box, n + 'describe the new item (specification, brand).');
-          if (!it.category) return err(box, n + 'choose the category.');
-          if (eng && !it.type) return err(box, n + 'choose the material type.');
+          if (!MATERIAL_TYPES.includes(it.type)) return err(box, n + 'choose the material type.');
+          if (eng && brand.length < 2) return err(box, n + 'give the brand.');
+          if (eng && !p && spec.length < 3) return err(box, n + 'give the new item\'s specification.');
           if (!(+it.qty >= 1) || +it.qty !== Math.floor(+it.qty) || +it.qty > 100000) return err(box, n + 'enter the quantity (a whole number).');
           if (it.purpose.trim().length < 3) return err(box, n + 'say why it is needed.');
-          items.push(eng ? { sku: p ? p.sku : 'Others', itemDetail: (p ? (it.detail.trim() || p.description) : it.part.trim() + ' - ' + it.detail.trim()), category: it.category, materialType: it.type,
-                             purpose: it.purpose.trim(), quantity: String(+it.qty) }
-                         : { material: storeOf(cfg, it.part) ? storeLabel(storeOf(cfg, it.part)).slice(0, 160) : (exactCat(cfg, it.part) || nearCat(cfg, it.part) || { name: it.part.trim() }).name, itemDetail: it.detail.trim(), category: it.category, purpose: it.purpose.trim(), quantity: String(+it.qty), unit: it.unit });
+          const detail = [spec, brand].filter(Boolean).join(', ');
+          items.push(eng ? { sku: p ? p.sku : 'Others', material: (p ? p.sku + ' - ' + p.description : it.part.trim()).slice(0, 160), materialType: it.type, category: it.type,
+                             brand, specification: spec, itemDetail: detail || (p ? p.description : it.part.trim()), purpose: it.purpose.trim(), quantity: String(+it.qty) }
+                         : { material: storeOf(cfg, it.part) ? storeLabel(storeOf(cfg, it.part)).slice(0, 160) : (exactCat(cfg, it.part) || nearCat(cfg, it.part) || { name: it.part.trim() }).name,
+                             materialType: it.type, category: it.type, brand, specification: spec, itemDetail: detail, purpose: it.purpose.trim(), quantity: String(+it.qty), unit: it.unit });
         }
         if (!items.length) return err(box, 'Add at least one item.');
         send.disabled = true;
         try {
-          const url = cfg.api + '/webhook/okl/request';           // the server checks who may raise it and takes the name and e-mail from the account
+          const url = cfg.api + '/webhook/okl/request';           // the server checks who may raise it, the date and the week, and takes the name and e-mail from the account
           const r = await post(url, { department: cfg.department, requirementDate: st.date, items });
           const batch = /Batch:\s*(\S+)/.exec(r.text || '');
           cfg.toast('Request sent for approval', items.length + ' item' + (items.length === 1 ? '' : 's') + (batch ? ' · ' + batch[1] : ''), 'ok', 7000);
           delete STATES['req:' + cfg.department];
+          delete CATS[cfg.department];                            // the week's numbers changed
           if (cfg.onSent) cfg.onSent();
-        } catch (e) { err(box, 'Not sent: ' + e.message); send.disabled = false; }
+        } catch (e) { err(box, 'Not sent: ' + e.message); send.disabled = false; delete CATS[cfg.department]; loadCatalog(cfg, showWeek); }
       };
     }
     return { html, bind };
   }
-
   /* ---------------- Overtime ---------------- */
   const groupNew = () => ({ start: '', end: '', duty: '', ids: [] });
   const RESULT = { ok: 'saved', duplicate: 'already recorded for that day', not_in_department: 'not in this department', not_found: 'not found', bad_time: 'times not valid', repeated: 'ticked twice' };
@@ -342,7 +381,7 @@
 
   // a request started from another page ("Request more" in the Production store): the form opens with these items filled in
   function prefill(department, items) {
-    STATES['req:' + department] = { date: addDays(today(), 7), items: (items || []).map(x => Object.assign(itemNew(), x)) };
+    STATES['req:' + department] = { date: '', items: (items || []).map(x => Object.assign(itemNew(), x)) };   // the date: 1 month ahead (requisition)
   }
-  window.oklRequests = { requisition, overtime, page, recentRequisitions, recentOvertime, state, prefill, TITLES, LEDE, CATEGORIES, MATERIAL_TYPES, UNIT_OF_STORE };
+  window.oklRequests = { requisition, overtime, page, recentRequisitions, recentOvertime, state, prefill, TITLES, LEDE, MATERIAL_TYPES, UNIT_OF_STORE };
 })();

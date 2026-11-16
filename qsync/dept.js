@@ -130,7 +130,8 @@ const QSYNC_HELP = [
     'It goes to the system team only. It changes nothing in the system.']],
   ['box', 'Make a procurement request (QC / QA)', [
     'Department requests > <b>Make a procurement request</b>. If you work for both departments, choose which one first.',
-    'You are the requester (your own name). Pick the date it is needed by, then each item: the name, a description, category, quantity and why it is needed. <b>Add another item</b> for more.',
+    'You are the requester (your own name). Pick the date it is needed by, then each item: the material, material type, brand and specification (optional), quantity and why it is needed. <b>Add another item</b> for more.',
+    '<b>Needed by</b> must be at least 1 month from today. Each department can send at most <b>10 items a week</b> (Monday to Sunday); the form shows how many are left.',
     '<b>Send for approval</b>: your manager, then the plant manager approve; you are told by e-mail. What you sent shows in the list below the form.']],
   ['clock', 'Submit overtime (QC / QA)', [
     'Department requests > <b>Submit overtime</b>.',

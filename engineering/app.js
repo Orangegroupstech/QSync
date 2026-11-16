@@ -3563,7 +3563,8 @@ const HELP = [
     'A name like one already there (e.g. "bearings 6205" and "Bearing 6205") is stopped: use the one there, or tick that it is new.',
     'Changing a part\'s unit after it has moved asks you to confirm: the numbers stay, only the unit changes.']],
   ['edit', 'Requests (manager and storekeeper)', [
-    '<b>Make a procurement request</b>: spares or any item, to Procurement. Pick a store part and its description fills in; or type a new item and describe it.',
+    '<b>Make a procurement request</b>: spares or any item, to Procurement. Pick a store part and its material type, specification and brand fill in; or type a new item and give its specification. The <b>brand</b> is needed for every Engineering item.',
+    '<b>Needed by</b> must be at least 1 month from today. Each department can send at most <b>10 items a week</b> (Monday to Sunday); the form shows how many are left.',
     '<b>Submit overtime</b>: the date, the times, the work and who; it goes to the HR overtime log.',
     '<b>My approvals</b> (see below) lists the requisitions waiting for your decision; <b>Open</b> goes to the approval page.']],
   ['check', 'My approvals', [

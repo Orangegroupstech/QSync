@@ -2695,7 +2695,8 @@ const HELP = [
     'At midday you are e-mailed the entries still waiting, with a link that opens this page after you sign in.']],
   ['box', 'Make a procurement request', [
     'Menu > Requests > <b>Make a procurement request</b>: for the HR department. You are the requester.',
-    'Pick the date it is needed by, then each item with its details, category, quantity and why. <b>Send for approval</b>: your manager, then the plant manager.']],
+    'Pick the date it is needed by, then each item: material, material type, brand and specification (optional), quantity and why. <b>Send for approval</b>: your manager, then the plant manager.',
+    '<b>Needed by</b> must be at least 1 month from today. Each department can send at most <b>10 items a week</b> (Monday to Sunday); the form shows how many are left.']],
   ['check', 'My approvals', [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
