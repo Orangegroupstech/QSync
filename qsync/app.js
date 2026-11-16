@@ -1130,24 +1130,76 @@ function editShelfLife(productId){
    Audit Trail
    ============================================================ */
 let auditState = { q:'', role:'', action:'', year:'', month:'' };
+/* 16 Nov 2026 (080): the log keeps one row per field changed (076), so one action used to show as several bare "update" lines.
+   The server sends events (the rows of one change, with their changes); here the events of one action (the summary line a
+   workflow writes, the request's field changes and the results added, within a few seconds, same batch, same person) become
+   ONE line, titled by what happened. "N changes" opens field, before and after. Export writes every change. */
+const AUDIT_OPEN = new Set();
+const AUDIT_STATUS_TITLE = { pending_qa_review:'IPQA sheet signed', sent_to_qc:'Approved by the QA Supervisor', returned_to_ipqa:'Returned to IPQA',
+  rejected:'Rejected by QA', qc_received:'Received by QC', qc_released:'Released by QC', qc_not_released:'Not released by QC',
+  qa_acknowledged:'Acknowledged by QA', void:'Request voided (wrongly raised)', pending_ipqa:'Back with IPQA' };
+const auditTable = t => String(t || '').replace(/^okl_qcd_/, '').replace(/_/g, ' ');
+const auditField = f => f ? String(f).replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()).replace(/\bqa\b/gi, 'QA').replace(/\bqc\b/gi, 'QC').replace(/\bipqa\b/gi, 'IPQA') : 'Whole record';
+const auditVal = (f, v) => v == null || v === '' ? '--' : f === 'status' ? ((STATUS[v] || {}).label || v)
+  : /_at$/.test(f || '') && /^\d{4}-\d\d-\d\dT/.test(v) ? fmtDateTime(v) : String(v);
+const auditSystem = n => !n || /^db:/.test(n) || n === 'database';
+function auditEventTitle(e){
+  if (!['insert', 'update', 'delete'].includes(e.action)) return e.action;              // a workflow's own summary line
+  const st = (e.changes || []).find(c => c.field === 'status');
+  if (e.table === 'okl_qcd_test_requests') return e.action === 'insert' ? 'Request raised' : st ? (AUDIT_STATUS_TITLE[st.new] || 'Status changed') : 'Request changed';
+  if (e.table === 'okl_qcd_parameter_results') return e.action === 'insert' ? 'IPQA result recorded' : e.action === 'delete' ? 'IPQA result removed' : 'IPQA result changed';
+  return auditTable(e.table).replace(/^./, c => c.toUpperCase()) + ' ' + ({ insert:'added', update:'changed', delete:'removed' }[e.action]);
+}
+function auditGroups(){
+  const evs = (S.audit || []).slice().sort((a, b) => b.id - a.id), out = [];
+  const t = e => new Date(e.at).getTime();
+  evs.forEach(e => {
+    const g = out[out.length - 1], who = e.actor_name;
+    const named = x => !['insert', 'update', 'delete'].includes(x.action);
+    // the same change (same moment), or a workflow's summary line written just after its change (QA review: ms apart)
+    const near = g && (!e.ref || !g.ref || e.ref === g.ref) && (who === g.who || auditSystem(who) || auditSystem(g.who))
+      && ((e.tx || e.at) === (g.last.tx || g.last.at) || (Math.abs(t(g.last) - t(e)) <= 3000 && (named(e) || g.events.some(named))));
+    if (near) { g.events.push(e); g.last = e; if (!g.ref && e.ref) g.ref = e.ref; if (auditSystem(g.who) && !auditSystem(who)) { g.who = who; g.role = e.actor_role; } }
+    else out.push({ id: e.id, at: e.at, who, role: e.actor_role, ref: e.ref || '', events: [e], last: e });
+  });
+  return out.map(g => {
+    const named = g.events.find(e => !['insert', 'update', 'delete'].includes(e.action));
+    const main = named || g.events.find(e => (e.changes || []).some(c => c.field === 'status')) || g.events[g.events.length - 1];
+    const changes = g.events.flatMap(e => (e.changes || []).map(c => Object.assign({ table: e.table, record: e.record, action: e.action }, c)));
+    const st = changes.find(c => c.field === 'status' && c.table === 'okl_qcd_test_requests');
+    const added = g.events.filter(e => e.action === 'insert' && e.table === 'okl_qcd_parameter_results').length;
+    const reason = (g.events.find(e => e.reason) || {}).reason || '';
+    const detail = [named && named.detail, st ? 'Status: ' + auditVal('status', st.old) + ' → ' + auditVal('status', st.new) : '',
+      added ? added + ' IPQA result' + (added === 1 ? '' : 's') + ' recorded' : '', reason ? 'Reason: ' + reason.replace(/^voided: /, '') : ''].filter(Boolean).join(' · ');
+    return Object.assign(g, { title: auditEventTitle(main), detail, changes, system: g.events.some(e => auditSystem(e.actor_name)) });
+  });
+}
+function auditToggle(id){ AUDIT_OPEN.has(id) ? AUDIT_OPEN.delete(id) : AUDIT_OPEN.add(id); render(); }
 function viewAudit(){
-  let rows = S.audit.slice();
+  const all = auditGroups();
+  let rows = all;
   const q = auditState.q.trim().toLowerCase();
-  if (q) rows = rows.filter(e => [e.actor_name, e.action, e.detail, e.ref].join(' ').toLowerCase().includes(q));
-  if (auditState.role) rows = rows.filter(e => e.actor_role === auditState.role);
-  if (auditState.action) rows = rows.filter(e => e.action === auditState.action);
-  if (auditState.year) rows = rows.filter(e => e.at && (watParts(e.at)||{}).y === Number(auditState.year));
-  if (auditState.month) rows = rows.filter(e => e.at && (watParts(e.at)||{}).m === Number(auditState.month));
+  if (q) rows = rows.filter(g => [g.who, g.title, g.detail, g.ref, ...g.changes.map(c => [c.field, c.old, c.new].join(' '))].join(' ').toLowerCase().includes(q));
+  if (auditState.role) rows = rows.filter(g => g.role === auditState.role);
+  if (auditState.action) rows = rows.filter(g => g.title === auditState.action);
+  if (auditState.year) rows = rows.filter(g => g.at && (watParts(g.at)||{}).y === Number(auditState.year));
+  if (auditState.month) rows = rows.filter(g => g.at && (watParts(g.at)||{}).m === Number(auditState.month));
 
   const roleOptions = Object.entries(ROLE_LABELS).map(([k,v]) => `<option value="${k}" ${auditState.role===k?'selected':''}>${esc(v)}</option>`).join('');
-  const actionOptions = Array.from(new Set(S.audit.map(e => e.action))).sort()
+  const actionOptions = Array.from(new Set(all.map(g => g.title))).sort()
     .map(a => `<option value="${esc(a)}" ${auditState.action===a?'selected':''}>${esc(a)}</option>`).join('');
   const years = yearsFromDates(S.audit, 'at');
+  const changeRows = g => `<tr><td colspan="5" style="background:var(--bg-soft,#f7f8f6);padding:8px 18px 12px">
+      <table class="tbl" style="font-size:12.5px"><thead><tr><th>Record</th><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>
+      ${g.changes.map(c => `<tr><td class="muted">${esc(auditTable(c.table))}${c.record ? ' #' + esc(c.record) : ''}${c.action !== 'update' ? ' (' + esc(c.action === 'insert' ? 'added' : 'removed') + ')' : ''}</td>
+        <td>${esc(auditField(c.field))}</td><td class="muted" style="max-width:280px;word-break:break-word">${esc(auditVal(c.field, c.old))}</td>
+        <td style="max-width:360px;word-break:break-word">${esc(auditVal(c.field, c.new))}</td></tr>`).join('')}</tbody></table>
+      ${g.system ? `<div class="tiny muted" style="margin-top:6px">Some rows of this action were written by the system account (before 16 Nov 2026 the QA review did not name the person on the field rows); the person is the one on the summary line.</div>` : ''}</td></tr>`;
 
   return {
     title:'Audit trail', crumb:'Administration',
     html: `
-    ${pageHead('Audit trail', 'A chronological record of user, request, and specification changes.',
+    ${pageHead('Audit trail', 'Who did what and when: one line per action. Open "changes" to see every field, before and after.',
       `<button class="btn btn-ghost" onclick="exportAudit()">${I.download} Export</button>`)}
     <div class="card">
       <div class="card-b filter-bar" style="border-bottom:1px solid var(--line-2);padding:14px 18px">
@@ -1162,13 +1214,13 @@ function viewAudit(){
       </div>
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th><th>Reference</th></tr></thead>
-        <tbody>${rows.length ? rows.map(e => `<tr>
-          <td class="small" style="white-space:nowrap" data-label="When">${fmtDateTime(e.at)}<div class="tiny muted">${relTime(e.at)}</div></td>
-          <td data-label="Who"><div class="person" style="gap:8px">${avatarEl(e.actor_name,'sm')}<div class="person-txt"><span class="small strong" title="${esc(e.actor_name)}">${esc(e.actor_name)}</span></div></div></td>
-          <td class="small strong" data-label="Action">${esc(e.action)}</td>
-          <td class="small muted" style="max-width:380px" data-label="Detail">${esc(e.detail||'--')}</td>
-          <td data-label="Reference">${e.ref?`<span class="mono small">${esc(e.ref)}</span>`:'<span class="muted">--</span>'}</td>
-        </tr>`).join('') : `<tr><td colspan="5" class="muted" style="padding:16px">No matching entries.</td></tr>`}</tbody>
+        <tbody>${rows.length ? rows.map(g => `<tr>
+          <td class="small" style="white-space:nowrap" data-label="When">${fmtDateTime(g.at)}<div class="tiny muted">${relTime(g.at)}</div></td>
+          <td data-label="Who"><div class="person" style="gap:8px">${avatarEl(g.who,'sm')}<div class="person-txt"><span class="small strong" title="${esc(g.who)}">${esc(g.who)}</span></div></div></td>
+          <td class="small strong" data-label="Action">${esc(g.title)}</td>
+          <td class="small muted" style="max-width:420px" data-label="Detail">${esc(g.detail || '--')}${g.changes.length ? ` <button class="btn btn-ghost btn-sm" style="margin-left:4px" data-audit-open="${g.id}" onclick="auditToggle(${g.id})">${AUDIT_OPEN.has(g.id) ? 'Hide' : g.changes.length + ' change' + (g.changes.length === 1 ? '' : 's')}</button>` : ''}</td>
+          <td data-label="Reference">${g.ref?`<span class="mono small">${esc(g.ref)}</span>`:'<span class="muted">--</span>'}</td>
+        </tr>${AUDIT_OPEN.has(g.id) && g.changes.length ? changeRows(g) : ''}`).join('') : `<tr><td colspan="5" class="muted" style="padding:16px">No matching entries.</td></tr>`}</tbody>
       </table></div>
     </div>`,
     bind: () => {
@@ -1183,8 +1235,13 @@ function viewAudit(){
   };
 }
 function exportAudit(){
-  const rows = [['Timestamp','Actor','Role','Action','Detail','Reference']];
-  S.audit.forEach(e => rows.push([fmtDateTime(e.at), e.actor_name, e.actor_role, e.action, e.detail, e.ref]));
+  // every change, one line each (the full record): the action's line, then its field rows
+  const rows = [['Timestamp','Actor','Role','Action','Detail','Reference','Record','Field','Before','After','Reason']];
+  auditGroups().forEach(g => g.events.forEach(e => {
+    const base = [fmtDateTime(e.at), e.actor_name, e.actor_role, g.title, e.detail || '', e.ref || g.ref || ''];
+    if (!(e.changes || []).length) rows.push(base.concat(['', '', '', '', e.reason || '']));
+    else e.changes.forEach(c => rows.push(base.concat([auditTable(e.table) + (e.record ? ' #' + e.record : ''), auditField(c.field), c.old == null ? '' : c.old, c.new == null ? '' : c.new, e.reason || ''])));
+  }));
   download('qsync-audit-'+new Date().toISOString().slice(0,10)+'.csv', toCSV(rows), 'text/csv');
   toast('Export ready','The audit trail has been downloaded.','ok');
 }
