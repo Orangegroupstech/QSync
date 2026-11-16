@@ -923,12 +923,12 @@ function viewReports(){
     ${reportsFilterBarHtml()}
 
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="stat acc-brand"><div class="ic-wrap">${I.layers}</div><div class="lbl">Total requests ${qInfo('Test requests raised in the chosen period (by the day they were raised).\n"Still open" = not yet signed off by the QA Supervisor.')}</div>
+      <div class="stat acc-brand"><div class="ic-wrap">${I.layers}</div><div class="lbl">Total requests ${qInfo('Test requests raised in the chosen period (by the day they were raised).\n"Still open" = QA has not acknowledged the QC decision yet.')}</div>
         <div class="val">${d.kpis.totalRequests}</div><div class="meta">${d.kpis.openRequests} still open</div></div>
       <div class="stat acc-ok"><div class="ic-wrap">${I.checkCircle}</div><div class="lbl">First pass rate ${qInfo('The share of tested requests where every IPQA check passed the first time.\nA request with any failed check is not a first pass.\nThese are the IPQA checks on the request, not the QC lab results.')}</div>
         <div class="val">${d.kpis.testedCount ? d.kpis.firstPassRate + '%' : '--'}</div><div class="meta">${d.kpis.passCount} of ${d.kpis.testedCount} tested requests</div></div>
-      <div class="stat acc-info"><div class="ic-wrap">${I.clock}</div><div class="lbl">Average turnaround ${qInfo('The average time from a request being raised to the QA Supervisor\'s sign-off, for requests signed off in the period.\nClock hours: nights and weekends count.\nThe Turnaround tab measures the whole cycle, up to QA acknowledgement.')}</div>
-        <div class="val" style="font-size:22px">${d.kpis.avgTurnaround || '--'}</div><div class="meta">Request raised to QA Supervisor sign-off</div></div>
+      <div class="stat acc-info"><div class="ic-wrap">${I.clock}</div><div class="lbl">Average turnaround ${qInfo('The whole cycle: from the request (or Production\'s sign-off) to QA\'s acknowledgement of the QC decision, on average, for requests that got there.\nClock hours: nights and weekends count.\nThe same measure as the Timing tab, which shows each step.')}</div>
+        <div class="val" style="font-size:22px">${d.kpis.avgTurnaround || '--'}</div><div class="meta">Request to QA acknowledgement</div></div>
       <div class="stat acc-warn"><div class="ic-wrap">${I.doc}</div><div class="lbl">Paper saved ${qInfo('An estimate: each tested request would have used about 68 printed pages on paper.')}</div>
         <div class="val">${nfmt(d.kpis.paperSaved)}</div><div class="meta">pages, at 68 per paper analysis</div></div>
     </div>

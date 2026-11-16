@@ -205,7 +205,7 @@ function navModel(){
     { title:'Me', items:[
       { path:'/', label:'My details', icon:'users' },
       { path:'/competencies', label:'My competencies', icon:'check' },
-    ] },
+    ].concat(S && S.lv && S.lv.visible ? [{ path:'/leave', label:'My leave', icon:'calendar' }] : []) },
   ];
 }
 
@@ -287,7 +287,8 @@ async function bootstrap(){
   const st = await oklMe.start(api, getToken());   // startup.js: the kept "who am I" lets the page load its data at once
   const auth = st.auth;
   if (auth.user && auth.user.must_change){ rememberHere(); toLandingKeepToken(); throw new Error('Password change required'); }
-  S = { me: meFromAuth(auth, 'self'), pf: null };
+  S = { me: meFromAuth(auth, 'self'), pf: null, lv: null };
+  lvLoad();   // My leave (075): the tab shows only when leave is open (admins always)
   resetIdleTimer();
   oklMe.follow(st, a => { if (a.user && a.user.must_change){ rememberHere(); toLandingKeepToken(); return; } if (S){ S.me = meFromAuth(a, 'self'); render(); } });
 }
@@ -359,7 +360,8 @@ function viewProfile(tab){
   const comps = d.competencies || [];
   const head = `<div class="row" style="gap:8px;margin-bottom:14px">
       <a class="btn ${tab === 'me' ? 'btn-primary' : 'btn-ghost'}" href="#/">My details</a>
-      <a class="btn ${tab === 'comp' ? 'btn-primary' : 'btn-ghost'}" href="#/competencies">My competencies (${comps.length})</a></div>`;
+      <a class="btn ${tab === 'comp' ? 'btn-primary' : 'btn-ghost'}" href="#/competencies">My competencies (${comps.length})</a>
+      ${S.lv && S.lv.visible ? `<a class="btn btn-ghost" href="#/leave">My leave</a>` : ''}</div>`;
   const me = `<div class="card"><div class="card-b"><div class="row" style="gap:14px;align-items:center;margin-bottom:16px">${avatarEl(d.name)}
         <div><div class="strong" style="font-size:18px">${esc(d.name)}</div><div class="small muted">${esc([d.job, d.department].filter(Boolean).join(' · '))}</div></div></div>
       <div class="kv-grid">
@@ -401,3 +403,121 @@ window.certificate = i => {
 };
 
 function waitBadge(n){ return ''; }
+
+/* ============================================================
+   My leave (075, 15 Nov 2026): leave moved from the public form into the console. Anyone signed in asks for their OWN
+   leave: the server takes the person from the sign-in. The route (who approves), the rules and the manager's e-mail are
+   the same as before. Shown only once HR opens leave (setting leave_in_profile); admins always see it, to try it first.
+   ============================================================ */
+I.calendar = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>';
+const lvInfo = (t, l) => window.oklInfo ? window.oklInfo(t, l) : '';
+async function lvLoad(){ try { S.lv = await api('/webhook/okl/leave'); } catch (e) { S.lv = { visible: false, load_error: e.message }; } if (S) render(); }
+const LV_ROUTE = { no_manager: 'No manager is assigned to your department. Please meet HR to be assigned a manager, then try again.',
+  no_department: 'Your department is not set on your record. Please meet HR.', no_plant_head: 'Your approval route is not fully set up yet (no plant head). Please meet HR.',
+  no_hr: 'Your approval route is not fully set up yet (no HR approver). Please meet HR.', not_found: 'We could not find your employee record. Please meet HR.',
+  not_staff: 'Leave requests here are for staff only. Casual workers should speak to HR.', no_record: 'Your account is not linked to your employee record. Please meet HR.' };
+const LV_ERR = {
+  duplicate: r => 'This request was already sent' + (r.request_no ? ' (request number ' + r.request_no + ')' : '') + '.',
+  short_notice: r => 'This type of leave needs at least ' + r.detail + ' days\' notice before the first day.',
+  too_long: r => 'This type of leave allows at most ' + r.detail + ' working days in one request.',
+  no_entitlement: () => 'Your yearly leave days have not been set yet. Please meet HR.',
+  over_balance: r => 'You only have ' + r.detail + ' day(s) of annual leave left.',
+  over_cap: r => 'This type of leave allows only ' + r.detail + ' more working day(s) this year.',
+  annual_first: r => 'This leave can only be taken after your annual leave is used up (you still have ' + r.detail + ' day(s)).',
+  overlap: () => 'You already have leave that overlaps these dates.',
+  bad_reliever: () => 'Pick a colleague from your department to cover for you.', reliever_required: () => 'Pick a colleague from your department to cover for you.',
+  contact_required: () => 'Enter your contact address and phone number.',
+  no_workdays: () => 'Those dates have no working days (weekends and public holidays do not count).',
+  past_date: () => 'The first day cannot be more than 14 days ago.', bad_dates: () => 'Check your dates: the last day cannot be before the first day.',
+  bad_type: () => 'Pick the type of leave.', bad_form: () => 'Please reload the page and try again.' };
+const lvErrText = r => !r ? 'Could not reach the server. Check your connection and try again.'
+  : LV_ROUTE[r.error] || (LV_ERR[r.error] ? LV_ERR[r.error](r) : (r.message || 'Could not send your request. Please try again.'));
+const LV_STATUS = { pending_manager: ['Waiting for your manager', 'b-warn'], pending_hr: ['Waiting for HR', 'b-warn'], approved: ['Approved', 'b-ok'], rejected: ['Not approved', 'b-danger'], cancelled: ['Cancelled', 'b-slate'] };
+const lvToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+const lvAdd = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+function lvWork(a, b, hol){ let n = 0, d = a; for (let i = 0; i < 400 && d <= b; i++) { const w = new Date(d + 'T12:00:00Z').getUTCDay(); if (w !== 0 && w !== 6 && !hol[d]) n++; d = lvAdd(d, 1); } return n; }
+function lvBack(e, hol){ let d = lvAdd(e, 1); for (let i = 0; i < 30; i++) { const w = new Date(d + 'T12:00:00Z').getUTCDay(); if (w !== 0 && w !== 6 && !hol[d]) return d; d = lvAdd(d, 1); } return d; }
+const lvToken = () => Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => ('0' + b.toString(16)).slice(-2)).join('');
+let LVF = { token: '' };
+function viewLeave(){
+  const L = S.lv;
+  const page = html => ({ title: 'My leave', crumb: 'Me', keepScroll: true, html: pageHead('My leave', 'Ask for leave and follow your requests. It goes to your manager, then HR, by e-mail as before.') + html, bind: lvBind });
+  if (!L) return page('<div class="card"><div class="card-b small muted">Loading...</div></div>');
+  if (!L.visible) { location.hash = '#/'; return page(''); }
+  const preview = L.live ? '' : `<div class="notice info" style="margin-bottom:12px">${I.info}<div>Leave is <b>not open to staff yet</b>: only admins see this page, to try it. HR turns it on when ready.</div></div>`;
+  if (L.error) return page(preview + `<div class="notice warn">${I.alert}<div>${esc(LV_ROUTE[L.error] || L.error)}</div></div>`);
+  const P = L.person || {};
+  if (!P.ok) return page(preview + `<div class="notice warn">${I.alert}<div>${esc(LV_ROUTE[P.error] || 'We could not find your employee record. Please meet HR.')}</div></div>`);
+  const b = P.balance || {};
+  if (!LVF.token) LVF.token = lvToken();
+  const route = P.route_ok ? (P.route || []).map(s => esc(s.name) + ' <span class="muted">(' + esc(s.label) + ')</span>').join(', then ') : '';
+  const card = `<div class="card" style="margin-bottom:14px"><div class="card-b"><div class="kv-grid">
+      <div class="kv-item"><div class="k">Goes to</div><div class="v">${route || '<em>not set up</em>'}</div></div>
+      <div class="kv-item"><div class="k">Annual leave ${esc(b.year || '')} ${lvInfo('Your annual leave days for this year, set by HR.\nLeft = yearly days - approved - waiting, so days you already asked for cannot be asked for twice.\nWeekends and public holidays do not count.', 'How the days left are worked out')}</div>
+        <div class="v">${b.entitled == null ? 'not set yet (meet HR)' : `<b>${esc(b.remaining)}</b> day(s) left of ${esc(b.entitled)} <span class="muted">(${esc(b.taken)} taken, ${esc(b.pending)} waiting)</span>`}</div></div></div></div></div>`;
+  const today = lvToday(), types = P.types || [], cols = P.colleagues || [];
+  const form = !P.route_ok ? `<div class="notice warn" style="margin-bottom:14px">${I.alert}<div>${esc(LV_ROUTE[P.route_error] || LV_ROUTE.no_manager)}</div></div>`
+    : `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Ask for leave</h3></div><div class="card-b" id="lvForm">
+      <div class="grid g2">
+        <div class="field"><label for="lvType">Type of leave</label><select class="inp" id="lvType"><option value="">Choose the type of leave</option>${types.map(t => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('')}</select>
+          <div class="tiny muted" id="lvTypeNote" style="margin-top:4px"></div></div>
+        <div class="field"><label for="lvRel">Who covers for you</label><select class="inp" id="lvRel"><option value="">Choose a colleague</option>${cols.map(c => `<option value="${esc(c.enroll_id)}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div class="field"><label for="lvStart">First day</label><input class="inp" type="date" id="lvStart" min="${lvAdd(today, -14)}"></div>
+        <div class="field"><label for="lvEnd">Last day</label><input class="inp" type="date" id="lvEnd" min="${lvAdd(today, -14)}"></div>
+      </div>
+      <div class="notice" id="lvCalc" style="margin:4px 0 12px">Pick your dates</div>
+      <div class="grid g2">
+        <div class="field"><label for="lvAddr">Contact address while away</label><input class="inp" id="lvAddr" maxlength="300"></div>
+        <div class="field"><label for="lvPhone">Phone number</label><input class="inp" id="lvPhone" maxlength="40" inputmode="tel"></div>
+      </div>
+      <div class="field"><label for="lvNotes">Notes (optional)</label><textarea class="inp" id="lvNotes" rows="2" maxlength="500"></textarea></div>
+      <div class="err-msg" id="lvErr" style="margin-bottom:8px"></div>
+      <button class="btn btn-primary" id="lvSend" type="button">${I.check} Send request</button></div></div>`;
+  const reqs = L.requests || [];
+  const list = `<div class="card"><div class="card-h"><h3>My requests</h3></div>${reqs.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Request</th><th>Leave</th><th>From</th><th>To</th><th>Days</th><th>Status</th></tr></thead><tbody>
+      ${reqs.map(r => { const st = LV_STATUS[r.status] || [r.status, 'b-slate']; return `<tr><td data-label="Request" class="mono small">${esc(r.request_no)}</td><td data-label="Leave">${esc(r.type_label)}</td>
+        <td data-label="From">${esc(fmtDay(r.start_date))}</td><td data-label="To">${esc(fmtDay(r.end_date))}</td><td data-label="Days" class="tnum">${esc(r.days)}</td>
+        <td data-label="Status"><span class="badge ${st[1]}">${esc(st[0])}</span>${r.waiting_for ? `<div class="tiny muted" style="margin-top:3px">${esc(r.waiting_for)}</div>` : ''}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="card-b">${emptyState('info', 'No leave requests yet', 'What you ask for shows here with its status.')}</div>`}</div>`;
+  return page(preview + card + form + list);
+}
+function lvBind(){
+  const P = (S.lv || {}).person || {}, hol = {}; (P.holidays || []).forEach(h => { hol[h] = 1; });
+  const $id = id => document.getElementById(id);
+  if (!$id('lvSend')) return;
+  const recalc = () => {
+    const t = (P.types || []).find(x => x.key === $id('lvType').value); $id('lvTypeNote').textContent = t && t.note ? t.note : '';
+    const s = $id('lvStart').value, e = $id('lvEnd').value, box = $id('lvCalc');
+    if (!s || !e) { box.className = 'notice'; box.textContent = 'Pick your dates'; return; }
+    if (e < s) { box.className = 'notice warn'; box.textContent = 'The last day cannot be before the first day.'; return; }
+    const n = lvWork(s, e, hol);
+    if (n < 1) { box.className = 'notice warn'; box.textContent = 'No working days in these dates (weekends and public holidays do not count).'; return; }
+    box.className = 'notice info'; box.textContent = n + ' working day' + (n === 1 ? '' : 's') + '. You are back on ' + fmtDay(lvBack(e, hol)) + '.';
+  };
+  $id('lvType').onchange = recalc; $id('lvEnd').onchange = recalc;
+  $id('lvStart').onchange = () => { if (!$id('lvEnd').value || $id('lvEnd').value < $id('lvStart').value) $id('lvEnd').value = $id('lvStart').value; recalc(); };
+  recalc();
+  $id('lvSend').onclick = async () => {
+    const body = { type: $id('lvType').value, start: $id('lvStart').value, end: $id('lvEnd').value, reliever: $id('lvRel').value,
+                   address: $id('lvAddr').value.trim(), phone: $id('lvPhone').value.trim(), notes: $id('lvNotes').value.trim(), form_token: LVF.token };
+    const m = !body.type ? 'Pick the type of leave.' : (!body.start || !body.end) ? 'Pick your first and last day.' : body.end < body.start ? 'The last day cannot be before the first day.'
+      : !body.reliever ? 'Pick a colleague to cover for you.' : (!body.address || !body.phone) ? 'Enter your contact address and phone number.' : '';
+    $id('lvErr').textContent = m; if (m) return;
+    const btn = $id('lvSend'); btn.disabled = true; btn.textContent = 'Sending...';
+    let j = null;
+    try {   // the answer carries the reason when it is refused, so read it whatever the status
+      const res = await fetch(API_BASE + '/webhook/okl/leave', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: getToken() || '' }, body: JSON.stringify(body) });
+      if (res.status === 401) { rememberHere(); toLanding(); return; }
+      j = await res.json().catch(() => null);
+    } catch (e) { j = null; }
+    btn.disabled = false; btn.innerHTML = I.check + ' Send request';
+    if (j && j.success) {
+      LVF.token = lvToken(); if (window.oklFormKeep) oklFormKeep.sent(body);
+      const r = j.request || {};
+      toast('Request sent', (r.request_no ? r.request_no + ': ' : '') + 'it now waits for ' + (j.waiting_for || 'your manager') + '.', 'ok', 7000);
+      S.lv = null; lvLoad(); return;
+    }
+    $id('lvErr').textContent = lvErrText(j);
+  };
+}
+route('/leave', () => viewLeave());

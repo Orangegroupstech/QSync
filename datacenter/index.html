@@ -93,9 +93,9 @@
     var lastTxt = !last ? '<span class="muted">Not run yet</span>'
       : (last.ok ? '<span class="ok">Done</span>' : '<span class="bad">Failed for ' + (last.failed || []).length + ' spreadsheet(s)</span>') + ' <span class="muted small">' + esc(when(last.at)) + (last.trigger === 'manual' ? ', Sync data now' : '') + '</span>';
     var fails = last && !last.ok ? '<div class="small bad" style="margin:4px 0 10px">' + (last.failed || []).map(function(f){ return esc(f.file) + ': ' + esc(f.error); }).join('<br>') + '</div>' : '';
-    var retire = st.retire_ready ? '<div class="notice">The hourly copy has run cleanly for ' + esc(st.clean_days) + ' days in a row: the old copy steps inside the workflows can now be removed (ask Claude to "remove the old sheet copy steps").</div>' : '';
+    // 15 Nov 2026: the old copy steps inside the workflows were removed (072), so the "can now be removed" notice is gone
     var notSet = (st.not_set_up || []).length ? '<div class="small warn" style="margin-bottom:10px">Not set up yet: ' + st.not_set_up.map(esc).join(', ') + '. Create the spreadsheet in the OKL Data folder and send its link to be added.</div>' : '';
-    return '<div class="card"><h2>Google Sheets backup (admins)</h2>' + retire + notSet
+    return '<div class="card"><h2>Google Sheets backup (admins)</h2>' + notSet
       + '<div class="stats"><div class="stat"><div class="l">Last copy</div><div class="v">' + lastTxt + '</div></div>'
       + '<div class="stat"><div class="l">Last good copy</div><div class="v">' + esc(when(st.last_ok_at)) + '</div></div>'
       + '<div class="stat"><div class="l">Clean days in a row</div><div class="v">' + esc(st.clean_days) + '</div></div>'
