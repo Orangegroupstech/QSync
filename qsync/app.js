@@ -734,15 +734,9 @@ function viewSheet(id){
   const r = reqById(id);
   if (!r && REQ_FETCH[id] === 'loading') return { title:'Loading', crumb:'Records', html: `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   if (!r) return { title:'Not found', crumb:'Records', html: notFound() };
-  // once QC has the batch, the page is the summary report: Phase 1 and QC so far, in one place
+  // Once QC has the batch, its landing page is the full Reports page.
   if (S.lab && LAB_STAGE.includes(r.status)){
-    const d = labGet('/request?id=' + r.id);
-    if (d && !d.error) return {
-      title:`${r.requestNo} - summary`, crumb:'Records',
-      html: `${pageHead(`${r.requestNo} - summary report`, `As complete as the current stage: ${esc(labStatusText(d.request.status))}`, batchNav(r.id, 'summary'))}
-        ${labReportHtml(d)}`
-    };
-    if (!d) return labWait('Summary report', 'Records');
+    return viewLabDetail(r.id);
   }
   // 058: from the sheet, the next step opens where it is done (it used to be a dead end until the e-mail link was used)
   const meName = S.me && S.me.name, next = [];
