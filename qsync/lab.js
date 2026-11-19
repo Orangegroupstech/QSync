@@ -25,6 +25,15 @@ function labRoles(){ return (S && S.lab && S.lab.roles) || (S && S.signRoles) ||
 function isStarter(){ return hasLabRole('qc_supervisor') || hasLabRole('qa_supervisor'); }
 function starterTitle(){ return hasLabRole('qc_supervisor') ? 'QC Supervisor' : 'QA Supervisor'; }
 function hasLabRole(r){ return labRoles().includes(r); }
+function canApproveProduction(){ return hasLabRole('qc_supervisor') || hasLabRole('qc_analyst'); }
+function labProductionApproval(r){
+  if (r.qc_approved_at) return `<div class="small" data-production-approved="${Number(r.id)}"><b>Production approved</b><div class="tiny">${esc(r.qc_approved_by || '')} - ${fmtDateTime(r.qc_approved_at)}</div>
+    ${r.floor_note ? `<div class="tiny">${esc(r.floor_note)}</div>` : ''}
+    ${r.approval_notification ? `<div class="tiny">${esc(r.approval_notification.message)}</div>` : ''}</div>`;
+  if (canApproveProduction() && ['qc_received', 'qc_released'].includes(r.status))
+    return `<button class="btn btn-primary btn-sm" data-production-approve="${Number(r.id)}" onclick="event.stopPropagation();labApprove(${Number(r.id)})">Approve for production</button>`;
+  return `<span class="small muted">${['pending_qc_notify', 'sent_to_qc'].includes(r.status) ? 'Receive the sample first' : 'Not available'}</span>`;
+}
 function labStatusBadge(s){ const x = LAB_STATUS[s] || { label:s, badge:'b-slate' }; return `<span class="badge ${x.badge}"><span class="dot"></span>${esc(x.label)}</span>`; }
 function wsBadge(s){ const x = WS_STATUS[s] || [s || 'Not started', 'b-slate']; return `<span class="badge ${x[1]}">${esc(x[0])}</span>`; }
 function verdictBadge(pass, oos){
@@ -95,21 +104,25 @@ function signDialog(o){
       <div class="field"><label for="sgPw">Your password</label><input type="text" autocomplete="username" tabindex="-1" aria-hidden="true" data-okl-ac="1" value="${esc((S && S.me && S.me.name) || '')}" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0"><input class="inp" id="sgPw" type="password" autocomplete="current-password">
         <div class="hint">${I.lock}<span>${esc(o.meaning || 'Signing records your name, the date and time, and what you signed.')}</span></div></div>
       <div class="err-msg hide" id="sgErr" style="color:var(--danger);font-size:12.5px"></div>`,
-    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn ${o.danger ? 'btn-danger' : 'btn-primary'}" id="sgOk">${esc(o.ok || 'Sign')}</button>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button>${o.alternate ? `<button class="btn btn-primary" id="sgAlternate">${esc(o.alternate)}</button>` : ''}<button class="btn ${o.danger ? 'btn-danger' : 'btn-primary'}" id="sgOk">${esc(o.ok || 'Sign')}</button>`,
     onMount: (w, close) => {
       if (o.onMount) o.onMount(w);
       const pw = $('#sgPw', w); setTimeout(() => pw.focus(), 30);
-      const submit = async () => {
+      let signing = false;
+      const submit = async (alternate = false) => {
+        if (signing) return;
         const err = $('#sgErr', w), btn = $('#sgOk', w);
         err.classList.add('hide');
         const reason = o.reason ? $('#sgReason', w).value.trim() : '';
         if (o.reasonRequired && !reason){ err.textContent = 'Please give a reason.'; err.classList.remove('hide'); return; }
         if (!pw.value){ err.textContent = 'Enter your password to sign.'; err.classList.remove('hide'); return; }
-        btn.disabled = true;
-        try { await o.submit({ password: pw.value, reason, wrap: w }); close(); }
-        catch (e) { err.textContent = e.message; err.classList.remove('hide'); btn.disabled = false; }
+        signing = true; btn.disabled = true;
+        const other = $('#sgAlternate', w); if (other) other.disabled = true;
+        try { await o.submit({ password: pw.value, reason, wrap: w, alternate }); close(); }
+        catch (e) { err.textContent = e.message; err.classList.remove('hide'); signing = false; btn.disabled = false; if (other) other.disabled = false; }
       };
-      $('#sgOk', w).onclick = submit;
+      $('#sgOk', w).onclick = () => submit();
+      const other = $('#sgAlternate', w); if (other) other.onclick = () => submit(true);
       pw.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
     }
   });
@@ -135,12 +148,10 @@ function testRowHtml(analysts, test, analyst, methods){
   return `<div class="row lab-test-row" style="gap:8px;margin-bottom:8px;flex-wrap:nowrap">
     <select class="inp" data-f="test_type" style="flex:1.2">${testOptions(test, methods)}</select>
     <select class="inp" data-f="analyst_id" style="flex:1.2"><option value="">Analyst...</option>${analystOptions(analysts, analyst)}</select>
-    <input class="inp" data-f="due_date" type="date" style="flex:0.9" title="Due date (optional)">
     <button class="btn-icon" type="button" data-rm title="Remove">${I.x}</button></div>`;
 }
 function readTestRows(w){
-  return $$('.lab-test-row', w).map(r => ({ test_type: $('[data-f=test_type]', r).value, analyst_id: Number($('[data-f=analyst_id]', r).value) || null,
-                                             due_date: $('[data-f=due_date]', r).value }));
+  return $$('.lab-test-row', w).map(r => ({ test_type: $('[data-f=test_type]', r).value, analyst_id: Number($('[data-f=analyst_id]', r).value) || null }));
 }
 function bindTestRows(w, analysts, methods){
   const box = $('#rcTests', w);
@@ -288,7 +299,8 @@ function viewLabInbox(){
           : isSup && inboxTab === 'check'
           ? [...new Set(r.assignments.filter(a => !a.cancelled && a.analysis_status === 'submitted').map(a => a.analysis_id))]
               .map(w => `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();go('/lab/worksheet/${w}')">Check #${w}</button>`).join(' ')
-          : I.chevR}</td>
+          : I.chevR}
+          ${canApproveProduction() || r.qc_approved_at ? `<div style="margin-top:8px;white-space:normal">${labProductionApproval(r)}</div>` : ''}</td>
       </tr>`).join('')}</tbody></table></div>`
     : tab[2] && d.requests.filter(tab[2]).length ? hiddenBySearch(d.requests.filter(tab[2]).length)
     : `<div class="card-b">${emptyState('inbox', 'Nothing here', 'No requests in this list.')}</div>`;
@@ -330,19 +342,24 @@ function labReceive(id){
   signDialog({
     title: noTest ? 'Receive sample' : 'Receive sample and assign tests', sub: `${r.request_no} - ${r.product_name} batch ${r.batch_no} (${r.stage})`, size: 'wide',
     ok: noTest ? 'Sign as received' : 'Sign as received and assigned', meaning: noTest ? 'You sign as "Received by" (QC Supervisor). QC does not test this stage.' : 'You sign as "Received by" and "Assigned by" (QC Supervisor).',
-    body: `<div class="small muted" style="margin-bottom:10px">Sample sent by IPQA: <b>${r.sample_qty ? esc(r.sample_qty + ' ' + (r.sample_qty_unit || '')) : '--'}</b></div>
-      ${noTest ? `<div class="notice">${I.info} QC does not test ${esc(r.stage)}. Sign to confirm the sample is received; the QC Manager then releases it.</div>`
+    alternate: noTest ? 'Sign and release to production' : '',
+    body: `<div class="field"><label for="rcQcNumber">QC number (required)</label><input class="inp" id="rcQcNumber" maxlength="100" required value="${esc(r.qc_number || '')}" ${r.qc_number ? 'readonly' : ''} autocomplete="off"><div class="tiny muted">Shared by all tests for this product, batch and stage.</div></div>
+      <div class="small muted" style="margin-bottom:10px">Sample sent by IPQA: <b>${r.sample_qty ? esc(r.sample_qty + ' ' + (r.sample_qty_unit || '')) : '--'}</b></div>
+      ${noTest ? `<div class="notice">${I.info} QC does not test ${esc(r.stage)}. Choose receive only, or <b>Sign and release to production</b> to receive and give final production approval with this signature. The latter attempts the shop floor app update and group notification, cannot be recalled or resent, and does not replace the QC Manager's Released / Not released decision.</div>`
       : `<div class="field"><label>Tests to assign</label><div id="rcTests">${testTypesFromRequest(r).map(t => testRowHtml(analysts, t, '', r.methods)).join('')}</div>
         ${r.qc_ph ? `<div class="tiny muted" style="margin:-2px 0 8px">${I.info} pH is added because "QC also tests pH" is on for ${esc(r.product_name)} (Lab master data).</div>` : ''}
         <button class="btn btn-ghost btn-sm" type="button" id="rcAdd">${I.plus} Add a test</button>
         ${analysts.length ? '' : `<div class="hint">${I.alert}<span>No one has the analyst sign-off yet: give it in the Users console.</span></div>`}</div>`}`,
     onMount: w => { if (!noTest) bindTestRows(w, analysts, r.methods); },
-    submit: async ({ password, wrap }) => {
+    submit: async ({ password, wrap, alternate }) => {
       const tests = noTest ? [] : readTestRows(wrap);
       if (!noTest && !tests.length) throw new Error('Assign at least one test.');
       if (tests.some(t => !t.analyst_id)) throw new Error('Choose an analyst for every test.');
-      await labPost('/receive', { request_id: id, password, assignments: tests, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
-      toast('Received', noTest ? `${r.request_no}: received, no tests.` : `${r.request_no}: ${tests.length} test(s) assigned.`, 'ok');
+      const qc_number = $('#rcQcNumber', wrap).value.trim();
+      if (!qc_number) throw new Error('Enter the QC number.');
+      const res = await labPost('/receive', { request_id: id, password, qc_number, assignments: tests, approve_production: noTest && alternate, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
+      if (res.received_and_approved) labApprovalOutcome(res, r.request_no);
+      else toast('Received', noTest ? `${r.request_no}: received, no tests.` : `${r.request_no}: ${tests.length} test(s) assigned.`, 'ok');
       labRefresh();
     }
   });
@@ -356,8 +373,8 @@ function labNextSteps(r){
   const btn = (label, href) => `<a class="btn btn-primary btn-sm" href="#${href}">${esc(label)}</a>`;
   if (['pending_qc_notify', 'sent_to_qc'].includes(st)) step('Next: the <b>QC Supervisor</b> receives the sample and assigns the tests.');
   if (['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
-    step('The <b>QC Supervisor</b> approves the batch for production when the results are good (any time now, before or after the tests). It clears the batch on the shop floor and tells the supervisors on WhatsApp.',
-      hasLabRole('qc_supervisor') ? `<button class="btn btn-primary btn-sm" onclick="labApprove(${r.id})">Approve</button>` : '');
+    step('A <b>QC Analyst or QC Supervisor</b> approves the batch for production (before or after the tests). This one-way decision attempts to update the shop floor app and notify the supervisors on WhatsApp.',
+      canApproveProduction() ? `<button class="btn btn-primary btn-sm" onclick="labApprove(${r.id})">Approve for production</button>` : '');
   if (st === 'qc_received'){
     const live = r.assignments.filter(a => !a.cancelled), seen = new Set();
     live.forEach(a => {
@@ -392,17 +409,16 @@ function viewLabRequest(id){
       .forEach(w => acts.push(`<a class="btn btn-primary" href="#/lab/worksheet/${w}">Check worksheet #${w}</a>`));
     if (!NO_TEST_STAGES.includes(r.stage)) acts.push(`<button class="btn btn-ghost" onclick="labChangeTests(${r.id})">${I.edit} Change tests</button>`);
   }
-  if (hasLabRole('qc_supervisor') && ['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
-    acts.push(`<button class="btn btn-primary" onclick="labApprove(${r.id})">${I.check || ''} Approve</button>`);
-  if (hasLabRole('qc_supervisor') && r.qc_approved_at && ['not_found', 'partial', 'error'].includes(r.floor_status))
-    acts.push(`<button class="btn btn-ghost" onclick="labApproveFloor(${r.id})">Send to the shop floor again</button>`);
+  if (hasLabRole('qc_supervisor') && st === 'qc_received' && !r.qc_number)
+    acts.push(`<button class="btn btn-ghost" onclick="labAssignQcNumber(${r.id})">Assign QC number</button>`);
+  if (canApproveProduction() && ['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
+    acts.push(`<button class="btn btn-primary" onclick="labApprove(${r.id})">${I.check || ''} Approve for production</button>`);
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
   if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
   // Recall (058): only the person who signed, only until the next person signs (the server checks again)
   const me = S && S.me ? String(S.me.id) : '', ids = r.ids || {}, mine = k => ids[k] != null && String(ids[k]) === me;
   const label = `${r.request_no} - ${r.product_name} ${r.batch_no}`;
   if (mine('received') && st === 'qc_received' && !r.qc_approved_at && !r.assignments.some(a => !a.cancelled && a.analysis_id)) acts.push(recallBtn('receipt', r.id, label));
-  if (mine('approved') && r.qc_approved_at && !['ok', 'already_passed', 'partial'].includes(r.floor_status)) acts.push(recallBtn('approval', r.id, label));
   if (mine('decided') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(recallBtn('decision', r.id, label));
   if (mine('qa') && ['pending_qc_notify', 'sent_to_qc'].includes(st)) acts.push(recallBtn('qa_review', r.id, label));
 
@@ -413,14 +429,15 @@ function viewLabRequest(id){
   const dec = r.qc_decision ? (r.qc_decision === 'released' ? 'Released' : 'Not released') + ': ' : '';
   return {
     title: r.request_no, crumb:'QC Laboratory',
-    html: `${pageHead(`${r.request_no} - QC lab view`, `${esc(r.product_name)} - batch <span class="mono">${esc(r.batch_no)}</span> - ${esc(r.stage)}`, batchNav(r.id, 'lab') + acts.join(''))}
+    html: `${pageHead(`${r.request_no} - QC lab view`, `${esc(r.product_name)} - batch <span class="mono">${esc(r.batch_no)}</span> - ${esc(r.stage)} - QC number: <b>${esc(r.qc_number || 'Not assigned')}</b>`, batchNav(r.id, 'lab') + acts.join(''))}
       <div class="card" style="margin-bottom:16px"><div class="card-b"><div class="kv-grid">
         <div class="kv-item"><div class="k">Status</div><div class="v">${labStatusBadge(st)}</div></div>
         ${one('Logged by IPQA', r.ipqa_signed_by, r.ipqa_signed_at, `<div class="tiny muted">Sample: ${r.sample_qty ? esc(r.sample_qty) + ' ' + esc(r.sample_qty_unit || '') : r.qc_received_qty != null ? esc(r.qc_received_qty) + ' ' + esc(r.qc_received_qty_unit || '') : '--'}</div>`)}
         ${one('QA Supervisor approved', r.qa_supervisor_signed_by, r.qa_supervisor_signed_at || r.qa_signed_at)}
         ${one('Received by QC', r.qc_received_by, r.qc_received_at)}
         ${one('Approved for production', r.qc_approved_by, r.qc_approved_at, (r.qc_approval_comments ? `<div class="tiny muted">${esc(r.qc_approval_comments)}</div>` : '')
-          + (r.floor_note ? `<div class="tiny" style="margin-top:2px;color:${['ok', 'already_passed'].includes(r.floor_status) ? 'var(--ok, #16794C)' : r.floor_status === 'no_floor_stage' ? 'inherit' : 'var(--danger)'}">${esc(r.floor_note)}</div>` : ''))}
+          + (r.floor_note ? `<div class="tiny" style="margin-top:2px;color:${['ok', 'already_passed'].includes(r.floor_status) ? 'var(--ok, #16794C)' : r.floor_status === 'no_floor_stage' ? 'inherit' : 'var(--danger)'}">${esc(r.floor_note)}</div>` : '')
+          + (r.approval_notification ? `<div class="tiny">${esc(r.approval_notification.message)}</div>` : ''))}
         ${one('QC Manager (release)', r.qc_decision ? dec + r.qc_manager : '', r.qc_manager_signed_at, r.qc_comments ? `<div class="tiny muted">${esc(r.qc_comments)}</div>` : '')}
         ${one('QA Manager acknowledged', r.qa_manager, r.qa_manager_signed_at, r.qa_manager_comments ? `<div class="tiny muted">${esc(r.qa_manager_comments)}</div>` : '')}
       </div>${r.open_oos ? `<div class="notice" style="margin-top:14px;color:var(--danger)">${I.alert} ${r.open_oos} open OOS entr${r.open_oos === 1 ? 'y' : 'ies'}: the QC Manager must close ${r.open_oos === 1 ? 'it' : 'them'} (OOS log) before deciding.</div>` : ''}
@@ -504,32 +521,50 @@ function labDecide(id){
   });
 }
 
-// QC Supervisor: approve the batch for production (clears it on the shop floor, tells the supervisors' WhatsApp group)
-function labApprove(id){
+function labAssignQcNumber(id){
   const r = (labCache['/request?id=' + id] || {}).request; if (!r) return;
-  const fails = (r.results || []).filter(x => x.pass === false).length, open = (r.assignments || []).filter(a => !a.cancelled && a.analysis_status !== 'checked').length;
-  const floor = { Granulation: 'Granulation', Compression: 'Compression', Mixing: 'Mixing' }[r.stage];
   signDialog({
-    title: 'Approve for production', sub: `${r.request_no} - ${r.product_name} batch ${r.batch_no} (${r.stage})`, ok: 'Sign approval',
-    reason: 'Comment (optional)', meaning: 'You sign as QC Supervisor that this batch is approved for production. The QC Manager\'s Released / Not released stays as it is.',
+    title: 'Assign QC number', sub: `${r.product_name} - ${r.batch_no} - ${r.stage}`, ok: 'Assign QC number',
+    body: '<div class="field"><label for="qcNumber">QC number (shared by all tests for this product, batch and stage)</label><input class="inp" id="qcNumber" maxlength="100" autocomplete="off"></div>',
+    submit: async ({ password, wrap }) => {
+      const qc_number = $('#qcNumber', wrap).value.trim();
+      if (!qc_number) throw new Error('Enter the QC number.');
+      await labPost('/qc-number', { request_id: id, password, qc_number });
+      toast('QC number assigned', qc_number, 'ok'); labRefresh();
+    }
+  });
+}
+// Production approval is irreversible, independently of shop floor delivery.
+async function labApprove(id){
+  const path = '/request?id=' + id;
+  let d;
+  try { d = await api(LAB + path); if (d.error) throw new Error(d.error); }
+  catch (e) { toast('Could not load production approval', e.message, 'err'); return; }
+  labCache[path] = d;
+  const r = d.request;
+  if (r.qc_approved_at){ toast('Already approved for production', `${r.request_no}: ${r.qc_approved_by || ''} - ${fmtDateTime(r.qc_approved_at)}`, 'warn'); labRefresh(); return; }
+  const fails = (r.results || []).filter(x => x.pass === false).length, open = (r.assignments || []).filter(a => !a.cancelled && a.analysis_status !== 'checked').length;
+  const floor = { Granulation: 'Granulation', Compression: 'Compression', Mixing: 'Mixing', 'Finished Product': 'Secondary packing' }[r.stage];
+  signDialog({
+    title: 'Approve for production', sub: `${r.request_no} - ${r.product_name} batch ${r.batch_no} (${r.stage})`, ok: 'Sign production approval',
+    reason: 'Comment (optional)', meaning: `You sign as ${hasLabRole('qc_supervisor') ? 'QC Supervisor' : 'QC Analyst'} that this batch is approved for production. This cannot be recalled or sent again. The QC Manager's Released / Not released stays as it is.`,
     body: `<div class="small" style="margin-bottom:12px">${(r.results || []).length} result(s) so far${fails ? `, <b style="color:var(--danger)">${fails} out of specification</b>` : ''}${open ? `; ${open} test(s) not finished yet` : ''}.</div>
-      <div class="notice" style="margin-bottom:12px">${I.info} ${floor ? `The batch is marked <b>Quality Passed</b> at ${floor} on the shop floor (cleared for the next stage), and` : 'The'} supervisors' WhatsApp group gets "QC approved", with Daniel tagged.</div>`,
+      <div class="notice" style="margin-bottom:12px">${I.info} ${floor ? `QSync attempts to mark the batch <b>Quality Passed</b> at ${floor} in the shop floor app, and` : 'QSync'} sends "QC approved" to the supervisors' WhatsApp group. The approval is final even if delivery fails; there is no resend.</div>`,
     submit: async ({ password, reason }) => {
       const res = await labPost('/approve', { request_id: id, password, comments: reason, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
-      const f = res.floor || {};
-      toast('Approved', f.status === 'ok' || f.status === 'already_passed' || f.status === 'no_floor_stage' ? `${r.request_no}: approved.`
-        : `${r.request_no}: approved, but the shop floor was not updated: ${f.message || 'unknown reason'}`, f.status === 'not_found' || f.status === 'error' ? 'warn' : 'ok');
+      labApprovalOutcome(res, r.request_no);
       labRefresh();
     }
   });
 }
-async function labApproveFloor(id){
-  try {
-    const res = await labPost('/approve/floor', { request_id: id });
-    const f = res.floor || {};
-    toast(f.status === 'ok' || f.status === 'already_passed' ? 'Shop floor updated' : 'Shop floor not updated', f.message || (res.request || {}).floor_note || '', f.status === 'ok' || f.status === 'already_passed' ? 'ok' : 'warn');
-    labRefresh();
-  } catch (e){ toast('Could not send it', e.message, 'err'); }
+
+function labApprovalOutcome(res, requestNo){
+  const f = res.floor || {};
+  const delivered = ['ok', 'already_passed', 'no_floor_stage'].includes(f.status);
+  toast(delivered ? (res.received_and_approved ? 'Received and approved' : 'Approved') : 'Approved, but shop floor app was not updated',
+    `${requestNo}: ${f.message || (delivered ? 'approved.' : 'No delivery confirmation received.')}`, delivered ? 'ok' : 'warn', 12000);
+  if (!res.notification || res.notification.status !== 'accepted')
+    toast('Approved, but group notification was not confirmed', (res.notification || {}).message || 'No delivery confirmation received. The approval remains final.', 'warn', 12000);
 }
 
 function labQaAck(id){
@@ -553,19 +588,19 @@ function viewLabMy(){
   const waiting = d.waiting || [];
   mySel = new Set([...mySel].filter(x => waiting.some(w => w.assignment_id === x)));
   const chosen = waiting.filter(w => mySel.has(w.assignment_id));
-  const mixed = new Set(chosen.map(w => [w.product_name, w.stage, w.test_type].join('|'))).size > 1;
+  const mixed = new Set(chosen.map(w => [w.product_name, w.test_type].join('|'))).size > 1;
   return {
     title:'My analyses', crumb:'QC Laboratory',
     html: `${pageHead('My analyses', 'Tests assigned to you, and your worksheets. One worksheet = one HPLC run: pick every batch that goes into the run.',
               `<button class="btn btn-ghost" onclick="labRefresh()">${I.play} Refresh</button>`)}
       ${!hasLabRole('qc_analyst') ? `<div class="notice" style="margin-bottom:16px">${I.info} You do not have the analyst sign-off, so no tests can be assigned to you.</div>` : ''}
-      <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Waiting for a worksheet</h3><div class="sub">Tick the batches for one run (same product, stage and test)</div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Waiting for a worksheet</h3><div class="sub">Same product and test; different stages are allowed. Product groups do not yet allow different products in one worksheet.</div></div>
         <button class="btn btn-primary btn-sm" id="myStart" ${chosen.length && !mixed ? '' : 'disabled'}>${I.plus} Start worksheet (${chosen.length})</button></div>
-        ${mixed ? `<div class="card-b" style="padding-top:0"><div class="hint" style="color:var(--danger)">${I.alert}<span>One worksheet holds one product, stage and test.</span></div></div>` : ''}
+        ${mixed ? `<div class="card-b" style="padding-top:0"><div class="hint" style="color:var(--danger)">${I.alert}<span>Choose the same product and test; stages may differ.</span></div></div>` : ''}
         ${waiting.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Request</th><th>Product / Batch</th><th>Stage</th><th>Test</th><th>Due</th></tr></thead><tbody>
           ${waiting.map(w => `<tr><td style="width:36px"><input type="checkbox" data-sel="${w.assignment_id}" ${mySel.has(w.assignment_id) ? 'checked' : ''} style="accent-color:var(--brand);width:16px;height:16px"></td>
             <td><a href="#/lab/request/${w.request_id}" class="req-no">${esc(w.request_no)}</a></td><td><div class="strong">${esc(w.product_name)}</div><div class="tiny muted mono">${esc(w.batch_no)}</div></td>
-            <td><span class="chip">${esc(w.stage)}</span></td><td>${esc(TEST_TYPES[w.test_type] || w.test_type)}</td><td class="small">${fmtDate(w.due_date)}</td></tr>`).join('')}
+            <td><span class="chip">${esc(w.stage)}</span><div class="tiny">QC: ${esc(w.qc_number || 'Not assigned')}</div></td><td>${esc(TEST_TYPES[w.test_type] || w.test_type)}</td><td class="small">${fmtDate(w.due_date)}</td></tr>`).join('')}
           </tbody></table></div>` : `<div class="card-b">${emptyState('inbox', 'Nothing waiting', 'Tests appear here when the QC Supervisor assigns them to you.')}</div>`}
       </div>
       <div class="card"><div class="card-h"><h3>My worksheets</h3></div>
@@ -588,6 +623,7 @@ function viewLabMy(){
 
 /* ============================================================ Worksheet ============================================================ */
 let ws = null;   // { id, src, ctx, inputs, run, calc, tab, dirty, timer }
+function wsSampleStage(sample){ return (ws.ctx.samples.find(b => b.assignment_id === sample.assignment_id) || {}).stage || ws.ctx.analysis.stage; }
 function wsInit(d){
   const a = d.analysis;
   noteTplDp(d.templates);
@@ -629,7 +665,7 @@ function wsEnsure(){
     }
     if (test === 'assay'){
       const theo = ((((ws.ctx.templates[0] || {}).parameters || {}).avg_weight) || {}).theoretical_mg;
-      if (v.avg_weight === undefined) v.avg_weight = ws.ctx.analysis.stage === 'Granulation' && theo ? String(theo) : '';
+      if (v.avg_weight === undefined) v.avg_weight = wsSampleStage(s) === 'Granulation' && theo ? String(theo) : '';
       if (!v.preps || Array.isArray(v.preps)) v.preps = {};
     }
     if (test === 'dissolution' || test === 'content_uniformity'){ if (!v.units || Array.isArray(v.units)) v.units = {}; }
@@ -913,7 +949,7 @@ function wsApiPanel(t){
       return `<div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>${esc(t.api)} - sample ${esc(s.label)}</h3>
           <div class="sub">${esc(stepsText((P.sample || {}).steps, 'mg'))}</div></div><div id="mean-${tid}-${si}" class="strong">--</div></div>
         <div class="card-b">
-          <div class="field" style="max-width:260px"><label>Average weight (mg${ws.ctx.analysis.stage === 'Granulation' ? ', granules: theoretical' : ', measured'})</label>${inpNum(`values.${s.key}.avg_weight`, 'placeholder="mg"')}
+          <div class="field" style="max-width:260px"><label>Average weight (mg${wsSampleStage(s) === 'Granulation' ? ', granules: theoretical' : ', measured'})</label>${inpNum(`values.${s.key}.avg_weight`, 'placeholder="mg"')}
             <div class="hint">${I.info}<span>Shared by the three APIs of this sample.</span></div></div>
           <div class="tbl-wrap"><table class="tbl" style="min-width:0" data-nosort><thead><tr><th>Prep</th><th>Sample weight (mg)</th><th>${esc(techWords(P).spl)}</th><th style="text-align:right">% of label claim</th></tr></thead><tbody>
           ${preps.map((p, pi) => `<tr><td class="strong">${String.fromCharCode(97 + pi)}</td>
@@ -989,6 +1025,21 @@ function wsApiPanel(t){
   }
   return emptyState('alert', 'Unknown test', '');
 }
+function wsProductionApprovals(d){
+  const samples = [...new Map(d.samples.map(s => [s.request_id, s])).values()];
+  return `<div class="card" id="wsProductionApprovals" style="margin-bottom:16px"><div class="card-h"><div><h3>Production approval</h3>
+    <div class="sub">Approve each batch and stage separately. This does not submit or check this worksheet, or replace the QC Manager decision.</div></div></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product / Batch</th><th>Stage</th><th>Production approval</th></tr></thead><tbody>
+      ${samples.map(s => {
+        const detail = labGet('/request?id=' + s.request_id);
+        const state = !detail ? '<span class="small muted">Loading approval...</span>'
+          : detail.error ? `<div class="small" role="alert">${esc(detail.error)} <button class="btn btn-ghost btn-sm" onclick="labRefresh()">Try again</button></div>`
+          : labProductionApproval(detail.request);
+        return `<tr><td>${esc(d.analysis.product_name)}<div class="mono small">${esc(s.batch_no)}</div></td><td>${esc(s.stage || d.analysis.stage)}</td><td>${state}</td></tr>`;
+      }).join('')}
+    </tbody></table></div></div>`;
+}
+
 function viewLabWorksheet(id){
   const d = labGet('/worksheet?id=' + id);
   if (!d) return labWait('Worksheet', 'QC Laboratory');
@@ -1004,12 +1055,13 @@ function viewLabWorksheet(id){
   const batchOf = s => (d.samples.find(b => b.assignment_id === s.assignment_id) || {}).batch_no || '?';
   const maxSamples = Math.min(...d.templates.map(x => ((x.parameters || {}).samples || {}).max || 1));
   const perBatch = id2 => ws.inputs.samples.filter(s => s.assignment_id === id2).length;
+  const fileOperationPending = (d.attachment_operations || []).length > 0;
   const acts = [];
   if (edit){
     acts.push(`<button class="btn btn-ghost" id="wsSave">Save draft</button>`);
-    acts.push(`<button class="btn btn-primary" id="wsSubmit">${I.send} Submit</button>`);
+    acts.push(`<button class="btn btn-primary" id="wsSubmit" ${fileOperationPending ? 'disabled title="Resolve the pending file operation first"' : ''}>${I.send} Submit</button>`);
   }
-  if (hasLabRole('qc_supervisor') && a.status === 'submitted' && !a.is_mine) acts.push(`<button class="btn btn-primary" onclick="wsCheck()">Check / return</button>`);
+  if (hasLabRole('qc_supervisor') && a.status === 'submitted' && !a.is_mine) acts.push(`<button class="btn btn-primary" onclick="wsCheck()" ${fileOperationPending ? 'disabled title="Resolve the pending file operation first"' : ''}>Check / return</button>`);
   // Recall (058): the analyst until the QC Supervisor checks; the checker until the QC Manager decides (the server checks again)
   if (a.is_mine && a.status === 'submitted') acts.push(recallBtn('worksheet', a.id, `Worksheet #${a.id} - ${a.product_name}`));
   if (a.status === 'checked' && a.checked_by && S.me && a.checked_by === S.me.name && !d.samples.some(b => b.decided)) acts.push(recallBtn('check', a.id, `Worksheet #${a.id} - ${a.product_name}`));
@@ -1020,19 +1072,21 @@ function viewLabWorksheet(id){
     html: `${pageHead(`Worksheet #${a.id} - ${esc(TEST_TYPES[a.test_type] || a.test_type)}`, `${esc(a.product_name)} - ${esc(a.stage)} - analyst ${esc(a.analyst)} - ${wsBadge(a.status)}`, acts.join(''))}
       ${a.status === 'returned' ? `<div class="notice" style="margin-bottom:16px;color:var(--danger)">${I.alert} Returned by ${esc(a.returned_by || '')} ${a.returned_at ? fmtDateTime(a.returned_at) : ''}: <b>${esc(a.return_reason || '')}</b>. Every correction asks for a reason.</div>` : ''}
       ${!edit && !['submitted', 'checked'].includes(a.status) && !a.is_mine ? `<div class="notice" style="margin-bottom:16px">${I.info} Only the analyst of this worksheet can edit it.</div>` : ''}
+      ${wsProductionApprovals(d)}
       <div class="grid g2" style="margin-bottom:16px;align-items:start">
         <div class="card"><div class="card-h"><div><h3>Run details</h3><div class="sub">Every field on this worksheet is required to submit</div></div></div><div class="card-b"><div class="grid g2">
           ${a.test_type === 'microbiology' ? '' : `<div class="field"><label>Instrument</label><select class="inp${wsMiss(ws.run.equipment_id)}" data-r="equipment_id" ${edit ? '' : 'disabled'}><option value="">Choose...</option>
             ${d.equipment.map(q => `<option value="${q.id}" ${String(ws.run.equipment_id) === String(q.id) ? 'selected' : ''}>${esc(q.eq_no)} ${esc(q.eq_type || '')}</option>`).join('')}</select></div>
           <div class="field"><label>Mobile phase / reagent lots</label><input class="inp${wsMiss(ws.run.reagents)}" data-r="reagents" value="${esc(ws.run.reagents)}" ${edit ? '' : 'disabled'} placeholder="separate them with commas">
+            ${edit && (d.reagent_sources || []).length ? `<select class="inp" id="wsReuseReagents" aria-label="Reuse previous mobile phase or reagent lots"><option value="">Reuse a previous entry...</option>${d.reagent_sources.map(s => `<option value="${s.analysis_id}">#${s.analysis_id} - ${esc(s.started_on || '')} - ${esc(s.analyst)}: ${esc(s.reagents)}</option>`).join('')}</select><div class="tiny muted">Confirm the preparation and lots are still suitable before reuse.</div>` : ''}
             <div id="wsReagents" style="margin-top:6px">${reagentChips(ws.run.reagents)}</div></div>`}
           <div class="field"><label>Analysis started</label><input class="inp${wsMiss(ws.run.started_on)}" type="date" data-r="started_on" value="${esc(ws.run.started_on || '')}" ${edit ? '' : 'disabled'}></div>
           <div class="field"><label>Analysis ended</label><input class="inp${wsMiss(ws.run.ended_on)}" type="date" data-r="ended_on" value="${esc(ws.run.ended_on || '')}" ${edit ? '' : 'disabled'}></div>
         </div></div></div>
         <div class="card"><div class="card-h"><div><h3>Samples</h3><div class="sub">One per batch; a validation batch may have up to ${maxSamples} (e.g. LS, MS, HS)</div></div></div>
           <div class="card-b">${ws.inputs.samples.map((s, si) => `<div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:nowrap">
-              <div style="flex:1" class="small">Batch <b class="mono">${esc(batchOf(s))}</b></div>
-              <input class="inp" style="flex:1" data-k="samples.${si}.label" value="${esc(s.label)}" ${edit ? '' : 'disabled'} aria-label="Sample label">
+              <div style="flex:1" class="small">Batch <b class="mono">${esc(batchOf(s))}</b><div class="tiny">${esc(wsSampleStage(s))} - QC: ${esc((d.samples.find(b => b.assignment_id === s.assignment_id) || {}).qc_number || 'Not assigned')}</div></div>
+              <input class="inp" style="flex:1" data-k="samples.${si}.label" maxlength="50" value="${esc(s.label)}" ${edit ? '' : 'disabled'} aria-label="Sample label">
               ${edit && ws.inputs.samples.findIndex(x => x.assignment_id === s.assignment_id) !== si ? `<button class="btn-icon" onclick="wsSample(${si},-1)" title="Remove sample">${I.x}</button>` : '<span style="width:32px"></span>'}</div>`).join('')}
             ${edit ? d.samples.filter(b => perBatch(b.assignment_id) < maxSamples).map(b => `<button class="btn btn-ghost btn-sm" onclick="wsSample(${b.assignment_id},1)">${I.plus} Sample for batch ${esc(b.batch_no)}</button>`).join(' ') : ''}
           </div></div>
@@ -1042,20 +1096,29 @@ function viewLabWorksheet(id){
       ${t ? wsApiPanel(t) : emptyState('alert', 'No method template', '')}
       <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Results</h3><div class="sub">Calculated on the server from the values above (engine <span id="wsEngine">${esc((ws.calc || {}).engine_version || '')}</span>)</div></div>
         <span id="wsCalcState" class="small muted"></span></div><div id="wsResults" class="card-b"></div></div>
-      <div class="card"><div class="card-h"><div><h3>Chromatograms</h3><div class="sub">PDF printouts from Empower / LabSolutions, stored in MinIO with a fingerprint (SHA-256). Files can be added, never replaced or deleted.</div></div>
-        ${(a.is_mine && a.status !== 'checked') || hasLabRole('qc_supervisor') || hasLabRole('qc_manager')
+      <div class="card"><div class="card-h"><div><h3>Chromatograms</h3><div class="sub">Fingerprint-checked PDFs. Replacement and deletion require a reason and keep an audit record. Signed worksheets must first be recalled or returned.</div></div>
+        ${d.attachments_editable
           ? `<label class="btn btn-ghost btn-sm" style="cursor:pointer">${I.plus} Add PDF<input type="file" id="wsFile" accept="application/pdf" multiple style="display:none"></label>` : ''}</div>
         ${d.attachments.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th>Fingerprint</th><th></th></tr></thead><tbody>
           ${d.attachments.map(f => `<tr><td>${I.doc} ${esc(f.file_name)}</td><td class="small">${(Number(f.size_bytes || 0) / 1024).toFixed(0)} KB</td>
             <td class="small">${esc(f.uploaded_by || '')}<div class="tiny muted">${fmtDateTime(f.uploaded_at)}</div></td>
             <td class="mono tiny" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 16))}...<div id="att-ver-${f.id}"></div></td>
-            <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="labOpenFile(${f.id}, '${esc(f.sha256)}')">Open</button></td></tr>`).join('')}</tbody></table></div>`
+            <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="labOpenFile(${f.id}, '${esc(f.sha256)}')">Open</button>${labAttachmentActions(d, f.id)}</td></tr>`).join('')}</tbody></table></div>`
           : `<div class="card-b">${emptyState('doc', 'No chromatograms yet', 'Add the PDF printouts of this run; the checker compares the typed areas with them.')}</div>`}
+        ${labAttachmentAudit(d)}
       </div>`,
     bind(){
       wsBindInputs();
       $$('[data-r]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { ws.run[el.dataset.r] = el.value; ws.dirty = true; wsUnmark(el);
         if (el.dataset.r === 'reagents'){ const box = $('#wsReagents'); if (box) box.innerHTML = reagentChips(el.value); } }));
+      const reuse = $('#wsReuseReagents');
+      if (reuse) reuse.onchange = () => {
+        const source = (d.reagent_sources || []).find(s => String(s.analysis_id) === reuse.value);
+        if (!source) return;
+        const input = $('[data-r="reagents"]');
+        input.value = source.reagents;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      };
       $$('[data-ws]').forEach(el => el.addEventListener('change', () => wsStdChange(el)));
       const fi = $('#wsFile'); if (fi) fi.onchange = () => wsUpload(Array.from(fi.files || []));
       const sv = $('#wsSave'); if (sv) sv.onclick = () => wsSave();
@@ -1128,7 +1191,10 @@ function wsSample(arg, delta){
     const n = list.filter(s => s.assignment_id === arg).length;
     const named = (((ws.ctx.templates[0] || {}).parameters || {}).sample_names) || [];   // 065: the method's usual sample names
     const labels = named.length ? named : ['LS', 'MS', 'HS', 'S4', 'S5'];
-    list.push({ key: 'a' + arg + '_' + Date.now().toString(36), assignment_id: arg, label: labels[n] || 'S' + (n + 1) });
+    const batch = ws.ctx.samples.find(b => b.assignment_id === arg);
+    const suffix = String(labels[n] || 'S' + (n + 1)).slice(0, 20);
+    const prefix = batch ? `#${batch.request_id}: ${batch.batch_no} / ${batch.stage || ws.ctx.analysis.stage}` : '';
+    list.push({ key: 'a' + arg + '_' + Date.now().toString(36), assignment_id: arg, label: prefix.slice(0, Math.max(0, 47 - suffix.length)) + (prefix ? ' / ' : '') + suffix });
   } else {
     const s = list[arg]; list.splice(arg, 1); delete ws.inputs.values[s.key];
   }
@@ -1325,6 +1391,75 @@ function wsSendBack(){
 
 
 /* ---- chromatograms: upload (PDF -> server -> MinIO) and open with the fingerprint checked in the browser ---- */
+function labAttachmentActions(d, id){
+  if (!d.attachments_editable || !d.attachment_lifecycle_available) return '';
+  return `<button class="btn btn-ghost btn-sm" onclick="labChangeAttachment(${d.analysis.id},${id},'replace')">Replace</button>
+    <button class="btn btn-ghost btn-sm" onclick="labChangeAttachment(${d.analysis.id},${id},'delete')">Delete</button>`;
+}
+function labAttachmentAudit(d){
+  const pending = d.attachment_operations || [], history = d.attachment_history || [];
+  return `${pending.length ? `<div class="card-b notice" role="alert"><div><b>A file operation needs attention.</b> This worksheet cannot be signed until it is resolved.
+    ${pending.map(op => `<div class="small">#${esc(op.operation_id)} ${esc(op.kind)}: ${esc(op.status)}${op.error ? ' - ' + esc(op.error) : ''}
+      ${op.can_retry ? `<button class="btn btn-ghost btn-sm" onclick="labResumeAttachment('${esc(op.operation_id)}',this)">Resume file operation</button>` : ''}</div>`).join('')}
+    <button class="btn btn-ghost btn-sm" onclick="labRefresh()">Refresh status</button></div></div>` : ''}
+    ${d.attachments_editable && !d.attachment_lifecycle_available ? '<div class="card-b small muted">Replacement and deletion are unavailable until permanent storage removal is configured.</div>' : ''}
+    ${history.length ? `<details class="card-b"><summary>Removed or replaced files (${history.length}) - audit records only</summary>
+      <div class="small muted">Original PDFs are not included in downloads.</div>
+      ${history.map(f => `<div class="small" style="margin-top:8px"><b>${esc(f.file_name)}</b> - uploaded by ${esc(f.uploaded_by_name || f.uploaded_by || '')} ${fmtDateTime(f.uploaded_at)}
+        <div>${f.replacement_id ? 'Replaced by file #' + esc(f.replacement_id) : 'Deleted'} ${fmtDateTime(f.deleted_at)} by ${esc(f.deleted_by_name || 'account #' + f.deleted_by)}: ${esc(f.deletion_reason || '')}</div>
+        <div class="mono tiny">${esc(f.sha256)}</div></div>`).join('')}</details>` : ''}`;
+}
+async function labResumeAttachment(operationId, button){
+  button.disabled = true;
+  try {
+    await labPost('/attachment/retry', { operation_id: operationId });
+    toast('File operation completed', 'Storage removal was verified and the audit record retained.', 'ok');
+  } catch (e) { toast('File operation not completed', e.message, 'err', 12000); }
+  finally { button.disabled = false; labRefresh(); }
+}
+function labChangeAttachment(analysisId, attachmentId, kind){
+  const d = labCache['/worksheet?id=' + analysisId];
+  if (!d || !d.attachments_editable || !d.attachment_lifecycle_available){
+    toast('File cannot be changed', 'Refresh the worksheet. Signed worksheets must first be recalled or returned.', 'err'); return;
+  }
+  const file = (d.attachments || []).find(f => f.id === attachmentId);
+  if (!file){ toast('File not found', 'Refresh the worksheet before trying again.', 'err'); return; }
+  const replace = kind === 'replace', title = replace ? 'Replace chromatogram' : 'Delete chromatogram';
+  openModal({
+    title, size: 'narrow',
+    body: `<p class="small"><b>${esc(file.file_name)}</b></p><p class="small">${replace
+      ? 'The replacement PDF is stored first. The original is permanently removed only if storage protections permit it.'
+      : 'The original PDF will be permanently removed if storage protections permit it. This cannot be undone.'} Its fingerprint and audit history are retained.</p>
+      ${replace ? '<div class="field"><label for="attReplacement">Replacement PDF (up to 10 MB)</label><input class="inp" id="attReplacement" type="file" accept="application/pdf"></div>' : ''}
+      <div class="field"><label for="attReason">Reason (required)</label><textarea class="inp" id="attReason" rows="3"></textarea></div>
+      <div class="err-msg hide" id="attError" role="alert" style="color:var(--danger)"></div>`,
+    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="attConfirm">${title}</button>`,
+    onMount: (wrap, close) => {
+      $('#attConfirm', wrap).onclick = async () => {
+        const button = $('#attConfirm', wrap), error = $('#attError', wrap), reason = $('#attReason', wrap).value.trim();
+        let attempted = false;
+        button.disabled = true;
+        try {
+          if (!reason) throw new Error('Enter a reason.');
+          const body = { attachment_id: attachmentId, reason };
+          if (replace){
+            const replacement = $('#attReplacement', wrap).files[0];
+            if (!replacement) throw new Error('Choose a replacement PDF.');
+            if (!replacement.size || replacement.size > 10 * 1024 * 1024) throw new Error('Choose a non-empty PDF no larger than 10 MB.');
+            Object.assign(body, { file_name: replacement.name, content_type: 'application/pdf', data_base64: await fileToBase64(replacement) });
+          }
+          error.classList.add('hide'); attempted = true;
+          await labPost('/attachment/' + kind, body);
+          close(); toast(replace ? 'Chromatogram replaced' : 'Chromatogram deleted', 'The audit record has been retained.', 'ok');
+          labRefresh();
+        } catch (e) {
+          error.textContent = e.message; error.classList.remove('hide');
+          if (attempted) labRefresh();
+        } finally { button.disabled = false; }
+      };
+    }
+  });
+}
 function fileToBase64(file){
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -1345,7 +1480,8 @@ async function wsUpload(files){
       done++;
     } catch (e) { toast('Not added: ' + f.name, e.message, 'err', 7000); }
   }
-  if (done){ toast('Chromatograms added', `${done} file(s) stored with their fingerprint.`, 'ok'); delete labCache['/worksheet?id=' + id]; render(); }
+  if (done) toast('Chromatograms added', `${done} file(s) stored with their fingerprint.`, 'ok');
+  labRefresh();
 }
 async function labOpenFile(id, expected){
   const out = $('#att-ver-' + id);
@@ -1739,9 +1875,9 @@ function mdProductsBody(qcs){
   const p = mdProduct != null ? products.find(x => Number(x.id) === Number(mdProduct)) : null;
   if (!p) return `<div class="card"><div class="card-h"><div><h3>Products and specifications</h3><div class="sub">What IPQA checks at each stage. A new product or a change is started by a QC or QA Supervisor, reviewed by the QC Manager and approved by the QA Manager; the IPQA sheet uses it as soon as it is approved.</div></div>
       ${qcs ? `<button class="btn btn-primary btn-sm" onclick="productDialog()">${I.plus} New product</button>` : ''}</div>
-    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product</th><th>Type</th><th>Prefix</th><th>Shelf life</th><th>Stages checked by IPQA</th><th></th></tr></thead><tbody>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product</th><th>Method group</th><th>Type</th><th>Prefix</th><th>Shelf life</th><th>Stages checked by IPQA</th><th></th></tr></thead><tbody>
     ${products.map(x => { const st = [...new Set((x.specs || []).map(y => y.stage))];
-      return `<tr class="clickable" onclick="mdProduct=${x.id};render()"><td class="strong">${esc(x.name)}</td><td><span class="badge b-brand">${esc(x.type)}</span></td><td class="mono">${esc(x.prefix)}</td>
+      return `<tr class="clickable" onclick="mdProduct=${x.id};render()"><td class="strong">${esc(x.name)}</td><td>${esc(((((labCache['/masterdata'] || {}).product_flags || {})[x.name]) || {}).method_group || 'No group')}</td><td><span class="badge b-brand">${esc(x.type)}</span></td><td class="mono">${esc(x.prefix)}</td>
         <td>${esc(x.shelfLifeMonths)} months</td><td class="small">${esc(st.join(', ') || '--')}</td><td style="text-align:right">${I.chevR}</td></tr>`; }).join('')}</tbody></table></div></div>`;
   const stages = [...new Set((p.specs || []).map(y => y.stage))];
   const md = labCache['/masterdata'] || {};
@@ -2576,7 +2712,10 @@ const testOfResult = n => (n === 'density' ? 'Weight per mL' : TEST_TYPES[n] || 
 // opt.only: assignment ids to show (one batch of a run, for the detailed batch report); opt.embedded: no letterhead
 function printWorksheetHtml(d, opt){
   opt = opt || {};
-  const a = d.analysis, c = a.calc || {}, inp = a.inputs || {}, test = a.test_type, f = formFor(a.stage, (d.templates[0] || {}).method_ref);
+  const a = d.analysis, c = a.calc || {}, inp = a.inputs || {}, test = a.test_type;
+  const batchSamples = d.samples.filter(b => !opt.only || opt.only.map(String).includes(String(b.assignment_id)));
+  const stages = [...new Set(batchSamples.map(b => b.stage || a.stage))], stageTitle = stages.join(', ') || a.stage;
+  const f = formFor(stages.length === 1 ? stages[0] : 'Mixed stages', (d.templates[0] || {}).method_ref);
   const eq = d.equipment.find(q => String(q.id) === String(a.equipment_id));
   const samples = inp.samples || [];
   const show = sm => !opt.only || opt.only.map(String).includes(String(sm.assignment_id));
@@ -2655,11 +2794,12 @@ function printWorksheetHtml(d, opt){
       <div class="doc">${esc(f[1])}<br>Worksheet #${a.id}<br>Engine ${esc(c.engine_version || a.engine_version || '--')}</div></div>`}
     ${a.status !== 'checked' ? `<p><b>Status: ${esc((WS_STATUS[a.status] || [a.status])[0])}</b>${a.status === 'in_progress' ? ' - draft, not submitted' : ''}</p>` : ''}
     <h4>Analysis details</h4>
-    <table class="kv"><tr><th>Product</th><td>${esc(a.product_name)}</td><th>Stage</th><td>${esc(a.stage)}</td></tr>
-      <tr><th>Batch(es)</th><td>${esc(d.samples.map(b => b.batch_no).join(', '))}</td><th>Requests</th><td>${esc(d.samples.map(b => b.request_no).join(', '))}</td></tr>
+    <table class="kv"><tr><th>Product</th><td>${esc(a.product_name)}</td><th>Stage</th><td>${esc(stageTitle)}</td></tr>
+      <tr><th>Batch(es)</th><td>${esc(batchSamples.map(b => b.batch_no).join(', '))}</td><th>Requests</th><td>${esc(batchSamples.map(b => b.request_no).join(', '))}</td></tr>
       ${test === 'microbiology' ? '' : `<tr><th>Instrument</th><td>${esc(eq ? eq.eq_no + ' ' + (eq.eq_type || '') : '--')}</td><th>Reagent / mobile phase lots</th><td>${reagentList(a.reagents).length ? reagentList(a.reagents).map(x => esc(x)).join('<br>') : '--'}</td></tr>`}
       <tr><th>Started</th><td>${fmtDate(a.started_on)}</td><th>Ended</th><td>${fmtDate(a.ended_on)}</td></tr>
       <tr><th>Method</th><td>${esc([...new Set(d.templates.map(t => t.method_ref).filter(Boolean))].join(', ') || '--')}</td><th>Specification</th><td>${esc([...new Set(d.templates.map(t => t.spec_ref).filter(Boolean))].join(', ') || '--')}</td></tr></table>
+    <table><tr><th>Batch</th><th>Stage</th><th>QC number</th></tr>${batchSamples.map(b => `<tr><td>${esc(b.batch_no)}</td><td>${esc(b.stage || a.stage)}</td><td>${esc(b.qc_number || 'Not assigned')}</td></tr>`).join('')}</table>
     ${printSharedPart(d, c, inp, samples, show, test)}
     ${parts}
     ${opt.embedded ? '' : `<div class="sign-grid">${signBox('Performed by (analyst)', a.performed_by, a.performed_at)}${signBox('Checked by (QC Supervisor)', a.checked_by, a.checked_at)}</div>`}
@@ -2756,7 +2896,8 @@ function labBatchHead(d, title, docNo, sub){
       <div class="doc">${esc(docNo)}<br>Request No: ${esc(r.request_no)}<br>Status: ${esc(labStatusText(r.status))}</div></div>
     <h4>Batch details</h4>
     <table class="kv"><tr><th>Product</th><td>${esc(r.product_name)}</td><th>Batch No</th><td>${esc(r.batch_no)}</td></tr>
-      <tr><th>Stage</th><td>${esc(r.stage)}</td><th>Tests required</th><td>${esc(r.test_required || '--')}</td></tr>
+      <tr><th>Stage</th><td>${esc(r.stage)}</td><th>QC number</th><td>${esc(r.qc_number || 'Not assigned')}</td></tr>
+      <tr><th>Tests required</th><td colspan="3">${esc(r.test_required || '--')}</td></tr>
       <tr><th>Batch size</th><td>${r.batch_size ? esc(r.batch_size + ' ' + (r.batch_size_unit || '')) : '--'}</td><th>Sample sent</th><td>${r.sample_qty ? esc(r.sample_qty + ' ' + (r.sample_qty_unit || '')) : '--'}</td></tr>
       <tr><th>Mfg Date</th><td>${fmtMonthYear(r.mfg_date)}</td><th>Exp Date</th><td>${fmtMonthYear(r.exp_date)}</td></tr>
       <tr><th>Sample received by QC</th><td>${r.qc_received_at ? fmtDateTime(r.qc_received_at) : '--'}</td><th>Received by</th><td>${esc(r.qc_received_by || '--')}</td></tr></table>
@@ -2847,7 +2988,7 @@ function viewLabChromatograms(id){
   if (sheets.some(x => !x)) return labWait('Chromatograms', 'QC Laboratory');
   const bad = sheets.find(x => x.error);
   if (bad) return labFail('Chromatograms', 'QC Laboratory', bad.error);
-  const files = sheets.flatMap(ws => (ws.attachments || []).map(file => ({ ...file, test_type: ws.analysis.test_type, analysis_id: ws.analysis.id })));
+  const files = sheets.flatMap(ws => (ws.attachments || []).map(file => ({ ...file, test_type: ws.analysis.test_type, analysis_id: ws.analysis.id, worksheet: ws })));
   const groups = new Map();
   files.forEach(file => {
     if (!groups.has(file.test_type)) groups.set(file.test_type, []);
@@ -2855,14 +2996,15 @@ function viewLabChromatograms(id){
   });
   const row = file => `<tr data-chrom-file="${esc(file.id)}" data-file-name="${esc(file.file_name || '')}" data-sha256="${esc(file.sha256 || '')}"><td><a href="#/lab/worksheet/${esc(file.analysis_id)}">Worksheet #${esc(file.analysis_id)}</a></td>
     <td><b>${esc(file.file_name)}</b></td><td class="mono">${esc(file.sha256)}</td><td>${esc(file.uploaded_by || '')}<div class="tiny muted">${fmtDateTime(file.uploaded_at)}</div></td>
-    <td style="text-align:right"><button class="btn btn-primary btn-sm no-print" onclick="const f = this.closest('tr').dataset; labDownloadFile(f.chromFile, f.fileName, f.sha256)">Download PDF</button></td></tr>`;
+    <td style="text-align:right"><button class="btn btn-primary btn-sm no-print" onclick="const f = this.closest('tr').dataset; labDownloadFile(f.chromFile, f.fileName, f.sha256)">Download PDF</button>${labAttachmentActions(file.worksheet, file.id)}</td></tr>`;
   const groupCards = Array.from(groups, ([type, list]) => `<div class="card" style="margin-top:16px" data-chrom-test="${esc(`${d.request.request_no}-${type}`)}">
       <div class="card-h"><h3>${esc(TEST_TYPES[type] || type)} (${list.length})</h3><button class="btn btn-primary btn-sm no-print" onclick="labDownloadTestZip(this)">Download all for this test (ZIP)</button></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Worksheet</th><th>File</th><th>SHA-256</th><th>Uploaded</th><th></th></tr></thead><tbody>${list.map(row).join('')}</tbody></table></div></div>`).join('');
   return { title: `Chromatograms - ${d.request.request_no}`, crumb: 'QC Laboratory',
     html: `${pageHead(`${d.request.request_no} - chromatograms`, 'Stored chromatogram PDFs for this batch. Each file is fingerprint-checked before download.', batchNav(id, 'chromatograms'))}
-      <div class="card"><div class="card-h"><div><h3>Chromatograms (${files.length})</h3><div class="sub">Files are stored with a SHA-256 fingerprint and cannot be replaced or deleted.</div></div></div>
-        ${files.length ? '' : `<div class="card-b">${emptyState('doc', 'No chromatograms yet', 'Files added to this batch’s QC worksheets will appear here.')}</div>`}</div>${groupCards}` };
+      <div class="card"><div class="card-h"><div><h3>Chromatograms (${files.length})</h3><div class="sub">Active PDFs only. Editable worksheets allow audited replacement or deletion; protected files cannot be removed.</div></div></div>
+        ${files.length ? '' : `<div class="card-b">${emptyState('doc', 'No chromatograms yet', 'Files added to this batch’s QC worksheets will appear here.')}</div>`}
+        ${sheets.map(sheet => labAttachmentAudit(sheet)).join('')}</div>${groupCards}` };
 }
 
 // the same buttons, in the same place, on every page of a batch; the page you are on is highlighted

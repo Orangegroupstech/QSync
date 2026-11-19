@@ -55,23 +55,41 @@ const QSYNC_HELP = [
     'Sign by ticking the box with your name.']],
   ['inbox', 'QC inbox: samples and tests', [
     'QC inbox is for samples only. <b>With IPQA</b>: samples still with IPQA or waiting for the QA Supervisor, so you see what is coming. IPQA can tap <b>Fill the sheet</b> there.',
-    '<b>Waiting for receipt</b>: the QC Supervisor taps <b>Receive</b> and assigns the tests to analysts.',
+    '<b>Waiting for receipt</b>: the QC Supervisor taps <b>Receive</b>, enters the required QC number and assigns the tests. All tests and reports for that product, batch and stage share it. Older samples already received can continue without a number.',
+    'For an ongoing batch received earlier, the QC Supervisor can use <b>Assign QC number</b> in its QC lab view. Adding a missing reference does not change worksheet results or signatures; an assigned number cannot be changed.',
     'Analysts work in <b>My analyses</b>; the QC Supervisor checks the worksheets; the QC Manager decides; the QA Manager acknowledges.',
+    'QC Analysts and Supervisors can select <b>Approve for production</b> directly on eligible QC inbox rows or in the worksheet\'s <b>Production approval</b> section. Each batch/stage is signed separately; this does not submit or check results. Approved entries show the signer and time.',
+    'For stages QC does not test, <b>Sign as received</b> receives only. <b>Sign and release to production</b> receives and approves for production with one signature, attempts the shop floor app update and group notification, and cannot be recalled or resent. The QC Manager decision remains separate.',
     'The batch page shows each step on one line and a <b>History</b> of the whole life of the batch, from the request to the end.']],
+  ['check', 'Approve for production: QC Analyst or Supervisor', [
+    'After QC receives a sample, select <b>Approve for production</b> on its row in the existing <b>QC inbox</b> tabs, or in the worksheet\'s <b>Production approval</b> section. No need to leave the worksheet; unsaved entries are kept.',
+    'Check the <b>product, batch and stage</b>, enter your password, then choose <b>Sign production approval</b>. Each batch/stage is approved separately, even on a shared worksheet.',
+    'This records your approval for production to proceed, attempts <b>Quality Passed</b> in the shop floor app, and sends the supervisors\' group notification. Approval may be given before or after tests; it does not submit/check results or stop unfinished laboratory work.',
+    '<b>This decision is final: no recall or resend.</b> Delivery failures are shown immediately; <b>Approved, but shop floor app was not updated</b> means approval was recorded but the app update failed. Group delivery failures are reported separately.',
+    'Approved entries show who signed and when. The QC Manager\'s <b>Released / Not released</b> decision remains separate.',
+    'For stages QC does not test, the QC Supervisor can instead use <b>Sign and release to production</b> during receipt to do both with one signature. <b>Sign as received</b> receives only.']],
   ['undo', 'Recall something you sent', [
     'Sent something by mistake? Open it and tap <b>Recall</b>, say why (and enter your password in the lab).',
-    'It comes back to you to correct, and the person who was waiting gets an e-mail.',
+    'It comes back to you to correct, and the person who was waiting gets an e-mail. <b>Production approval cannot be recalled</b>: it notifies the group and attempts to pass the batch in the shop floor app.',
     'You can recall only until the next person signs: IPQA sheet (until QA reviews), QA approval (until QC receives), receipt (until an analyst starts), worksheet (until it is checked), check (until the QC Manager decides), decision (until QA acknowledges), a change or method (until the QC Manager acts).',
     'If you were about to sign something that was just recalled, nothing is signed and you are told who recalled it and why.']],
   ['layers', 'One standard for several tests', [
-    'Several batches, same test: in <b>My analyses</b> tick them all, then <b>Start worksheet</b>. One worksheet, the standard entered once, a sample section per batch.',
+    'Several batches of the <b>same product and test</b>, including different stages: in <b>My analyses</b> tick them, then <b>Start worksheet</b>. Each sample shows its stage and QC number. Different products cannot share a worksheet yet, even within a group.',
     'Another test with the same standard solution (e.g. assay and content uniformity): on the new worksheet, under the standard, pick <b>Reuse a standard already run</b>. It lists worksheets of the last 7 days that used the same working standard, with the product and batch.',
     'Nothing is typed again: its weight, dilution and injections are used. If that worksheet is corrected, yours recalculates.']],
   ['box', 'QC tests: pH, weight variation, changing a limit', [
     'Weight variation and pH are QC tests now. They need an approved method for the product (Method templates: New template). A new pH method takes its limits from the product\'s IPQA pH spec.',
     'Mintacid only: <b>QC also tests pH</b> (Products and specs, Mintacid). While it is on, every Mintacid sample received gets a pH test. Switching it is a change request.',
     'To change a QC limit: Products and specs, the product, <b>QC tests</b>: click the version (e.g. v1), then <b>New version</b>. It opens filled in; change only what is different and send it.',
-    'Reagent / mobile phase lots: type them separated by commas.']],
+    'Reagent / mobile phase lots: type them separated by commas, or choose <b>Reuse a previous entry</b>. Confirm its preparation and lots are still suitable; edit before saving.']],
+  ['settings', 'Product groups', [
+    '<b>Lab master data > Products and specs</b> lists every product and its method group.',
+    'QC Supervisors and QC Managers open a product and choose <b>Change group</b>, select or create a group, and give a reason.',
+    'Groups help maintain related methods. They do <b>not</b> allow different products in one worksheet in this release.']],
+  ['doc', 'Chromatograms', [
+    'Add PDFs on the worksheet. On the batch <b>Chromatograms</b> page, download one PDF or all files for a test as a ZIP; fingerprints are checked before download.',
+    'On an editable worksheet or its Chromatograms page, choose <b>Replace</b> or <b>Delete</b> and give a reason. Signed worksheets must first be recalled or returned.',
+    'Unused originals are permanently removed; filenames, fingerprints and audit records remain. Storage retention or legal holds prevent removal. An unfinished file operation must be resolved before signing.']],
   ['chart', 'Reports and trends', [
     'The cards stay on top. <b>Overview</b> as before; <b>Timing and durations</b>: how long each step takes, month by month, the slowest batches and what is waiting now.',
     '<b>Parameter trends</b>: choose the product, IPQA or QC, the stage and the parameter. The <b>capability summary</b> lists each parameter with its mean, SD, RSD and <b>Cpk</b> (1.33 or more: capable; 1.00 to 1.32: marginal; below 1.00: not capable), and whether any result fell outside 3-sigma or 8 in a row sat on one side of the mean.',
@@ -155,7 +173,7 @@ const QSYNC_HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const QSYNC_HELP_PAGE = { 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Annual product review (APQR)': '/apqr','Change a product\'s IPQA checks': '/lab/master', 'Approvals and History (Lab master data)': '/lab/master', 'Method templates and working standards': '/lab/master', 'Set up a method: HPLC or UV': '/lab/master', 'Suspension methods (Mintacid): titration, IR, density': '/lab/master', 'Try a method with Excel numbers': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Void a request raised by mistake (QA)': () => !!S.lab && typeof hasLabRole === 'function' && (hasLabRole('qa_supervisor') || hasLabRole('qa_manager')), 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime', 'What waits for you': true, 'IPQA: fill the in-process sheet': () => hasSignoff('ipqa'), 'QA Supervisor: review an IPQA sheet': () => hasSignoff('qa_supervisor'), 'Recall something you sent': () => canRaiseRequest() || !!S.lab || hasSignoff('ipqa') || hasSignoff('qa_supervisor') || hasSignoff('qa_manager') || hasSignoff('qc_manager'), 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const QSYNC_HELP_PAGE = { 'Approve for production: QC Analyst or Supervisor': '/lab/inbox', 'Product groups': '/lab/master', 'Chromatograms': '/lab/my', 'QC inbox: samples and tests': '/lab/inbox', 'One standard for several tests': '/lab/my', 'QC tests: pH, weight variation, changing a limit': '/lab/master', 'Reports and trends': '/reports', 'Annual product review (APQR)': '/apqr','Change a product\'s IPQA checks': '/lab/master', 'Approvals and History (Lab master data)': '/lab/master', 'Method templates and working standards': '/lab/master', 'Set up a method: HPLC or UV': '/lab/master', 'Suspension methods (Mintacid): titration, IR, density': '/lab/master', 'Try a method with Excel numbers': '/lab/master', 'Relievers (someone away)': () => !!S.lab, 'Void a request raised by mistake (QA)': () => !!S.lab && typeof hasLabRole === 'function' && (hasLabRole('qa_supervisor') || hasLabRole('qa_manager')), 'Make a procurement request (QC / QA)': '/dept/procurement', 'Submit overtime (QC / QA)': '/dept/overtime', 'What waits for you': true, 'IPQA: fill the in-process sheet': () => hasSignoff('ipqa'), 'QA Supervisor: review an IPQA sheet': () => hasSignoff('qa_supervisor'), 'Recall something you sent': () => canRaiseRequest() || !!S.lab || hasSignoff('ipqa') || hasSignoff('qa_supervisor') || hasSignoff('qa_manager') || hasSignoff('qc_manager'), 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const QSYNC_HELP_MINE = () => QSYNC_HELP.filter(h => { const g = QSYNC_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewQsyncHelp(){
   return { title: 'How to use', crumb: 'Help', html: pageHead('How to use', 'The short version of each task. Ask the QC or QA Supervisor if something is not clear.')

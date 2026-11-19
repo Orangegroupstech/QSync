@@ -73,6 +73,22 @@
 
   /* ---------------- 2. shared styles ---------------- */
   const css = `
+  /* Consoles use both .on and .active for their selected subtabs. */
+  .tabs .tab:is(.on,.active,[aria-selected="true"],[aria-current="page"]){
+    color:var(--text,#16191D);background:var(--brand-50,#fff1e6);
+    border-bottom:4px solid var(--brand,#ED6B1F);border-radius:6px 6px 0 0;
+    box-shadow:inset 0 0 0 1px var(--brand,#ED6B1F);font-weight:800
+  }
+  html[data-theme="dark"] .tabs .tab:is(.on,.active,[aria-selected="true"],[aria-current="page"]){
+    background:var(--surface-2,#28352f);color:var(--text,#fff)
+  }
+  .tbl-wrap{max-height:70vh;overflow:auto;isolation:isolate}
+  .tbl-wrap thead{position:sticky;top:0;z-index:3;background:var(--surface-2,#f1f4f2)}
+  .tbl-wrap thead th{background:var(--surface-2,#f1f4f2)}
+  @media print{
+    .tbl-wrap{max-height:none!important;overflow:visible!important;isolation:auto}
+    .tbl-wrap thead,.tbl-wrap thead th{position:static!important}
+  }
   /* the bar at the top right of every page (072): Home, My profile, Phone/Laptop, Sign out */
   #oklBar{position:fixed;right:10px;top:8px;z-index:95;display:flex;gap:6px;align-items:center}
   #oklBar a,#oklBar button{border:0;border-radius:999px;padding:9px 13px;font:700 13px/1 var(--font,system-ui,sans-serif);cursor:pointer;
