@@ -331,7 +331,7 @@ function render(){
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
     if (typed) oklFormKeep.put(typed, app, path);
-    window.scrollTo({ top:0 });
+    window.oklScrollAfterRender(path);
   } catch (err) {
     console.error(err);
     app.innerHTML = fatalErrorHtml(err);

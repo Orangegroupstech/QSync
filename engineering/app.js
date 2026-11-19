@@ -412,13 +412,12 @@ function render(){
         ${emptyState('alert','Something went wrong on this screen', esc(err.message),
           `<button class="btn btn-primary" onclick="go('/')">Back to console home</button>`)}</div></div>` };
     }
-    const keep = window.scrollY;
     const typed = window.oklFormKeep ? oklFormKeep.take(app, path) : null;   // what is being typed survives the draw (formkeep.js)
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
     if (typed) oklFormKeep.put(typed, app, path);
-    window.scrollTo({ top: out.keepScroll ? keep : 0 });
+    window.oklScrollAfterRender(path);
   } catch (err) {
     console.error(err);
     app.innerHTML = fatalErrorHtml(err);

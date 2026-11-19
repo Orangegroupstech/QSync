@@ -2,6 +2,10 @@
 
 Static console for `okl.orangegroupsai.online` (one Vercel deployment, no build; Root Directory blank).
 
+Every console redraw goes through `shared.js`'s `oklScrollAfterRender(path)`: the same page keeps its scroll position,
+while navigating to a different page starts at the top. Use this helper in page renderers instead of resetting scroll directly,
+so expanding rows, filtering lists and other in-place updates do not jump the user away from their work.
+
 - `index.html` - landing page and the **single sign-in** (email + password, forced change of the default PIN, change password, sign out). Shows a tile per console; Users only for admins.
 - `employees/` - Human Resource console in three sections: Overview (dashboard: headcount, top skills), People (employee directory with active/inactive status and join/left dates; training sessions that add skills to attendees, skills matrix and downloadable skills card) and Attendance (overtime: department tiles that open the hosted overtime form, plus an overtime overview, daily view, by-person totals and entry log (each entry is a weekday, weekend or public holiday; filter by day type; editors correct or void entries); Leave (overview, requests with route and decisions and a print view, balances with yearly days per person, and the editable leave types and rules) Public holidays (a year calendar HR fills in) and Salary (advisory estimate per person from attendance and overtime, editable formula, payroll-cycle period); Attendance uploads the device Excel export (parsed in the browser, days already entered are skipped) with overview, daily register, by-person summary, history and an editable lateness time).
 - `qsync/` - QC console (requests, reports, products/specs, audit trail). People who can only read see no "New Test Request" or edit buttons.

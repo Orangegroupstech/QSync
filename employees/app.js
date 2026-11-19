@@ -373,7 +373,6 @@ function loadError(err){
     <button class="btn btn-primary" onclick="location.reload()">Retry</button>
   </div>`;
 }
-let lastRenderPath = null;
 function render(){
   const app = document.getElementById('app');
   try {
@@ -391,7 +390,6 @@ function render(){
       app.innerHTML = renderShell(notFound(), { title:'Not found', crumb:'' });
       return;
     }
-    const keepY = window.scrollY;
     let out;
     try { out = m.handler(m.params); }
     catch (err){
@@ -405,7 +403,7 @@ function render(){
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
     if (typed) oklFormKeep.put(typed, app, path);
-    window.scrollTo({ top: lastRenderPath === path ? keepY : 0 }); lastRenderPath = path;
+    window.oklScrollAfterRender(path);
   } catch (err) {
     console.error(err);
     app.innerHTML = fatalErrorHtml(err);

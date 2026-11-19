@@ -481,7 +481,6 @@ function fatalErrorHtml(err){
         onclick="location.reload()">Reload</button>
     </div></div>`;
 }
-let renderedPath = null;   // a redraw of the same page (a value added, data loaded) keeps the scroll position
 function render(){
   const app = document.getElementById('app');
   try {
@@ -507,14 +506,12 @@ function render(){
         ${emptyState('alert','Something went wrong on this screen', esc(err.message),
           `<button class="btn btn-primary" onclick="go('/requests')">Back to requests</button>`)}</div></div>` };
     }
-    const samePage = path === renderedPath, keepY = window.scrollY;
     const typed = window.oklFormKeep ? oklFormKeep.take(app, path) : null;   // what is being typed survives the draw (formkeep.js)
     app.innerHTML = renderShell(out.html, out);
     document.body.classList.remove('nav-open');
     if (out.bind) { try { out.bind(); } catch(e){ console.error(e); } }
     if (typed) oklFormKeep.put(typed, app, path);
-    window.scrollTo({ top: samePage ? keepY : 0 });
-    renderedPath = path;
+    window.oklScrollAfterRender(path);
   } catch (err) {
     console.error(err);
     app.innerHTML = fatalErrorHtml(err);
@@ -1252,4 +1249,3 @@ function viewSignoff(kind, no){
 route('/ipqa/*no', p => viewSignoff('ipqa', p.no));
 route('/ipqa-new', () => viewSignoff('ipqa-new'));
 route('/qa/*no', p => viewSignoff('qa', p.no));
-
