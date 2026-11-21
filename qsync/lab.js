@@ -25,12 +25,16 @@ function labRoles(){ return (S && S.lab && S.lab.roles) || (S && S.signRoles) ||
 function isStarter(){ return hasLabRole('qc_supervisor') || hasLabRole('qa_supervisor'); }
 function starterTitle(){ return hasLabRole('qc_supervisor') ? 'QC Supervisor' : 'QA Supervisor'; }
 function hasLabRole(r){ return labRoles().includes(r); }
-function canApproveProduction(){ return hasLabRole('qc_supervisor') || hasLabRole('qc_analyst'); }
+// 091: QC Analyst, QC Supervisor or QC Manager approve for production, except Finished Product: the QA Manager's acknowledgement approves it
+const QA_APPROVES = ['Finished Product'];
+function canApproveProduction(r){ return (hasLabRole('qc_supervisor') || hasLabRole('qc_analyst') || hasLabRole('qc_manager')) && !(r && QA_APPROVES.includes(r.stage)); }
+function productionRoleTitle(){ return hasLabRole('qc_supervisor') ? 'QC Supervisor' : hasLabRole('qc_analyst') ? 'QC Analyst' : 'QC Manager'; }
 function labProductionApproval(r){
   if (r.qc_approved_at) return `<div class="small" data-production-approved="${Number(r.id)}"><b>Production approved</b><div class="tiny">${esc(r.qc_approved_by || '')} - ${fmtDateTime(r.qc_approved_at)}</div>
     ${r.floor_note ? `<div class="tiny">${esc(r.floor_note)}</div>` : ''}
     ${r.approval_notification ? `<div class="tiny">${esc(r.approval_notification.message)}</div>` : ''}</div>`;
-  if (canApproveProduction() && ['qc_received', 'qc_released'].includes(r.status))
+  if (QA_APPROVES.includes(r.stage)) return `<span class="small muted" data-production-qa="${Number(r.id)}">The QA Manager approves it on acknowledging Released</span>`;
+  if (canApproveProduction(r) && ['qc_received', 'qc_released'].includes(r.status))
     return `<button class="btn btn-primary btn-sm" data-production-approve="${Number(r.id)}" onclick="event.stopPropagation();labApprove(${Number(r.id)})">Approve for production</button>`;
   return `<span class="small muted">${['pending_qc_notify', 'sent_to_qc'].includes(r.status) ? 'Receive the sample first' : 'Not available'}</span>`;
 }
@@ -300,7 +304,7 @@ function viewLabInbox(){
           ? [...new Set(r.assignments.filter(a => !a.cancelled && a.analysis_status === 'submitted').map(a => a.analysis_id))]
               .map(w => `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();go('/lab/worksheet/${w}')">Check #${w}</button>`).join(' ')
           : I.chevR}
-          ${canApproveProduction() || r.qc_approved_at ? `<div style="margin-top:8px;white-space:normal">${labProductionApproval(r)}</div>` : ''}</td>
+          ${canApproveProduction(r) || r.qc_approved_at ? `<div style="margin-top:8px;white-space:normal">${labProductionApproval(r)}</div>` : ''}</td>
       </tr>`).join('')}</tbody></table></div>`
     : tab[2] && d.requests.filter(tab[2]).length ? hiddenBySearch(d.requests.filter(tab[2]).length)
     : `<div class="card-b">${emptyState('inbox', 'Nothing here', 'No requests in this list.')}</div>`;
@@ -372,9 +376,11 @@ function labNextSteps(r){
   const step = (text, btn) => out.push(`<div class="next-step">${I.info}<span>${text}</span>${btn || ''}</div>`);
   const btn = (label, href) => `<a class="btn btn-primary btn-sm" href="#${href}">${esc(label)}</a>`;
   if (['pending_qc_notify', 'sent_to_qc'].includes(st)) step('Next: the <b>QC Supervisor</b> receives the sample and assigns the tests.');
-  if (['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
-    step('A <b>QC Analyst or QC Supervisor</b> approves the batch for production (before or after the tests). This one-way decision attempts to update the shop floor app and notify the supervisors on WhatsApp.',
-      canApproveProduction() ? `<button class="btn btn-primary btn-sm" onclick="labApprove(${r.id})">Approve for production</button>` : '');
+  if (QA_APPROVES.includes(r.stage) && ['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
+    step('For Finished Product, the <b>QA Manager</b> approves for production when acknowledging a <b>Released</b> decision. That updates the shop floor app (Secondary packing) and notifies the supervisors on WhatsApp.');
+  else if (['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
+    step('A <b>QC Analyst, QC Supervisor or QC Manager</b> approves the batch for production (before or after the tests). This one-way decision attempts to update the shop floor app and notify the supervisors on WhatsApp.',
+      canApproveProduction(r) ? `<button class="btn btn-primary btn-sm" onclick="labApprove(${r.id})">Approve for production</button>` : '');
   if (st === 'qc_received'){
     const live = r.assignments.filter(a => !a.cancelled), seen = new Set();
     live.forEach(a => {
@@ -384,7 +390,7 @@ function labNextSteps(r){
       if (['in_progress', 'returned'].includes(a.analysis_status))
         step(`<b>${esc(a.analyst)}</b> (analyst) ${a.analysis_status === 'returned' ? 'corrects the returned' : 'completes and submits'} worksheet #${w}.`, mine ? btn('Open worksheet #' + w, '/lab/worksheet/' + w) : '');
       else if (a.analysis_status === 'submitted')
-        step(`The <b>QC Supervisor</b> checks worksheet #${w} against the chromatograms, then signs it or returns it.`, hasLabRole('qc_supervisor') && !mine ? btn('Check worksheet #' + w, '/lab/worksheet/' + w) : '');
+        step(`The <b>QC Supervisor</b> checks worksheet #${w} against the chromatograms / results, then signs it or returns it.`, hasLabRole('qc_supervisor') && !mine ? btn('Check worksheet #' + w, '/lab/worksheet/' + w) : '');
     });
     const allChecked = live.length && live.every(a => a.analysis_status === 'checked');
     if (allChecked && r.open_oos) step('Every worksheet is checked. The <b>QC Manager</b> closes the open OOS entries, then decides.', hasLabRole('qc_manager') ? btn('Open the OOS log', '/lab/oos') : '');
@@ -411,10 +417,10 @@ function viewLabRequest(id){
   }
   if (hasLabRole('qc_supervisor') && st === 'qc_received' && !r.qc_number)
     acts.push(`<button class="btn btn-ghost" onclick="labAssignQcNumber(${r.id})">Assign QC number</button>`);
-  if (canApproveProduction() && ['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
+  if (canApproveProduction(r) && ['qc_received', 'qc_released'].includes(st) && !r.qc_approved_at)
     acts.push(`<button class="btn btn-primary" onclick="labApprove(${r.id})">${I.check || ''} Approve for production</button>`);
   if (hasLabRole('qc_manager') && st === 'qc_received') acts.push(`<button class="btn btn-primary" onclick="labDecide(${r.id})">Decide (QC Manager)</button>`);
-  if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">Acknowledge (QA Manager)</button>`);
+  if (hasLabRole('qa_manager') && ['qc_released', 'qc_not_released'].includes(st)) acts.push(`<button class="btn btn-primary" onclick="labQaAck(${r.id})">${qaApproves(r) ? 'Acknowledge and approve for production' : 'Acknowledge'} (QA Manager)</button>`);
   // Recall (058): only the person who signed, only until the next person signs (the server checks again)
   const me = S && S.me ? String(S.me.id) : '', ids = r.ids || {}, mine = k => ids[k] != null && String(ids[k]) === me;
   const label = `${r.request_no} - ${r.product_name} ${r.batch_no}`;
@@ -547,7 +553,7 @@ async function labApprove(id){
   const floor = { Granulation: 'Granulation', Compression: 'Compression', Mixing: 'Mixing', 'Finished Product': 'Secondary packing' }[r.stage];
   signDialog({
     title: 'Approve for production', sub: `${r.request_no} - ${r.product_name} batch ${r.batch_no} (${r.stage})`, ok: 'Sign production approval',
-    reason: 'Comment (optional)', meaning: `You sign as ${hasLabRole('qc_supervisor') ? 'QC Supervisor' : 'QC Analyst'} that this batch is approved for production. This cannot be recalled or sent again. The QC Manager's Released / Not released stays as it is.`,
+    reason: 'Comment (optional)', meaning: `You sign as ${productionRoleTitle()} that this batch is approved for production. This cannot be recalled or sent again. The QC Manager's Released / Not released stays as it is.`,
     body: `<div class="small" style="margin-bottom:12px">${(r.results || []).length} result(s) so far${fails ? `, <b style="color:var(--danger)">${fails} out of specification</b>` : ''}${open ? `; ${open} test(s) not finished yet` : ''}.</div>
       <div class="notice" style="margin-bottom:12px">${I.info} ${floor ? `QSync attempts to mark the batch <b>Quality Passed</b> at ${floor} in the shop floor app, and` : 'QSync'} sends "QC approved" to the supervisors' WhatsApp group. The approval is final even if delivery fails; there is no resend.</div>`,
     submit: async ({ password, reason }) => {
@@ -558,23 +564,32 @@ async function labApprove(id){
   });
 }
 
-function labApprovalOutcome(res, requestNo){
+function labApprovalOutcome(res, requestNo, okTitle){
   const f = res.floor || {};
   const delivered = ['ok', 'already_passed', 'no_floor_stage'].includes(f.status);
-  toast(delivered ? (res.received_and_approved ? 'Received and approved' : 'Approved') : 'Approved, but shop floor app was not updated',
+  toast(delivered ? (okTitle || (res.received_and_approved ? 'Received and approved' : 'Approved')) : 'Approved, but shop floor app was not updated',
     `${requestNo}: ${f.message || (delivered ? 'approved.' : 'No delivery confirmation received.')}`, delivered ? 'ok' : 'warn', 12000);
   if (!res.notification || res.notification.status !== 'accepted')
     toast('Approved, but group notification was not confirmed', (res.notification || {}).message || 'No delivery confirmation received. The approval remains final.', 'warn', 12000);
 }
 
+// 091: a Released Finished Product not yet approved: the acknowledgement is also its one-way production approval
+function qaApproves(r){ return QA_APPROVES.includes(r.stage) && r.status === 'qc_released' && !r.qc_approved_at; }
 function labQaAck(id){
   const r = (labCache['/request?id=' + id] || {}).request; if (!r) return;
+  const approves = qaApproves(r);
   signDialog({
-    title: 'QA acknowledgement', sub: `${r.request_no} - QC decision: ${r.qc_decision === 'released' ? 'Released' : 'Not released'} by ${r.qc_manager}`,
-    ok: 'Sign acknowledgement', reason: 'Comments (optional)', meaning: 'You sign as QA Manager that you have reviewed and documented the QC decision. It does not change it.',
+    title: approves ? 'QA acknowledgement and production approval' : 'QA acknowledgement',
+    sub: `${r.request_no} - QC decision: ${r.qc_decision === 'released' ? 'Released' : 'Not released'} by ${r.qc_manager}`,
+    ok: approves ? 'Sign and approve for production' : 'Sign acknowledgement', reason: 'Comments (optional)',
+    meaning: approves ? 'You sign as QA Manager that you have reviewed the QC decision and approve this Finished Product batch for production. This cannot be recalled or sent again.'
+      : 'You sign as QA Manager that you have reviewed and documented the QC decision. It does not change it.',
+    body: approves ? `<div class="notice" style="margin-bottom:12px">${I.info} QSync attempts to mark the batch <b>Quality Passed</b> at Secondary packing in the shop floor app, and sends "QA approved for production" to the supervisors' WhatsApp group. The approval is final even if delivery fails; there is no resend.</div>` : '',
     submit: async ({ password, reason }) => {
-      await labPost('/qa-ack', { request_id: id, password, comments: reason, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
-      toast('Acknowledged', r.request_no, 'ok'); labRefresh();
+      const res = await labPost('/qa-ack', { request_id: id, password, comments: reason, seen: labSeen('/request?id=' + id) || labSeen('/inbox') });
+      if (res && res.production_approved) labApprovalOutcome(res, r.request_no, 'Acknowledged and approved');
+      else toast('Acknowledged', r.request_no, 'ok');
+      labRefresh();
     }
   });
 }
@@ -1096,7 +1111,7 @@ function viewLabWorksheet(id){
       ${t ? wsApiPanel(t) : emptyState('alert', 'No method template', '')}
       <div class="card" style="margin-bottom:16px"><div class="card-h"><div><h3>Results</h3><div class="sub">Calculated on the server from the values above (engine <span id="wsEngine">${esc((ws.calc || {}).engine_version || '')}</span>)</div></div>
         <span id="wsCalcState" class="small muted"></span></div><div id="wsResults" class="card-b"></div></div>
-      <div class="card"><div class="card-h"><div><h3>Chromatograms</h3><div class="sub">Fingerprint-checked PDFs. Replacement and deletion require a reason and keep an audit record. Signed worksheets must first be recalled or returned.</div></div>
+      <div class="card"><div class="card-h"><div><h3>Chromatogram / result</h3><div class="sub">Fingerprint-checked PDFs (chromatograms, or the result printout for tests without one). The worksheet's analyst can add, replace or delete them until the batch is closed.</div></div>
         ${d.attachments_editable
           ? `<label class="btn btn-ghost btn-sm" style="cursor:pointer">${I.plus} Add PDF<input type="file" id="wsFile" accept="application/pdf" multiple style="display:none"></label>` : ''}</div>
         ${d.attachments.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th>Fingerprint</th><th></th></tr></thead><tbody>
@@ -1104,7 +1119,7 @@ function viewLabWorksheet(id){
             <td class="small">${esc(f.uploaded_by || '')}<div class="tiny muted">${fmtDateTime(f.uploaded_at)}</div></td>
             <td class="mono tiny" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 16))}...<div id="att-ver-${f.id}"></div></td>
             <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="labOpenFile(${f.id}, '${esc(f.sha256)}')">Open</button>${labAttachmentActions(d, f.id)}</td></tr>`).join('')}</tbody></table></div>`
-          : `<div class="card-b">${emptyState('doc', 'No chromatograms yet', 'Add the PDF printouts of this run; the checker compares the typed areas with them.')}</div>`}
+          : `<div class="card-b">${emptyState('doc', 'No chromatogram / result yet', 'Add the PDF printouts of this run; the checker compares the typed areas with them.')}</div>`}
         ${labAttachmentAudit(d)}
       </div>`,
     bind(){
@@ -1364,7 +1379,7 @@ function wsSubmit(){
 }
 function wsCheck(){
   signDialog({
-    title: 'Check worksheet', sub: `Worksheet #${ws.id}: compare the typed values with the chromatograms`, ok: 'Sign',
+    title: 'Check worksheet', sub: `Worksheet #${ws.id}: compare the typed values with the chromatograms / results`, ok: 'Sign',
     meaning: 'Checked = you sign as "Checked by" (QC Supervisor). Returned = it goes back to the analyst with your reason.',
     body: `<div class="radio-cards" style="margin-bottom:14px"><label class="radio-card"><input type="radio" name="ck" value="check" checked> Checked</label>
       <label class="radio-card"><input type="radio" name="ck" value="return"> Return for correction</label></div>`,
@@ -1397,17 +1412,13 @@ function labAttachmentActions(d, id){
     <button class="btn btn-ghost btn-sm" onclick="labChangeAttachment(${d.analysis.id},${id},'delete')">Delete</button>`;
 }
 function labAttachmentAudit(d){
-  const pending = d.attachment_operations || [], history = d.attachment_history || [];
+  const pending = d.attachment_operations || [];
   return `${pending.length ? `<div class="card-b notice" role="alert"><div><b>A file operation needs attention.</b> This worksheet cannot be signed until it is resolved.
     ${pending.map(op => `<div class="small">#${esc(op.operation_id)} ${esc(op.kind)}: ${esc(op.status)}${op.error ? ' - ' + esc(op.error) : ''}
       ${op.can_retry ? `<button class="btn btn-ghost btn-sm" onclick="labResumeAttachment('${esc(op.operation_id)}',this)">Resume file operation</button>` : ''}</div>`).join('')}
     <button class="btn btn-ghost btn-sm" onclick="labRefresh()">Refresh status</button></div></div>` : ''}
     ${d.attachments_editable && !d.attachment_lifecycle_available ? '<div class="card-b small muted">Replacement and deletion are unavailable until permanent storage removal is configured.</div>' : ''}
-    ${history.length ? `<details class="card-b"><summary>Removed or replaced files (${history.length}) - audit records only</summary>
-      <div class="small muted">Original PDFs are not included in downloads.</div>
-      ${history.map(f => `<div class="small" style="margin-top:8px"><b>${esc(f.file_name)}</b> - uploaded by ${esc(f.uploaded_by_name || f.uploaded_by || '')} ${fmtDateTime(f.uploaded_at)}
-        <div>${f.replacement_id ? 'Replaced by file #' + esc(f.replacement_id) : 'Deleted'} ${fmtDateTime(f.deleted_at)} by ${esc(f.deleted_by_name || 'account #' + f.deleted_by)}: ${esc(f.deletion_reason || '')}</div>
-        <div class="mono tiny">${esc(f.sha256)}</div></div>`).join('')}</details>` : ''}`;
+    `;
 }
 async function labResumeAttachment(operationId, button){
   button.disabled = true;
@@ -1417,48 +1428,31 @@ async function labResumeAttachment(operationId, button){
   } catch (e) { toast('File operation not completed', e.message, 'err', 12000); }
   finally { button.disabled = false; labRefresh(); }
 }
+// 21 Nov 2026 (user): the analyst's own PDFs - no dialog, no reason, no password; a short confirmation only
 function labChangeAttachment(analysisId, attachmentId, kind){
   const d = labCache['/worksheet?id=' + analysisId];
   if (!d || !d.attachments_editable || !d.attachment_lifecycle_available){
-    toast('File cannot be changed', 'Refresh the worksheet. Signed worksheets must first be recalled or returned.', 'err'); return;
+    toast('File cannot be changed', 'Only the analyst of this worksheet can change its PDFs, and not after the batch is closed.', 'err'); return;
   }
   const file = (d.attachments || []).find(f => f.id === attachmentId);
   if (!file){ toast('File not found', 'Refresh the worksheet before trying again.', 'err'); return; }
-  const replace = kind === 'replace', title = replace ? 'Replace chromatogram' : 'Delete chromatogram';
-  openModal({
-    title, size: 'narrow',
-    body: `<p class="small"><b>${esc(file.file_name)}</b></p><p class="small">${replace
-      ? 'The replacement PDF is stored first. The original is permanently removed only if storage protections permit it.'
-      : 'The original PDF will be permanently removed if storage protections permit it. This cannot be undone.'} Its fingerprint and audit history are retained.</p>
-      ${replace ? '<div class="field"><label for="attReplacement">Replacement PDF (up to 10 MB)</label><input class="inp" id="attReplacement" type="file" accept="application/pdf"></div>' : ''}
-      <div class="field"><label for="attReason">Reason (required)</label><textarea class="inp" id="attReason" rows="3"></textarea></div>
-      <div class="err-msg hide" id="attError" role="alert" style="color:var(--danger)"></div>`,
-    footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="attConfirm">${title}</button>`,
-    onMount: (wrap, close) => {
-      $('#attConfirm', wrap).onclick = async () => {
-        const button = $('#attConfirm', wrap), error = $('#attError', wrap), reason = $('#attReason', wrap).value.trim();
-        let attempted = false;
-        button.disabled = true;
-        try {
-          if (!reason) throw new Error('Enter a reason.');
-          const body = { attachment_id: attachmentId, reason };
-          if (replace){
-            const replacement = $('#attReplacement', wrap).files[0];
-            if (!replacement) throw new Error('Choose a replacement PDF.');
-            if (!replacement.size || replacement.size > 10 * 1024 * 1024) throw new Error('Choose a non-empty PDF no larger than 10 MB.');
-            Object.assign(body, { file_name: replacement.name, content_type: 'application/pdf', data_base64: await fileToBase64(replacement) });
-          }
-          error.classList.add('hide'); attempted = true;
-          await labPost('/attachment/' + kind, body);
-          close(); toast(replace ? 'Chromatogram replaced' : 'Chromatogram deleted', 'The audit record has been retained.', 'ok');
-          labRefresh();
-        } catch (e) {
-          error.textContent = e.message; error.classList.remove('hide');
-          if (attempted) labRefresh();
-        } finally { button.disabled = false; }
-      };
-    }
-  });
+  const send = async body => {
+    try {
+      await labPost('/attachment/' + kind, body);
+      toast(kind === 'replace' ? 'Chromatogram / result replaced' : 'Chromatogram / result removed', file.file_name, 'ok');
+    } catch (e) { toast(kind === 'replace' ? 'Not replaced' : 'Not removed', e.message, 'err', 8000); }
+    labRefresh();
+  };
+  if (kind !== 'replace') return send({ attachment_id: attachmentId });
+  const pick = document.createElement('input');
+  pick.type = 'file'; pick.accept = 'application/pdf'; pick.style.display = 'none';
+  pick.onchange = async () => {
+    const f = pick.files[0]; pick.remove();
+    if (!f) return;
+    if (!f.size || f.size > 10 * 1024 * 1024){ toast('Not replaced', 'Choose a PDF no larger than 10 MB.', 'err'); return; }
+    send({ attachment_id: attachmentId, file_name: f.name, content_type: 'application/pdf', data_base64: await fileToBase64(f) });
+  };
+  document.body.appendChild(pick); pick.click();
 }
 function fileToBase64(file){
   return new Promise((resolve, reject) => {
@@ -1480,7 +1474,7 @@ async function wsUpload(files){
       done++;
     } catch (e) { toast('Not added: ' + f.name, e.message, 'err', 7000); }
   }
-  if (done) toast('Chromatograms added', `${done} file(s) stored with their fingerprint.`, 'ok');
+  if (done) toast('Chromatogram / result added', `${done} file(s) stored with their fingerprint.`, 'ok');
   labRefresh();
 }
 async function labOpenFile(id, expected){
@@ -2981,13 +2975,13 @@ function viewLabDetail(id){
 }
 function viewLabChromatograms(id){
   const d = labGet('/request?id=' + id);
-  if (!d) return labWait('Chromatograms', 'QC Laboratory');
-  if (d.error) return labFail('Chromatograms', 'QC Laboratory', d.error);
+  if (!d) return labWait('Chromatogram / result', 'QC Laboratory');
+  if (d.error) return labFail('Chromatogram / result', 'QC Laboratory', d.error);
   const sheetIds = [...new Set(d.request.assignments.filter(a => !a.cancelled && a.analysis_id).map(a => a.analysis_id))];
   const sheets = sheetIds.map(w => labGet('/worksheet?id=' + w));
-  if (sheets.some(x => !x)) return labWait('Chromatograms', 'QC Laboratory');
+  if (sheets.some(x => !x)) return labWait('Chromatogram / result', 'QC Laboratory');
   const bad = sheets.find(x => x.error);
-  if (bad) return labFail('Chromatograms', 'QC Laboratory', bad.error);
+  if (bad) return labFail('Chromatogram / result', 'QC Laboratory', bad.error);
   const files = sheets.flatMap(ws => (ws.attachments || []).map(file => ({ ...file, test_type: ws.analysis.test_type, analysis_id: ws.analysis.id, worksheet: ws })));
   const groups = new Map();
   files.forEach(file => {
@@ -3000,10 +2994,10 @@ function viewLabChromatograms(id){
   const groupCards = Array.from(groups, ([type, list]) => `<div class="card" style="margin-top:16px" data-chrom-test="${esc(`${d.request.request_no}-${type}`)}">
       <div class="card-h"><h3>${esc(TEST_TYPES[type] || type)} (${list.length})</h3><button class="btn btn-primary btn-sm no-print" onclick="labDownloadTestZip(this)">Download all for this test (ZIP)</button></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Worksheet</th><th>File</th><th>SHA-256</th><th>Uploaded</th><th></th></tr></thead><tbody>${list.map(row).join('')}</tbody></table></div></div>`).join('');
-  return { title: `Chromatograms - ${d.request.request_no}`, crumb: 'QC Laboratory',
-    html: `${pageHead(`${d.request.request_no} - chromatograms`, 'Stored chromatogram PDFs for this batch. Each file is fingerprint-checked before download.', batchNav(id, 'chromatograms'))}
-      <div class="card"><div class="card-h"><div><h3>Chromatograms (${files.length})</h3><div class="sub">Active PDFs only. Editable worksheets allow audited replacement or deletion; protected files cannot be removed.</div></div></div>
-        ${files.length ? '' : `<div class="card-b">${emptyState('doc', 'No chromatograms yet', 'Files added to this batch’s QC worksheets will appear here.')}</div>`}
+  return { title: `Chromatogram / result - ${d.request.request_no}`, crumb: 'QC Laboratory',
+    html: `${pageHead(`${d.request.request_no} - chromatogram / result`, 'Stored chromatogram / result PDFs for this batch. Each file is fingerprint-checked before download.', batchNav(id, 'chromatograms'))}
+      <div class="card"><div class="card-h"><div><h3>Chromatogram / result (${files.length})</h3><div class="sub">Current PDFs only. The worksheet's analyst can replace or delete them until the batch is closed.</div></div></div>
+        ${files.length ? '' : `<div class="card-b">${emptyState('doc', 'No chromatogram / result yet', 'Files added to this batch’s QC worksheets will appear here.')}</div>`}
         ${sheets.map(sheet => labAttachmentAudit(sheet)).join('')}</div>${groupCards}` };
 }
 
@@ -3013,7 +3007,7 @@ function batchNav(id, here){
     ? `<span class="btn btn-ink" aria-current="page">${icon} ${label}</span>`
     : `<a class="btn btn-ghost" href="${href}">${icon} ${label}</a>`;
   return `<button class="btn btn-ghost" onclick="window.print()">${I.print} Print / save as PDF</button>
-    ${b('detail', '#/lab/detail/' + id, 'Reports', I.doc)}${b('chromatograms', '#/lab/chromatograms/' + id, 'Chromatograms', I.doc)}${b('lab', '#/lab/request/' + id, 'QC lab view', I.inbox)}
+    ${b('detail', '#/lab/detail/' + id, 'Reports', I.doc)}${b('chromatograms', '#/lab/chromatograms/' + id, 'Chromatogram / result', I.doc)}${b('lab', '#/lab/request/' + id, 'QC lab view', I.inbox)}
     <a class="btn btn-ghost" href="#/requests">${I.chevL} Back to requests</a>`;
 }
 

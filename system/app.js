@@ -403,6 +403,11 @@ function auditWhole(txt){
   return `<table class="tbl"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>${Object.entries(o).map(([k, v]) =>
     `<tr><td class="mono small">${esc(k)}</td><td class="small" style="white-space:pre-wrap;word-break:break-word">${esc(v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v))}</td></tr>`).join('')}</tbody></table>`;
 }
+// 21 Nov 2026 (user): a line with nothing behind it has no "Show" button (no opening onto "--")
+function auditHasDetail(e){
+  if (e.action === 'insert' || e.action === 'delete') return !!(e.whole && String(e.whole).trim() && String(e.whole).trim() !== '{}');
+  return (e.changes || []).length > 0 || !!(e.whole && String(e.whole).trim());
+}
 function auditDetail(e){
   if (e.action === 'insert' || e.action === 'delete') return auditWhole(e.whole);
   const ch = e.changes || [];
@@ -442,8 +447,8 @@ function viewAudit(){
         <td class="small">${esc(AUDIT_ACTION[e.action] || e.action)}</td>
         <td class="small">${auditBy(e)}</td>
         <td class="small" style="max-width:220px;word-break:break-word">${esc(e.reason || '')}</td>
-        <td><button class="btn btn-ghost btn-sm" type="button" data-au-open="${esc(key)}">${open ? 'Hide' : 'Show'} ${esc(what)}</button></td>
-      </tr>${open ? `<tr class="au-sub"><td colspan="7" style="background:var(--surface-2,#F7F8FA)">${auditDetail(e)}</td></tr>` : ''}`;
+        <td>${auditHasDetail(e) ? `<button class="btn btn-ghost btn-sm" type="button" data-au-open="${esc(key)}">${open ? 'Hide' : 'Show'} ${esc(what)}</button>` : ''}</td>
+      </tr>${open && auditHasDetail(e) ? `<tr class="au-sub"><td colspan="7" style="background:var(--surface-2,#F7F8FA)">${auditDetail(e)}</td></tr>` : ''}`;
     }).join('');
     const more = d.total > d.shown ? `<div class="notice" style="margin-bottom:10px">${I.info}<div>Showing the latest <b>${d.shown}</b> of <b>${d.total}</b> changes. Narrow the dates, pick a module or search to see older ones. Export takes up to 5,000.</div></div>` : '';
     body = more + `<div class="card"><div class="card-h"><div><h3>${d.total} change${d.total === 1 ? '' : 's'}, ${esc(fmtDay(d.from))} to ${esc(fmtDay(d.to))}</h3>
@@ -493,7 +498,7 @@ route('/', viewAudit);
 
 /* ---------------- System version ---------------- */
 // the screen files every console loads; their fingerprints are worked out here (SHA-256 of the file as the browser gets it)
-const SCREEN_FILES = ['index.html', 'shared.js', 'startup.js', 'keepalive.js', 'formkeep.js', 'tablesort.js', 'pager.js', 'waiting.js', 'requests.js', 'testrequest.js',
+const SCREEN_FILES = ['index.html', 'shared.js', 'scrollkeep.js', 'startup.js', 'keepalive.js', 'formkeep.js', 'tablesort.js', 'pager.js', 'waiting.js', 'requests.js', 'testrequest.js',
   'engineering/app.js', 'employees/app.js', 'procurement/app.js', 'production/app.js', 'production/store.js', 'production/report.html',
   'qsync/app.js', 'qsync/lab.js', 'qsync/dept.js', 'qsync/apqr.js', 'users/app.js', 'profile/app.js', 'requests/app.js', 'datacenter/index.html', 'system/app.js'];
 async function fingerprint(url){

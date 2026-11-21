@@ -25,14 +25,7 @@
   };
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  /* ---------------- redraw scroll position ---------------- */
-  let lastRenderPath = null;
-  window.oklScrollAfterRender = function (path) {
-    const currentPath = String(path == null ? location.hash || '#/' : path);
-    const top = currentPath === lastRenderPath ? window.scrollY : 0;
-    lastRenderPath = currentPath;
-    window.scrollTo({ top });
-  };
+  /* the keep-the-place rule for lists (oklScrollAfterRender) is in scrollkeep.js, loaded before each app.js */
 
   /* ---------------- 1. view ---------------- */
   const deviceW = Math.min(screen.width || 9999, screen.height || 9999) < 600 ? Math.min(screen.width, screen.height) : (screen.width || 9999);
