@@ -11,7 +11,7 @@
 <title>Data center</title>
 <!-- The Data center (062, 12 Nov 2026): the Google Sheets copies of the system's data, view only.
      Admins: every spreadsheet, the hourly copy's status and "Sync data now". Managers (the Data center page in Users):
-     the spreadsheets of the consoles they can open. The data itself lives in Postgres; the sheets are refreshed every hour. -->
+     the spreadsheets of the consoles they can open. The data itself lives in Postgres; the sheets are refreshed every 6 hours (00:07, 06:07, 12:07, 18:07). -->
 <style>
   :root{
     --brand:#ED6B1F; --brand-600:#D75E15; --green:#0F5132;
@@ -57,7 +57,7 @@
     <a href="../">Back to the home page</a>
   </div>
   <p class="sub">The system's data as Google Sheets, to look at, filter and download. They are <b>view only</b> copies: the data itself is kept
-    in the system and every sheet is written again <b>every hour</b>, so anything typed into a sheet is lost. Change things in the consoles.</p>
+    in the system and every sheet is written again <b>every 6 hours</b> (00:07, 06:07, 12:07 and 18:07), so anything typed into a sheet is lost. Change things in the consoles.</p>
   <div id="notice" class="notice hidden"></div>
   <div id="status"></div>
   <div id="files"><div class="card small muted">Loading...</div></div>
@@ -106,7 +106,7 @@
       + '<div class="stat"><div class="l">Nightly Excel files</div><div class="v">' + (!x ? '<span class="muted">Not run yet</span>' : (x.ok ? '<span class="ok">Saved</span>' : '<span class="bad">Failed</span>') + ' <span class="muted small">' + esc(when(x.at)) + '</span>') + '</div></div></div>'
       + fails
       + '<div class="row"><button class="btn" id="syncNow"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Copying... (a minute or two)' : 'Sync data now') + '</button>'
-      + '<span class="small muted">The copy also runs by itself every hour. Use this when you need the sheets up to date now.</span></div></div>';
+      + '<span class="small muted">The copy also runs by itself every 6 hours: 00:07, 06:07, 12:07 and 18:07. Use this only when you need the sheets up to date now: a full copy is heavy for the server.</span></div></div>';
   }
   function filesHtml(files){
     if (!files.length) return '<div class="card small muted">No spreadsheets for your consoles yet.</div>';
@@ -121,10 +121,10 @@
   function helpHtml(isAdmin){
     var steps = [
       '<b>Open (view only)</b> opens the spreadsheet in Google Sheets. You need to be signed in to Google with an e-mail the admin has shared it with.',
-      'Use filters, sorting and <b>File &gt; Download</b> as you like. Do not type into the sheets: every sheet is written again every hour from the system, so typed changes are lost. Change things in the consoles.',
+      'Use filters, sorting and <b>File &gt; Download</b> as you like. Do not type into the sheets: every sheet is written again from the system every 6 hours (00:07, 06:07, 12:07, 18:07), so typed changes are lost. Change things in the consoles.',
       'Each sheet shows the time of the last copy at most an hour behind the consoles.'
     ];
-    if (isAdmin) steps.push('<b>Sync data now</b> (admins) copies everything straight away instead of waiting for the hour. The Last copy box says when it finished and names any spreadsheet that failed.',
+    if (isAdmin) steps.push('<b>Sync data now</b> (admins) copies everything straight away instead of waiting for the next copy (every 6 hours). It is heavy for the server: use it only when you need it. The Last copy box says when it finished and names any spreadsheet that failed.',
       'Every night each spreadsheet is also saved as an Excel file in the backup storage; the laptop backup pull brings them down (14 days kept).');
     return steps.map(function(s){ return '<li style="margin-bottom:4px">' + s + '</li>'; }).join('');
   }
