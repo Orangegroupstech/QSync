@@ -162,9 +162,9 @@
     else row(st.blank ? 'warn' : 'ok', 'Actions', st.total + ' stop' + (st.total === 1 ? '' : 's') + ' of 30+ minutes, ' + (st.blank ? st.blank + ' without an action yet (they show as [action?] in the draft).' : 'all with an action.')
              + (s.checks && s.checks.blanks_at ? '<small>The 11:30 WhatsApp listed them.</small>' : st.blank ? '<small>At 11:30 you get them on WhatsApp.</small>' : ''));
     // Zaiki and Mintacid
-    if (rv.state === 'waiting') row('warn', 'Zaiki, Mintacid and Cannon PM', 'Prefilled from the OKL file for ' + esc(day(rv.day)) + ': check it and save.', '<a class="btn" target="_blank" rel="noopener" href="' + esc(s.review_url + encodeURIComponent(rv.token)) + '">Review and save</a>');
-    else if (rv.state === 'saved') row('ok', 'Zaiki, Mintacid and Cannon PM', 'Saved for ' + esc(day(rv.day)) + '.');
-    else row('wait', 'Zaiki, Mintacid and Cannon PM', 'Waits for the OKL file.');
+    if (rv.state === 'waiting') row('warn', 'Zaiki, Mintacid and Cannon Para/Cannon PM', 'Prefilled from the OKL file for ' + esc(day(rv.day)) + ': check it and save.', '<a class="btn" target="_blank" rel="noopener" href="' + esc(s.review_url + encodeURIComponent(rv.token)) + '">Review and save</a>');
+    else if (rv.state === 'saved') row('ok', 'Zaiki, Mintacid and Cannon Para/Cannon PM', 'Saved for ' + esc(day(rv.day)) + '.');
+    else row('wait', 'Zaiki, Mintacid and Cannon Para/Cannon PM', 'Waits for the OKL file.');
     // the drafts
     if (s.draft && s.draft.sent_at) row('ok', 'Daily draft', 'E-mailed to you at ' + esc(time(s.draft.sent_at)) + (s.draft.sends > 1 ? ' (updated ' + (s.draft.sends - 1) + ' time' + (s.draft.sends > 2 ? 's' : '') + ' when a file came later)' : '') + '.');
     else row(s.workday && !beforeNoon ? 'warn' : 'wait', 'Daily draft', s.workday ? (beforeNoon ? 'Goes to your e-mail at 11:45.' : 'Not sent today. It goes at 11:45 on working days.') : 'Not today (not a working day).');
@@ -220,7 +220,7 @@
     }).concat((out.rejected || []).map(function(r){ return '<div class="bad">&#10007; ' + esc(r.file_name || 'A file') + ': ' + esc(r.error) + '</div>'; }));
     if (!lines.length) lines.push('<div class="bad">&#10007; ' + esc(out.error || 'Not uploaded.') + '</div>');
     var e = out.engineering || {};
-    if (e.added) lines.push('<div>Engineering: ' + e.added + ' issue' + (e.added === 1 ? '' : 's') + ' to fill in (the Engineering Manager gets a WhatsApp).</div>');
+    if (e.added) lines.push('<div>Engineering: ' + e.added + ' issue' + (e.added === 1 ? '' : 's') + ' to fill in (on Calls and jobs, Daily report tab).</div>');
     if (out.draft) lines.push('<div>An updated draft was e-mailed to you.</div>');
     if (out.review && out.review.link) lines.push('<div>Zaiki, Mintacid and Cannon PM for ' + esc(day(out.review.day)) + ': <a href="' + esc(out.review.link) + '" target="_blank" rel="noopener">review and save</a> (also sent to your WhatsApp).</div>');
     $('res').innerHTML = lines.join('');

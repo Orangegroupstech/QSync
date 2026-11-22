@@ -421,9 +421,14 @@ const RQ_HELP = [
   ['edit', 'Suggestions', [
     'The orange <b>Suggestions</b> button at the bottom right of every page lets you tell us what is wrong or missing. Tap it, write a line or two about what is confusing, slow or missing on that page, and send.',
     'It goes to the system team only. It changes nothing in the system.']],
+  ['info', 'Install as an app', [
+    '<b>Android phone (Chrome):</b> open the console, tap the menu <b>⋮</b> at the top right, then <b>Add to Home screen</b> or <b>Install app</b>. An OKL icon appears with your other apps.',
+    '<b>Laptop (Chrome or Edge):</b> click the small install icon at the right end of the address bar, or menu <b>⋮</b> > <b>Cast, save and share</b> > <b>Install page as app</b>.',
+    '<b>iPhone (Safari):</b> tap <b>Share</b>, then <b>Add to Home Screen</b>.',
+    'The app opens the same console: you still sign in, and everything comes fresh from the server. Engineering staff who use maintenance-call alerts install it from the Engineering page.']],
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone here (workflow/tests/help_cards_test.js)
-const RQ_HELP_PAGE = { 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Signing in': true, 'Phone or laptop': true, 'Suggestions': true };
+const RQ_HELP_PAGE = { 'Install as an app': true, 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Signing in': true, 'Phone or laptop': true, 'Suggestions': true };
 const RQ_HELP_MINE = () => RQ_HELP.filter(h => { const g = RQ_HELP_PAGE[h[1]]; return g === true || (!!g && canOpen(g)); });
 function viewRqHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')

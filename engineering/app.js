@@ -1350,15 +1350,29 @@ async function esLoad(force){
   catch (err) { ES.error = err.message; }
   finally { ES.loading = false; render(); }
 }
+// 22 Nov 2026 (user): one sub-tab per job the settings do, so the page stays easy to use as settings grow.
+// A setting not placed here shows under "Other" (never hidden).
+const ENG_SET_TABS = [
+  ['jobs', 'Jobs and calls', ['failure_categories', 'call_expire_hours', 'parts_add_days_after_close', 'handover_reminder_days', 'recent_stops_min_minutes', 'recent_stops_days']],
+  ['rca', 'Root cause (RCA)', ['ca_long_stop_minutes', 'ca_repeat_count', 'ca_repeat_days']],
+  ['pm', 'Preventive maintenance', ['pm_default_interval_days', 'pm_part_window_days', 'pm_failure_minutes', 'pm_notice_cc']],
+  ['spares', 'Spares: stock and ordering', ['store_locations', 'usage_weeks', 'usage_min_issue_days', 'lead_time_weeks', 'safety_weeks', 'order_qty_percent', 'trend_percent']],
+  ['count', 'Spares: weekly count', ['count_items_per_week', 'count_escalate_weekday', 'count_diff_approval_units']],
+  ['report', 'Daily report', ['report_issue_minutes', 'report_open_days']],
+  ['watch', 'Weekly machine watch', ['weekly_watch_cc', 'weekly_watch_top']],
+];
+const engSetTab = key => { const t = ENG_SET_TABS.find(x => x[2].includes(key)); return t ? t[0] : 'other'; };
 function settingsTabs(cur){
-  const n = rpWaitingCount();
-  return `<div class="tabs" style="margin-bottom:14px"><a class="tab ${cur === 'rules' ? 'on' : ''}" href="#/settings">Rules and lists</a>`
+  const n = rpWaitingCount(), other = (ES.list || []).some(x => engSetTab(x.key) === 'other');
+  const tabs = ENG_SET_TABS.map(t => [t[0], t[1]]).concat(other ? [['other', 'Other']] : []);
+  return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k, l]) => `<a class="tab ${cur === k ? 'on' : ''}" href="#/settings${k === 'jobs' ? '' : '/' + k}">${esc(l)}</a>`).join('')}`
     + (levelOf('engineering.jobs') === 'edit' ? `<a class="tab ${cur === 'names' ? 'on' : ''}" href="#/settings/report-names">Daily report machine names${n ? ` <span class="badge b-warn" style="padding:1px 7px">${n}</span>` : ''}</a>` : '') + '</div>';
 }
-function viewSettings(){
+function viewSettings(cur){
+  cur = cur || 'jobs';
   if (!ES.list && !ES.error) esLoad();
   const canEdit = canEditHere(), dis = canEdit ? '' : 'disabled';
-  const head = pageHead('Settings', 'The numbers behind the Engineering rules. Changes apply from the next check.' + (canEdit ? '' : ' Only people with edit access can change them.')) + settingsTabs('rules');
+  const head = pageHead('Settings', 'The numbers behind the Engineering rules. Changes apply from the next check.' + (canEdit ? '' : ' Only people with edit access can change them.')) + settingsTabs(cur);
   if (ES.error) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b">${emptyState('alert', 'Could not load the settings', esc(ES.error), `<button class="btn btn-primary" onclick="esLoad(true)">Try again</button>`)}</div></div>` };
   if (!ES.list) return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">Loading...</div></div>` };
   const when = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone:'Africa/Lagos', dateStyle:'medium', timeStyle:'short' }) : '';
@@ -1368,16 +1382,17 @@ function viewSettings(){
   const isList = x => x.unit === 'list' || x.unit === 'emails';
   const listMin = x => x.key === 'store_locations' ? 1 : 2;   // one store is enough (041)
   const off = x => /^recent_stops_/.test(x.key);   // they only drive the removed Machine stops page
-  const nums = ES.list.filter(x => !isList(x) && !off(x)), lists = ES.list.filter(isList);
+  const here = ES.list.filter(x => engSetTab(x.key) === cur);
+  const nums = here.filter(x => !isList(x) && !off(x)), lists = here.filter(isList);
   return {
     title:'Settings', crumb:'Setup',
-    html: head + `<div class="card"><div class="tbl-wrap"><table class="tbl">
+    html: head + `<div class="card">${nums.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Setting</th><th style="width:170px">Value</th><th>Allowed</th></tr></thead>
       <tbody>${nums.map(x => `<tr>
         <td data-label="Setting">${about(x)}</td>
         <td data-label="Value"><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" type="number" data-set="${esc(x.key)}" min="${Number(x.min)}" max="${Number(x.max)}" step="1" value="${Number(x.value)}" style="width:90px" ${dis}><span class="small muted">${esc(x.unit || '')}</span></div></td>
         <td data-label="Allowed" class="small muted">${Number(x.min)} to ${Number(x.max)}</td>
-      </tr>`).join('')}</tbody></table></div>
+      </tr>`).join('')}</tbody></table></div>` : ''}
       ${lists.map(x => `<div class="card-b" style="border-top:1px solid var(--line-2)">${about(x)}
         <textarea class="inp" data-list="${esc(x.key)}" rows="${Math.max(2, Math.min(10, (x.list || []).length + 1))}" style="width:100%;max-width:460px;margin-top:8px" ${dis}>${esc((x.list || []).join('\n'))}</textarea>
         <div class="tiny muted" style="margin-top:4px">${x.unit === 'emails' ? 'One e-mail address per line, up to 10.' : 'One per line, ' + listMin(x) + ' to 20.'}</div></div>`).join('')}
@@ -1408,8 +1423,9 @@ function viewSettings(){
     },
   };
 }
-route('/settings', viewSettings);
+route('/settings', () => viewSettings('jobs'));
 route('/settings/report-names', () => viewReport());
+for (const k of ENG_SET_TABS.map(t => t[0]).concat(['other'])) if (k !== 'jobs') route('/settings/' + k, () => viewSettings(k));
 
 
 /* ============================================================

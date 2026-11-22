@@ -77,7 +77,7 @@ function meFromAuth(auth, scope){
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 // 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
-const PAGES = [["/my-approvals", "production"], ["/report", "production"], ["/store/settings", "production.store_settings"], ["/store/received", "production.store_received"], ["/store/issued", "production.store_issued"], ["/store/counts", "production.store_counts"], ["/store", "production.store"], ["/", "production.requests"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "production"], ["/report", "production"], ["/settings", "production.store_settings"], ["/store/settings", "production.store_settings"], ["/store/received", "production.store_received"], ["/store/issued", "production.store_issued"], ["/store/counts", "production.store_counts"], ["/store", "production.store"], ["/", "production.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -217,6 +217,7 @@ function navModel(){
     ] },
     { title:'Store', items:[ { path: typeof stFirstTab === 'function' ? stFirstTab() : '/store', label:'Store', icon:'box' } ] },
     { title:'Reports', items:[ { path:'/report', label:'Daily production report', icon:'externalLink' } ] },
+    { title:'Setup', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },   // 22 Nov 2026: its own page, like Engineering
     { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ];
 }
@@ -424,15 +425,18 @@ const PROD_HELP = [
     '<b>Receive</b>: the date, who received it, then one line per material that arrived and its quantity.',
     'Under each material, the open requests it could be for are shown (the same code is picked for you). Tap the right one, or <b>No, not on a request</b>; <b>Another request...</b> finds one by number or name. Less came and nothing more is coming? Tick <b>Nothing more is coming</b>.',
     'Something not on a request: <b>Not on a request</b>, then one line per material with its quantity. A note is optional.',
+    'A material whose stock is not known yet ("Count needed"): count the shelf <b>with the delivery</b> and type it in <b>On the shelf now</b>. That number becomes its stock.',
     'A material not in the store yet: <b>A material not in the store</b>, its name, type and unit. It gets its code (e.g. CF 008) and is received in the same step.',
     '<b>Issue</b>: the printer, line or machine it is for, then one line per material. Stock cannot go below 0: count it first if the shelf has more.',
     'A mistake: <b>Received</b> or <b>Issued</b> tab > <b>Reverse</b>, with the reason. Nothing is deleted.']],
   ['check', 'Store: weekly count', [
     'Store > <b>Weekly count</b> tab. It checks that the shelf matches the system, so the stock is always right. A few materials each working day; the counter (Settings) gets the list on WhatsApp at 08:00, with what needs ordering.',
     '<b>Count</b>: the number on the shelf, its location and where it is used. A difference needs a reason; a small one changes the stock at once, a bigger one waits for the Production Manager.',
-    'A material never counted (the Hitachi ones at first) is counted in its first week. Until then its stock is "not known" and it cannot be issued.']],
+    'How many are counted a week is in <b>Settings</b> > <b>Store: weekly count</b>, and the plan keeps to it. Counts not done in their week carry over up to that number; the rest come round again in turn.',
+    'A material whose stock is not known yet ("Count needed") is counted at once, on top of that number. It cannot be issued until its stock is known.']],
   ['settings', 'Store: settings', [
-    'Store > <b>Settings</b> (Production Manager). Each rule shows what it does and why it is set so: weeks looked back, lead time, safety weeks, order quantity, the counter, the approval limit.',
+    'Menu > <b>Settings</b> (Production Manager). One tab per job: <b>Store: weekly count</b> (the counter, how many a week, the approval limit), <b>Store: stock and ordering</b> (lead time, safety weeks, order quantity...), <b>Store: locations and types</b>.',
+    'Each setting says what it does and why it is set so. <b>Save</b> saves that tab only; a change applies at once.',
     '<b>Material types</b>: the two letters that start every code (CF coding fluids, CT cartridges, RB ribbons, CC characters, GC general). Add a type for a new kind of material; its category groups it (Consumable ...).']],
   ['check', 'My approvals', [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
@@ -450,7 +454,7 @@ const PROD_HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const PROD_HELP_PAGE = { 'Store: stock and what to order': '/store', 'Store: receive and issue': () => levelOf('production.store_received') === 'edit' || levelOf('production.store_issued') === 'edit', 'Store: weekly count': '/store/counts', 'Store: settings': '/store/settings', 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const PROD_HELP_PAGE = { 'Store: stock and what to order': '/store', 'Store: receive and issue': () => levelOf('production.store_received') === 'edit' || levelOf('production.store_issued') === 'edit', 'Store: weekly count': '/store/counts', 'Store: settings': '/settings', 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const PROD_HELP_MINE = () => PROD_HELP.filter(h => { const g = PROD_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewProdHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')

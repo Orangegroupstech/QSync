@@ -115,7 +115,7 @@ function stRules(){
     code: 'The material\'s short code, like CF 001.\n'
       + 'The system gives it: the type\'s two letters and the next number. It never changes, and procurement requests use it.',
     stock: 'How many are on the shelf now.\nStock = last count + received since - issued since.\n'
-      + '"Count needed" means it has never been counted, so the number is not known yet.',
+      + '"Count needed" means the number is not known yet: count it, or enter the shelf count when receiving it.',
     use: 'How many are used in a normal week.\n'
       + 'Use per week = issued in the last ' + wk + ' weeks / the weeks it was in stock (weeks it ran out are left out).\n'
       + 'It needs issues on ' + md + ' or more days; an arrow shows the last 4 weeks are over ' + tr + '% higher (↑) or lower (↓).',
@@ -126,6 +126,7 @@ function stRules(){
     order: 'How many to ask for on a request.\nOrder quantity = reorder level x ' + pct + '%. "Request more" fills it in.',
     count: 'The weekly count checks that what is on the shelf matches the system, so the stock is always right.\n'
       + 'A few materials are counted each working day (' + per + ' a week), so every material is checked in turn.\n'
+      + 'A material whose stock is not known yet is counted at once, on top of the ' + per + '.\n'
       + 'A difference up to ' + thr + ' unit' + (thr === 1 ? '' : 's') + ' is fixed at once; a bigger one waits for the Production Manager.',
     min: 'The lowest the reorder level can ever be.\nWhen there is too little use to work one out, this is the reorder level.',
     lead: 'How many weeks a delivery takes, from the request to the store.\nEmpty means the default, ' + lead + ' weeks.',
@@ -137,7 +138,7 @@ function stRules(){
 // how one material's numbers were worked out, step by step (the item page)
 function stWhy(x){
   const b = x.basis || {}, u = x.unit;
-  if (!x.stock_known) return 'The stock is not known yet: it has never been counted. It is counted in its first week; until then nothing can be issued.';
+  if (!x.stock_known) return 'The stock is not known yet: it has never been counted. Count it (Weekly count), or enter the shelf count when receiving it; until then nothing can be issued.';
   if (!(+b.issue_days)) return 'Nothing was issued in the last ' + b.weeks + ' weeks, so there is no use to work a reorder level from. '
     + 'The reorder level is the typed minimum: ' + stNum(x.min_level) + ' ' + u + '.';
   const lines = ['Issued ' + stNum(b.used) + ' ' + u + ' in the last ' + b.weeks + ' weeks, on ' + b.issue_days + ' different day' + (+b.issue_days === 1 ? '' : 's') + '.',
@@ -153,7 +154,7 @@ function stWhy(x){
 
 /* ---- page frame */
 function stTabs(cur){
-  const tabs = [['/store', 'Stock'], ['/store/received', 'Received'], ['/store/issued', 'Issued'], ['/store/counts', 'Weekly count'], ['/store/settings', 'Settings']]
+  const tabs = [['/store', 'Stock'], ['/store/received', 'Received'], ['/store/issued', 'Issued'], ['/store/counts', 'Weekly count']]   // Settings: its own page (22 Nov 2026)
     .filter(([h]) => levelOf(ST_TAB_PAGE[h]));
   return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([h, l]) => `<a class="tab ${h === cur ? 'on' : ''}" href="#${h}">${esc(l)}</a>`).join('')}</div>`;
 }
@@ -369,10 +370,17 @@ function stDetail(it, typed){
   if (!it) return String(typed || '').trim() ? '<span style="color:var(--danger)">Not in the store: pick it from the list.</span>' : '';
   return `<b>${esc(it.name)}</b>${it.part_number ? ' · ' + esc(it.part_number) : ''} · ${it.stock_known ? 'in stock ' + stNum(it.stock) + ' ' + esc(it.unit) : 'stock not known'}${it.location ? ' · ' + esc(it.location) : ''}`;
 }
+// 22 Nov 2026 (user): receiving a material whose stock is not known asks for the shelf count with the delivery; it becomes the stock
+const stNeedsShelf = (it, opt) => !!(opt.receipt && it && !it.stock_known);
+function stShelfBox(it, l, i, opt){
+  if (!stNeedsShelf(it, opt)) return '';
+  return `<div class="hint" style="margin-top:6px">${I.info}<span>The stock of ${esc(it.code)} is not known yet. Count the shelf now, <b>with this delivery</b>: that number becomes its stock.</span></div>
+    <div class="row" style="gap:6px;margin-top:4px"><label class="small" for="lnShelf${i}">On the shelf now</label><input class="inp" id="lnShelf${i}" type="number" min="0" step="any" data-ln-shelf="${i}" value="${esc(l.shelf || '')}" style="max-width:110px"><span class="small muted">${esc(it.unit)}</span></div>`;
+}
 function stLnRows(L, opt){
   return L.map((l, i) => `<div class="pl-row">
     <div class="pl-part"><input class="inp" data-ln-code="${i}" list="${opt.id}Codes" value="${esc(l.text)}" placeholder="Type the code or the material" aria-label="Material ${i + 1}">
-      <div class="tiny muted" data-ln-info="${i}">${stDetail(stByCode(l.code), l.text)}</div>${opt.sug ? opt.sug.slot(l, stSugInfo) : ''}</div>
+      <div class="tiny muted" data-ln-info="${i}">${stDetail(stByCode(l.code), l.text)}</div><div data-ln-shelfbox="${i}" data-for="${stNeedsShelf(stByCode(l.code), opt) ? esc(l.code) : ''}">${stShelfBox(stByCode(l.code), l, i, opt)}</div>${opt.sug ? opt.sug.slot(l, stSugInfo) : ''}</div>
     <input class="inp pl-qty" type="number" min="0" step="any" data-ln-qty="${i}" value="${esc(l.qty)}" placeholder="Qty" aria-label="Quantity ${i + 1}">
     <button type="button" class="btn btn-ghost btn-sm" data-ln-rm="${i}" ${L.length === 1 ? 'disabled' : ''} aria-label="Remove line ${i + 1}">${I.x}</button></div>`).join('');
 }
@@ -385,13 +393,17 @@ function stLnHtml(L, opt){
 function stLnBind(root, L, opt){
   const box = $('#' + opt.id, root); if (!box) return;
   const rows = $('[data-ln-rows]', box);
+  const wireShelf = () => $$('[data-ln-shelf]', box).forEach(el => { el.oninput = () => { L[+el.dataset.lnShelf].shelf = el.value; }; });
   const wire = () => {
     $$('[data-ln-code]', box).forEach(el => { el.oninput = el.onchange = e => { const i = +el.dataset.lnCode, l = L[i]; l.code = stCodeFrom(el.value);
       const it = stByCode(l.code);
       if (e && e.type === 'change' && it && el.value.trim() !== stLabel(it)) el.value = stLabel(it);
       l.text = el.value;
       $(`[data-ln-info="${i}"]`, box).innerHTML = stDetail(it, el.value);
+      const sb = $(`[data-ln-shelfbox="${i}"]`, box), want = stNeedsShelf(it, opt) ? it.code : '';
+      if (sb && sb.dataset.for !== want) { sb.innerHTML = stShelfBox(it, l, i, opt); sb.dataset.for = want; wireShelf(); }
       if (opt.sug) opt.sug.refresh(box, l); }; });
+    wireShelf();
     $$('[data-ln-qty]', box).forEach(el => { el.oninput = () => { const l = L[+el.dataset.lnQty]; l.qty = el.value; if (opt.sug) opt.sug.refresh(box, l); }; });
     $$('[data-ln-rm]', box).forEach(el => { el.onclick = () => { L.splice(+el.dataset.lnRm, 1); rows.innerHTML = stLnRows(L, opt); wire(); if (opt.sug) opt.sug.refreshAll(); }; });
   };
@@ -411,7 +423,13 @@ function stLnCheck(L, opt){
     if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return { error: n + 'enter a quantity above 0' + (whole ? ', in whole ' + it.unit + '.' : '.') };
     if (opt.stock && !it.stock_known) return { error: n + 'the stock of ' + it.code + ' is not known yet. Count it first (Weekly count).' };
     if (opt.stock && +l.qty > +it.stock) return { error: n + 'only ' + stNum(it.stock) + ' ' + it.unit + ' of ' + it.code + ' in stock. Count it first if the shelf has more.' };
-    out.push(Object.assign({ code: it.code, qty: String(l.qty).trim() }, opt.sug ? opt.sug.link(l) : {}));
+    const shelf = String(l.shelf || '').trim(), needs = stNeedsShelf(it, opt);
+    if (needs) {
+      if (shelf === '' || !(+shelf >= 0)) return { error: n + 'the stock of ' + it.code + ' is not known yet. Count the shelf with this delivery and enter it in "On the shelf now".' };
+      if (+shelf < +l.qty) return { error: n + '"On the shelf now" includes this delivery, so it is at least ' + stNum(+l.qty) + '.' };
+      if (whole && +shelf !== Math.floor(+shelf)) return { error: n + 'the shelf count is in whole ' + it.unit + '.' };
+    }
+    out.push(Object.assign({ code: it.code, qty: String(l.qty).trim() }, needs ? { shelf } : {}, opt.sug ? opt.sug.link(l) : {}));
   }
   if (!out.length && !opt.optional) return { error: 'Add at least one material.' };
   return { lines: out };
@@ -491,7 +509,8 @@ async function stReceive(code){
               const linked = receipt.lines.filter(l => l.request_item_id).length;
               toast('Received ' + receipt.lines.length + ' material' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || []).map(m => m.entry).join(', ')
                 + (linked ? ' · ' + linked + ' on a request' : '')
-                + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ': ' + r.added.map(a => a.code + ' = ' + a.name).join(', ') : ''), 'ok', 9000); await stRefresh(); }
+                + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ': ' + r.added.map(a => a.code + ' = ' + a.name).join(', ') : '')
+                + ((r.opened || []).length ? ' · stock now known: ' + r.opened.map(o => o.code + ' ' + stNum(+o.stock)).join(', ') : ''), 'ok', 9000); await stRefresh(); }
         catch (err) { setErr('rcDate', err.message, w); sv.disabled = false; }
       };
     },
@@ -593,7 +612,8 @@ function viewStoreCounts(){
   const done = items.filter(i => i.status !== 'planned').length, dueNow = items.filter(i => i.status === 'planned' && i.due_on && i.due_on <= today).length;
   const shift = d => { const t = new Date(c.week_start + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + d); return t.toISOString().slice(0, 10); };
   const label = { planned:'<span class="badge b-warn">Not counted yet</span>', matches:'<span class="badge b-ok">Matches</span>', adjusted:'<span class="badge b-ok">Adjusted</span>',
-    waiting_approval:'<span class="badge b-warn">Waiting approval</span>', approved:'<span class="badge b-ok">Approved</span>', rejected:'<span class="badge b-danger">Rejected</span>' };
+    waiting_approval:'<span class="badge b-warn">Waiting approval</span>', approved:'<span class="badge b-ok">Approved</span>', rejected:'<span class="badge b-danger">Rejected</span>',
+    skipped:'<span class="badge b-slate">Not counted: comes round again</span>' };
   const day = i => {
     if (!i.due_on) return '<span class="small muted">--</span>';
     const late = i.status === 'planned' && thisWeek && i.due_on < today;
@@ -677,11 +697,27 @@ function stDecide(id, approve){
       catch (e) { setErr('dcNote', e.message, w); } }; } });
 }
 
-/* ---- Settings: the numbers behind the rules (each with its reason), the counter, locations, material types */
+/* ---- Settings (22 Nov 2026, user): its own page in the menu, like Engineering's, with a sub-tab per job the settings do,
+   so it stays easy to find things as more settings come. A setting not placed in a tab shows under "Other". */
 const ST_DAYS = { 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday' };
-function viewStoreSettings(){
-  if (!ST.data) { stLoad(); return stWait('/store/settings'); }
-  const canEdit = levelOf('production.store_settings') === 'edit', dis = canEdit ? '' : 'disabled', set = ST.data.settings || [], people = ST.data.people || [];
+const PRD_SET_TABS = [
+  ['count', 'Store: weekly count', 'Who counts, how many materials a week, and when a difference needs the Production Manager.',
+   ['count_person', 'count_items_per_week', 'count_escalate_weekday', 'count_diff_approval_units']],
+  ['stock', 'Store: stock and ordering', 'How the use per week, the reorder level and the order quantity are worked out.',
+   ['usage_weeks', 'usage_min_issue_days', 'lead_time_weeks', 'safety_weeks', 'order_qty_percent', 'trend_percent']],
+  ['places', 'Store: locations and types', 'Where materials are kept, and the material types that start every code.', ['store_locations']],
+];
+function prdSetTab(key){ const t = PRD_SET_TABS.find(x => x[3].includes(key)); return t ? t[0] : 'other'; }
+function prdSettingsTabs(cur, set){
+  const tabs = PRD_SET_TABS.map(t => [t[0], t[1]]).concat(set.some(s => prdSetTab(s.key) === 'other') ? [['other', 'Other']] : []);
+  return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k, l]) => `<a class="tab ${k === cur ? 'on' : ''}" href="#/settings${k === 'count' ? '' : '/' + k}">${esc(l)}</a>`).join('')}</div>`;
+}
+function viewStoreSettings(params){
+  const cur = PRD_SET_TABS.some(t => t[0] === (params && params.tab)) || (params && params.tab) === 'other' ? params.tab : 'count';
+  const head = pageHead('Settings', 'The numbers behind the Production rules. Each one says what it does and why it is set so.');
+  if (!ST.data) { stLoad(); return { title:'Settings', crumb:'Setup', html: head + `<div class="card"><div class="card-b small muted">${ST.error ? esc(ST.error) : 'Loading...'}</div></div>` }; }
+  const canEdit = levelOf('production.store_settings') === 'edit', dis = canEdit ? '' : 'disabled', people = ST.data.people || [];
+  const all = ST.data.settings || [], set = all.filter(s => prdSetTab(s.key) === cur), tab = PRD_SET_TABS.find(t => t[0] === cur);
   const field = s => {
     let input;
     if (s.unit === 'person') input = `<select class="inp" data-set="${esc(s.key)}" ${dis}>${people.map(p => `<option value="${esc(p.enroll_id)}" ${s.person && s.person.enroll_id === p.enroll_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
@@ -692,22 +728,22 @@ function viewStoreSettings(){
       <div class="tiny muted" style="margin-top:4px;line-height:1.5">${esc(s.help || '')}</div>${s.updated_by ? `<div class="tiny muted">Last changed by ${esc(s.updated_by)}, ${esc(String(s.updated_at || '').slice(0, 10))}</div>` : ''}</div>`;
   };
   const types = ST.data.types || [];
-  return { title:'Store', crumb:'Store',
-    html: stHead('The numbers behind the rules. Each one says what it does and why it is set so.', '') + stTabs('/store/settings') + `
-    <div class="grid g2" style="align-items:start">
-      <div class="card"><div class="card-h"><h3>Rules</h3><div class="sub">A change applies at once to every material.</div></div><div class="card-b">${set.map(field).join('')}
-        ${canEdit ? `<div class="err-msg hide" data-err="setSave"></div><button class="btn btn-primary" style="margin-top:10px" onclick="stSaveSettings()">${I.check} Save the rules</button>` : ''}</div></div>
-      <div class="card"><div class="card-h"><h3>Material types ${stInfo(stRules().code)}</h3><div class="sub">The two letters start every code. A new kind of material (gloves, change parts, tools ...) gets its own type and category.</div></div>
+  const rules = set.length ? `<div class="card"><div class="card-h"><h3>${esc(tab ? tab[1].replace(/^Store: /, '') : 'Other settings')}</h3><div class="sub">${esc(tab ? tab[2] : '')} A change applies at once.</div></div><div class="card-b">${set.map(field).join('')}
+        ${canEdit ? `<div class="err-msg hide" data-err="setSave"></div><button class="btn btn-primary" style="margin-top:10px" onclick="stSaveSettings()">${I.check} Save</button>` : ''}</div></div>` : '';
+  const typesCard = cur !== 'places' ? '' : `<div class="card"><div class="card-h"><h3>Material types ${stInfo(stRules().code)}</h3><div class="sub">The two letters start every code. A new kind of material (gloves, change parts, tools ...) gets its own type and category.</div></div>
         <div class="tbl-wrap"><table class="tbl" data-nosort><thead><tr><th>Letters</th><th>Type</th><th>Category</th><th style="text-align:right">Materials</th><th></th></tr></thead>
         <tbody>${types.map(t => `<tr><td class="mono">${esc(t.prefix)}</td><td>${esc(t.name)}</td><td>${esc(t.category)}</td><td style="text-align:right">${t.items}</td>
           <td style="text-align:right">${t.active ? '' : '<span class="badge b-slate">Off</span> '}${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="stType('${esc(t.prefix)}')">Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
-        ${canEdit ? `<div class="card-b"><button class="btn btn-ghost" onclick="stType('')">${I.plus} Add a type</button></div>` : ''}</div>
-    </div>` };
+        ${canEdit ? `<div class="card-b"><button class="btn btn-ghost" onclick="stType('')">${I.plus} Add a type</button></div>` : ''}</div>`;
+  return { title:'Settings', crumb:'Setup',
+    html: head + prdSettingsTabs(cur, all) + `<div class="grid g2" style="align-items:start">${rules}${typesCard}</div>` };
 }
-route('/store/settings', viewStoreSettings);
+route('/settings', () => viewStoreSettings({}));
+route('/settings/:tab', viewStoreSettings);
+route('/store/settings', () => { location.replace('#/settings'); return { title:'Settings', crumb:'Setup', html:'' }; });   // old links
 async function stSaveSettings(){
   const values = {};
-  $$('[data-set]').forEach(el => { values[el.dataset.set] = el.dataset.list ? el.value.split('\n').map(s => s.trim()).filter(Boolean) : el.value; });
+  $$('[data-set]').forEach(el => { values[el.dataset.set] = el.dataset.list ? el.value.split('\n').map(s => s.trim()).filter(Boolean) : el.value; });   // only this tab's settings are on the page
   const err = $('[data-err="setSave"]'); if (err) { err.classList.add('hide'); err.textContent = ''; }
   try { const r = await api('/webhook/production/api/store/settings', { method:'POST', body:{ values } }); toast(r.changed ? 'Saved' : 'Nothing changed', r.changed ? r.changed + ' setting' + (r.changed === 1 ? '' : 's') : '', 'ok'); await stLoad(true); }
   catch (e) { if (err) { err.textContent = e.message; err.classList.remove('hide'); } else toast('Not saved', e.message, 'err'); }
