@@ -216,7 +216,7 @@ function navModel(){
       { path:'/test', label:'Make a new test request', icon:'plus' },
     ] },
     { title:'Store', items:[ { path: typeof stFirstTab === 'function' ? stFirstTab() : '/store', label:'Store', icon:'box' } ] },
-    { title:'Reports', items:[ { path:'/report', label:'Daily production report', icon:'externalLink' } ] },
+    { title:'Reports', items:[ { path:'/report', label:'Daily production report', icon:'checkCircle' } ] },
     { title:'Setup', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },   // 22 Nov 2026: its own page, like Engineering
     { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ];
@@ -395,12 +395,7 @@ function viewProdTest(){
 }
 route('/test', viewProdTest);
 
-// the daily production report (the page that was the Production tile before): needs the "Daily production" page
-function viewProdReport(){
-  return { title:'Daily production report', crumb:'Reports', html: pageHead('Daily production report', 'OKL and OBC daily packaging reports: what is in, what is missing, and upload by hand.')
-    + `<div class="card"><div class="card-b"><a class="btn btn-primary" href="report.html">${I.externalLink} Open the daily production report</a></div></div>` };
-}
-route('/report', viewProdReport);
+// the daily production report: report.js (23 Nov 2026, inside the console; needs the "Daily production" page)
 
 const PROD_HELP = [
   ['box', 'Make a procurement request', [
@@ -438,6 +433,13 @@ const PROD_HELP = [
     'Menu > <b>Settings</b> (Production Manager). One tab per job: <b>Store: weekly count</b> (the counter, how many a week, the approval limit), <b>Store: stock and ordering</b> (lead time, safety weeks, order quantity...), <b>Store: locations and types</b>.',
     'Each setting says what it does and why it is set so. <b>Save</b> saves that tab only; a change applies at once.',
     '<b>Material types</b>: the two letters that start every code (CF coding fluids, CT cartridges, RB ribbons, CC characters, GC general). Add a type for a new kind of material; its category groups it (Consumable ...).']],
+  ['checkCircle', 'Daily production report', [
+    'Menu > <b>Daily production report</b>. It is for the report day (the working day before today). No WhatsApp or e-mail is sent about it any more: everything is on this page.',
+    '<b>Check mailbox</b> reads the OKL and OBC reports and the OKL RM PM stock report from the e-mail (the last 3 days; each e-mail only once). Press it when the files have come in: Engineering then gets the OKL stops, the Zaiki review is prefilled and the Google Sheet updates.',
+    'A file that did not come by e-mail: choose it under <b>A file that did not come by e-mail</b>, then <b>Upload</b>. It goes in exactly as if it had come by e-mail.',
+    '<b>Waiting for you</b>: the Zaiki, Mintacid and Cannon PM review, stock reports to approve, and stops of 30+ minutes that have no action yet.',
+    '<b>Daily draft</b> (and <b>Weekly draft</b> on the first working day of the week): read the "Before you send" notes, press <b>Copy</b> and paste it into WhatsApp.',
+    '<b>Google Sheet</b>: <b>Open</b> the live sheet. When it moves to a new month, the finished month downloads here as Excel.']],
   ['check', 'My approvals', [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
@@ -454,7 +456,7 @@ const PROD_HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const PROD_HELP_PAGE = { 'Store: stock and what to order': '/store', 'Store: receive and issue': () => levelOf('production.store_received') === 'edit' || levelOf('production.store_issued') === 'edit', 'Store: weekly count': '/store/counts', 'Store: settings': '/settings', 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const PROD_HELP_PAGE = { 'Daily production report': '/report', 'Store: stock and what to order': '/store', 'Store: receive and issue': () => levelOf('production.store_received') === 'edit' || levelOf('production.store_issued') === 'edit', 'Store: weekly count': '/store/counts', 'Store: settings': '/settings', 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const PROD_HELP_MINE = () => PROD_HELP.filter(h => { const g = PROD_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewProdHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')
