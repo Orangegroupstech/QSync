@@ -500,7 +500,7 @@ route('/', viewAudit);
 // the screen files every console loads; their fingerprints are worked out here (SHA-256 of the file as the browser gets it)
 const SCREEN_FILES = ['index.html', 'shared.js', 'scrollkeep.js', 'startup.js', 'keepalive.js', 'formkeep.js', 'tablesort.js', 'pager.js', 'waiting.js', 'requests.js', 'testrequest.js',
   'engineering/app.js', 'employees/app.js', 'procurement/app.js', 'production/app.js', 'production/store.js', 'production/report.js',
-  'qsync/app.js', 'qsync/lab.js', 'qsync/dept.js', 'qsync/apqr.js', 'users/app.js', 'profile/app.js', 'requests/app.js', 'datacenter/index.html', 'system/app.js', 'pwa.js', 'sw.js', 'manifest.json'];
+  'qsync/app.js', 'qsync/lab.js', 'qsync/dept.js', 'qsync/apqr.js', 'users/app.js', 'profile/app.js', 'requests/app.js', 'datacenter/index.html', 'datacenter/app.js', 'system/app.js', 'pwa.js', 'sw.js', 'manifest.json'];
 async function fingerprint(url){
   try {
     const r = await fetch(url, { cache: 'no-store' });
