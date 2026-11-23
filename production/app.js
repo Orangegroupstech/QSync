@@ -23,6 +23,7 @@ const I = (() => {
     arrowDown: w('<path d="M12 5v14M5 12l7 7 7-7"/>'),
     arrowUp: w('<path d="M12 19V5M5 12l7-7 7 7"/>'),
     play: w('<path d="M5 3l14 9-14 9z"/>'),
+    wrench: w('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'),
     users: w('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
   };
 })();
@@ -77,7 +78,7 @@ function meFromAuth(auth, scope){
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 // 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
-const PAGES = [["/my-approvals", "production"], ["/report", "production"], ["/settings", "production.store_settings"], ["/store/settings", "production.store_settings"], ["/store/received", "production.store_received"], ["/store/issued", "production.store_issued"], ["/store/counts", "production.store_counts"], ["/store", "production.store"], ["/", "production.requests"]];   // route prefix -> page, first match wins
+const PAGES = [["/my-approvals", "production"], ["/report/issues", "production.machine_issues"], ["/report", "production"], ["/settings", "production.store_settings"], ["/store/settings", "production.store_settings"], ["/store/received", "production.store_received"], ["/store/issued", "production.store_issued"], ["/store/counts", "production.store_counts"], ["/store", "production.store"], ["/", "production.requests"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -216,7 +217,8 @@ function navModel(){
       { path:'/test', label:'Make a new test request', icon:'plus' },
     ] },
     { title:'Store', items:[ { path: typeof stFirstTab === 'function' ? stFirstTab() : '/store', label:'Store', icon:'box' } ] },
-    { title:'Reports', items:[ { path:'/report', label:'Daily production report', icon:'checkCircle' } ] },
+    // 23 Nov 2026 (095): the report has two tabs; someone with only Machine issues lands on that tab
+    { title:'Reports', items:[ { path: canOpen('/report') ? '/report' : '/report/issues', label:'Daily production report', icon:'checkCircle' } ] },
     { title:'Setup', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },   // 22 Nov 2026: its own page, like Engineering
     { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ];
@@ -440,6 +442,14 @@ const PROD_HELP = [
     '<b>Waiting for you</b>: the Zaiki, Mintacid and Cannon PM review, stock reports to approve, and stops of 30+ minutes that have no action yet.',
     '<b>Daily draft</b> (and <b>Weekly draft</b> on the first working day of the week): read the "Before you send" notes, press <b>Copy</b> and paste it into WhatsApp.',
     '<b>Google Sheet</b>: <b>Open</b> the live sheet. When it moves to a new month, the finished month downloads here as Excel.']],
+  ['wrench', 'Machine issues', [
+    'Menu > <b>Daily production report</b> > tab <b>Machine issues</b>. One screen per report day. The machine stops in the OKL report wait here; nothing becomes an Engineering job until you press <b>Move to jobs</b>.',
+    '<b>Pick the day</b> at the top. Green dot = OKL report in, orange dot = Engineering&#39;s report pasted, the number = issues left, &#10003; = done. The oldest day with something left opens first.',
+    '<b>Paste Engineering&#39;s report</b>: copy their WhatsApp message as it is (from "ENGINEERING DAILY ACTIVITY REPORT" to the summary), paste it, <b>Read the report</b>. Check the table: anything odd is in orange (an am/pm slip, minutes that do not match the times, no status). <b>Save</b>. The date in their report decides the day.',
+    'Each <b>issue</b> is one machine problem: the stop from the OKL report and Engineering&#39;s line about it, side by side, paired by machine and words. <b>Only in the production report</b> = Engineering did not report it (often the operator fixed it).',
+    '<b>What happens</b> on each issue (the page suggests one): <b>Fill the job&#39;s empty fields</b> (a floor call or job already exists: nothing in it is overwritten), <b>New job, filled from Engineering&#39;s report</b>, <b>New job for Engineering to fill</b>, or <b>Not a job</b> (keep it here / the operator fixed it / not a machine issue). A stop Engineering did not report stays here by default.',
+    'Wrong pair? <b>Separate</b> a line, or <b>Pair with...</b> another issue. A wrong time or machine in their report: <b>Correct</b>. An unknown machine name: choose the machine once; "Remember" keeps it for next time.',
+    '<b>Move to jobs</b> (bottom) says what it will make, then does it for the whole day. The jobs are in Engineering at once; new jobs get the people who wrote the report as technicians. A line added later (their report pasted again) can be moved later.']],
   ['check', 'My approvals', [
     'Menu > <b>My approvals</b> (the first item) lists everything waiting for you in this console.',
     'Four groups: <b>To approve</b> (requests that need your decision), <b>Assigned to you</b> (work to do), <b>Returned to you</b> (things you raised that were returned or rejected) and <b>Overdue in your area</b>.',
@@ -456,7 +466,7 @@ const PROD_HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const PROD_HELP_PAGE = { 'Daily production report': '/report', 'Store: stock and what to order': '/store', 'Store: receive and issue': () => levelOf('production.store_received') === 'edit' || levelOf('production.store_issued') === 'edit', 'Store: weekly count': '/store/counts', 'Store: settings': '/settings', 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const PROD_HELP_PAGE = { 'Daily production report': '/report', 'Machine issues': '/report/issues', 'Store: stock and what to order': '/store', 'Store: receive and issue': () => levelOf('production.store_received') === 'edit' || levelOf('production.store_issued') === 'edit', 'Store: weekly count': '/store/counts', 'Store: settings': '/settings', 'Make a procurement request': '/requests', 'Submit overtime': '/overtime', 'Make a new test request': '/test', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const PROD_HELP_MINE = () => PROD_HELP.filter(h => { const g = PROD_HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewProdHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task.')

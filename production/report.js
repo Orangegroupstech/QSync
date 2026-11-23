@@ -155,6 +155,10 @@ function prTodoCard(d){
     row(blanks.length + ' stop' + (blanks.length === 1 ? '' : 's') + ' of 30+ minutes without an action', `They show as [action?] in the draft. OKL stops are filled by Engineering; OBC ones come from the OBC file.<ul style="margin:6px 0 0;padding-left:18px">${list}</ul>`,
       blanks.some(x => x.company === 'OKL') ? `<a class="btn btn-ghost btn-sm" href="${eng}">Engineering's list</a>` : '');
   }
+  // 095: the machine stops wait on the Machine issues tab before they become jobs
+  const miOpen = window.MI && window.MI.data ? (window.MI.data.days || []).filter(x => x.open) : [];
+  if (miOpen.length) row('Machine issues to check', miOpen.reduce((s2, x) => s2 + x.open, 0) + ' issue(s) on ' + miOpen.map(x => esc(prDay(x.day))).join(', ')
+    + '. Paste Engineering&#39;s report, check each issue, then Move to jobs.', `<a class="btn btn-primary btn-sm" href="#/report/issues">Open</a>`);
   if (e.waiting) row('Machine names to choose', e.waiting + ' OKL stop' + (e.waiting === 1 ? '' : 's') + ' wait for Engineering to choose the machine (Engineering > Settings > Daily report machine names).',
     `<a class="btn btn-ghost btn-sm" href="${eng}">Open Engineering</a>`);
   return `<div class="card"><div class="card-h"><div><h3>Waiting for you</h3></div>${rows.length ? `<span class="badge b-warn">${rows.length}</span>` : ''}</div>
@@ -183,11 +187,11 @@ function viewProdReport(){
   if (!PR.loading && ((!PR.data && !PR.err) || (PR.data && Date.now() - (PR.at || 0) > 60000))) prLoad();   // fresh each visit (a minute old at most)
   const d = PR.data, can = prCan();
   const sub = d ? 'The report you send today is for <b>' + esc(prLong(d.report_day)) + '</b>.' + (d.workday ? '' : ' Today is not a working day.') : 'OKL and OBC daily packaging reports.';
-  if (!d) return { title: 'Daily production report', crumb: 'Reports', html: pageHead('Daily production report', sub)
+  if (!d) return { title: 'Daily production report', crumb: 'Reports', html: pageHead('Daily production report', sub) + (typeof miTabs === 'function' ? miTabs('/report') : '')
     + `<div class="card"><div class="card-b">${PR.err ? `<div class="notice danger">${I.alert}<div>${esc(PR.err)} <button class="btn btn-ghost btn-sm" id="prRetry">Try again</button></div></div>` : '<div class="muted small">Loading...</div>'}</div></div>`,
     bind: () => { const b = $('#prRetry'); if (b) b.onclick = () => { PR.err = ''; prLoad(); render(); }; } };
   const dr = d.drafts || {};
-  const html = pageHead('Daily production report', sub)
+  const html = pageHead('Daily production report', sub) + (typeof miTabs === 'function' ? miTabs('/report') : '')
     + `<div class="grid g2" style="align-items:start">${prFilesCard(d, can)}${prTodoCard(d)}</div>`
     + (dr.error ? `<div class="notice danger">${I.alert}<div>${esc(dr.error)}</div></div>` : '')
     + prDraftCard('daily', 'Daily draft', dr.daily)

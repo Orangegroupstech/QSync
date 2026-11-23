@@ -435,7 +435,7 @@ function viewLabRequest(id){
   const dec = r.qc_decision ? (r.qc_decision === 'released' ? 'Released' : 'Not released') + ': ' : '';
   return {
     title: r.request_no, crumb:'QC Laboratory',
-    html: `${pageHead(`${r.request_no} - QC lab view`, `${esc(r.product_name)} - batch <span class="mono">${esc(r.batch_no)}</span> - ${esc(r.stage)} - QC number: <b>${esc(r.qc_number || 'Not assigned')}</b>`, batchNav(r.id, 'lab') + acts.join(''))}
+    html: `${pageHead(`${r.request_no} - QC lab view`, `${esc(r.product_name)} - batch <span class="mono">${esc(r.batch_no)}</span> - ${esc(r.stage)} - QC number: <b>${esc(r.qc_number || 'Not assigned')}</b>${labCanChangeQc(r) ? ` <a href="javascript:void 0" onclick="labChangeQcNumber(${r.id})" title="Change this QC number (a mistake). Allowed until the QC Manager approves the results." style="white-space:nowrap">${I.edit} Change</a>` : ''}`, batchNav(r.id, 'lab') + acts.join(''))}
       <div class="card" style="margin-bottom:16px"><div class="card-b"><div class="kv-grid">
         <div class="kv-item"><div class="k">Status</div><div class="v">${labStatusBadge(st)}</div></div>
         ${one('Logged by IPQA', r.ipqa_signed_by, r.ipqa_signed_at, `<div class="tiny muted">Sample: ${r.sample_qty ? esc(r.sample_qty) + ' ' + esc(r.sample_qty_unit || '') : r.qc_received_qty != null ? esc(r.qc_received_qty) + ' ' + esc(r.qc_received_qty_unit || '') : '--'}</div>`)}
@@ -459,8 +459,8 @@ function viewLabRequest(id){
         </div>
         <div class="card"><div class="card-h"><h3>QC results</h3><div class="sub">Current results (corrected ones replace older ones)</div></div>
           ${results.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:0"><thead><tr><th>API</th><th>Sample</th><th>Result</th><th>Limit</th><th></th></tr></thead><tbody>
-            ${results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="strong tnum">${esc(resText(x, true))}</td>
-              <td class="small muted">${esc(x.limit_text || '')}</td><td>${verdictBadge(x.pass, x.oos_status)}</td></tr>`).join('')}</tbody></table></div>`
+            ${results.map(x => `<tr><td>${esc(x.api)}</td><td class="mono small">${esc(x.sample_label)}</td><td class="strong tnum">${esc(resShown(x, true))}</td>
+              <td class="small muted">${esc(specShown(x))}</td><td>${verdictBadge(x.pass, x.oos_status)}</td></tr>`).join('')}</tbody></table></div>`
             : `<div class="card-b">${emptyState('chart', 'No results yet', 'Results appear when the analyst submits the worksheet.')}</div>`}
         </div>
       </div>
@@ -537,6 +537,28 @@ function labAssignQcNumber(id){
       if (!qc_number) throw new Error('Enter the QC number.');
       await labPost('/qc-number', { request_id: id, password, qc_number });
       toast('QC number assigned', qc_number, 'ok'); labRefresh();
+    }
+  });
+}
+// 096 (23 Nov 2026, suggestion): a QC number given by mistake can be changed by the QC Supervisor or the QC Manager, until the
+// QC Manager approves the results of that product, batch and stage. The server checks the same rule and that the number is unused.
+function labCanChangeQc(r){
+  return !!r.qc_number && (hasLabRole('qc_supervisor') || hasLabRole('qc_manager')) && !r.qc_manager_signed_at
+    && !['qc_released', 'qc_not_released', 'qa_acknowledged', 'void'].includes(r.status);
+}
+function labChangeQcNumber(id){
+  const r = (labCache['/request?id=' + id] || {}).request; if (!r) return;
+  signDialog({
+    title: 'Change QC number', sub: `${r.product_name} - ${r.batch_no} - ${r.stage}`, ok: 'Change QC number',
+    body: `<div class="field"><label>Now</label><div class="mono strong" style="padding:6px 0">${esc(r.qc_number)}</div></div>
+      <div class="field"><label for="qcNumberNew">New QC number</label><input class="inp" id="qcNumberNew" maxlength="100" autocomplete="off" value="${esc(r.qc_number)}"></div>
+      <div class="notice info">${I.info}<div>This changes the QC number of every test of <b>${esc(r.product_name)}</b>, batch <b>${esc(r.batch_no)}</b>, ${esc(r.stage)}: on their worksheets and on the report. The audit trail keeps the old number.</div></div>`,
+    submit: async ({ password, wrap }) => {
+      const qc_number = $('#qcNumberNew', wrap).value.trim();
+      if (!qc_number) throw new Error('Enter the new QC number.');
+      if (qc_number === r.qc_number) throw new Error('That is the QC number it already has.');
+      await labPost('/qc-number', { request_id: id, password, qc_number, change: true });
+      toast('QC number changed', r.qc_number + ' to ' + qc_number, 'ok'); labRefresh();
     }
   });
 }
@@ -1055,6 +1077,24 @@ function wsProductionApprovals(d){
     </tbody></table></div></div>`;
 }
 
+// 096 (23 Nov 2026, suggestion): a worksheet keeps the method versions it was started with. When a newer version is approved
+// (e.g. tailing factor and resolution added), the analyst moves their own worksheet, still with them, to it; what was typed stays.
+function wsNewerMethodNotice(d, edit){
+  const old = (d.templates || []).filter(t => t.status && t.status !== 'approved');
+  if (!old.length || !edit) return '';
+  return `<div class="notice warn" style="margin-bottom:16px;align-items:center">${I.alert}<div style="flex:1">A newer approved version of the method exists for
+    <b>${old.map(t => esc(t.api) + ' (this worksheet: v' + esc(t.version) + ')').join(', ')}</b>. Use it to get its changes on this worksheet (for example new
+    system suitability checks). Everything you typed is kept.</div><button class="btn btn-primary btn-sm" onclick="wsUpdateMethod(${d.analysis.id})">Use the latest method</button></div>`;
+}
+async function wsUpdateMethod(id){
+  if (ws && ws.dirty) { toast('Save the draft first', 'Then use the latest method.', 'warn', 5000); return; }
+  if (!await confirmDialog('Use the latest approved method?', 'This worksheet moves to the method versions approved now. Everything you typed is kept; new fields appear for you to fill. The audit trail records the change.', 'Use the latest method')) return;
+  try {
+    const r = await labPost('/worksheet/update-method', { analysis_id: id });
+    toast('Worksheet updated', (r.changes || []).map(c => c.api + (c.from ? ' v' + c.from : ' (new)') + ' to v' + c.to).join(', '), 'ok', 6000);
+    ws = null; labRefresh();
+  } catch (e) { toast('Not updated', e.message, 'err', 7000); }
+}
 function viewLabWorksheet(id){
   const d = labGet('/worksheet?id=' + id);
   if (!d) return labWait('Worksheet', 'QC Laboratory');
@@ -1087,6 +1127,7 @@ function viewLabWorksheet(id){
     html: `${pageHead(`Worksheet #${a.id} - ${esc(TEST_TYPES[a.test_type] || a.test_type)}`, `${esc(a.product_name)} - ${esc(a.stage)} - analyst ${esc(a.analyst)} - ${wsBadge(a.status)}`, acts.join(''))}
       ${a.status === 'returned' ? `<div class="notice" style="margin-bottom:16px;color:var(--danger)">${I.alert} Returned by ${esc(a.returned_by || '')} ${a.returned_at ? fmtDateTime(a.returned_at) : ''}: <b>${esc(a.return_reason || '')}</b>. Every correction asks for a reason.</div>` : ''}
       ${!edit && !['submitted', 'checked'].includes(a.status) && !a.is_mine ? `<div class="notice" style="margin-bottom:16px">${I.info} Only the analyst of this worksheet can edit it.</div>` : ''}
+      ${wsNewerMethodNotice(d, edit)}
       ${wsProductionApprovals(d)}
       <div class="grid g2" style="margin-bottom:16px;align-items:start">
         <div class="card"><div class="card-h"><div><h3>Run details</h3><div class="sub">Every field on this worksheet is required to submit</div></div></div><div class="card-b"><div class="grid g2">
@@ -1910,6 +1951,7 @@ function tplLimitText(t){
   if (t.test_type === 'weight_variation') return `${L.units || '?'} units, each within ±${L.limit_pct}% of the average` + (L.target && L.target.weight ? `; average ${L.target.weight} ${P.unit || 'g'} ±${L.target.pct}%` : '');
   if (t.test_type === 'ph') return `pH ${L.min ?? '--'} to ${L.max ?? '--'}`;
   if (t.test_type === 'microbiology') return (L.counts || []).map(c => `${c.label} NMT ${c.max}`).join(', ') + ((L.absent || []).length ? '; ' + L.absent.length + ' organisms absent' : '');
+  if (t.test_type === 'identification' && !isObservation(P)) return RT_ID_SPEC;
   return 'Matches the standard (analyst)';
 }
 // Mintacid: switch "QC also tests pH" on or off (a change request: QC Manager reviews, QA Manager approves)
@@ -2701,6 +2743,12 @@ function resText(x, matchLimit){
   return `${limitDp >= 0 ? numDp(x.value_reported, dp) : x.value_reported} ${x.unit || ''}`.trim();
 }
 const verdictText = p => (p === true ? 'COMPLIES' : p === false ? 'DOES NOT COMPLY' : '--');
+// 23 Nov 2026 (QC suggestion): identification by HPLC retention time reads "Complies" against the method's wording in the
+// results summaries (request page, Analysis Report); the standard and sample RT values stay on the worksheet as the evidence.
+const RT_ID_SPEC = 'HPLC retention time of sample peak matches that of the standard';
+const isRtIdent = x => !!x && (x.unit === 'min RT' || x.unit === '% RT diff');
+function resShown(x, matchLimit){ return isRtIdent(x) ? (x.pass === true ? 'Complies' : x.pass === false ? 'Does not comply' : '--') : resText(x, matchLimit); }
+function specShown(x){ return isRtIdent(x) ? RT_ID_SPEC : (x.limit_text || ''); }
 const testOfResult = n => (n === 'density' ? 'Weight per mL' : TEST_TYPES[n] || 'Microbiology');   // 071: the density comes with the assay
 
 // opt.only: assignment ids to show (one batch of a run, for the detailed batch report); opt.embedded: no letterhead
@@ -2941,8 +2989,8 @@ function labDetailHtml(d, sheets){
     || String(a.api || '').localeCompare(String(b.api || '')) || String(a.sample_label || '').localeCompare(String(b.sample_label || '')));
   const chemicalResults = sortResults(results.filter(x => !isMicro(x))), microbialResults = sortResults(results.filter(isMicro));
   const resultsTable = (list, open, empty) => `<table><tr><th>Test</th><th>API / parameter</th><th>Sample</th><th>Result</th><th>Specification</th><th>Verdict</th></tr>
-      ${list.map(x => `<tr><td>${esc(testOfResult(x.result_name))}</td><td>${esc(x.api)}</td><td>${esc(x.sample_label)}</td><td><b>${esc(resText(x, true))}</b></td>
-        <td>${esc(x.limit_text || '')}</td><td><b>${verdictText(x.pass)}${x.oos_status ? ' (OOS ' + esc(x.oos_status) + ')' : ''}</b></td></tr>`).join('')}
+      ${list.map(x => `<tr><td>${esc(testOfResult(x.result_name))}</td><td>${esc(x.api)}</td><td>${esc(x.sample_label)}</td><td><b>${esc(resShown(x, true))}</b></td>
+        <td>${esc(specShown(x))}</td><td><b>${verdictText(x.pass)}${x.oos_status ? ' (OOS ' + esc(x.oos_status) + ')' : ''}</b></td></tr>`).join('')}
       ${open || (!list.length ? `<tr><td colspan="6">${empty}</td></tr>` : '')}</table>`;
   const orderedSheets = sheets.slice().sort((a, b) => (rank[a.analysis.test_type] ?? 4) - (rank[b.analysis.test_type] ?? 4)
     || Number(a.analysis.id) - Number(b.analysis.id));

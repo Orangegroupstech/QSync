@@ -30,7 +30,13 @@
     start: async function (apiGet, token) {
       var fresh = apiGet('/webhook/auth/api/me').then(function (a) { window.oklMe.save(token, a); return a; });
       var kept = window.oklMe.cached(token);
-      if (kept) { fresh.catch(function () { /* api() already sends a 401 to sign-in */ }); return { auth: kept, fresh: fresh, kept: true }; }
+      if (kept) {
+        fresh.catch(function () { /* api() already sends a 401 to sign-in */ });
+        // 23 Nov 2026: the kept answer is ready at once, before the console's later scripts (its pages: views.js, report.js,
+        // lab.js...) have run. Wait for the page's scripts, or a reload draws "That link is out of date" and the home page.
+        if (document.readyState === 'loading') await new Promise(function (r) { document.addEventListener('DOMContentLoaded', r, { once: true }); });
+        return { auth: kept, fresh: fresh, kept: true };
+      }
       return { auth: await fresh, fresh: fresh, kept: false };
     },
     // after a start from the kept answer: when the server's answer differs (access changed, password change needed), apply it

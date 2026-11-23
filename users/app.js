@@ -362,7 +362,7 @@ window.addEventListener('hashchange', render);
    People (User Management) - admins only
    One person = one account = one password, used for the consoles, QSync sign-offs and the machine app.
    ============================================================ */
-const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' }, { key:'engineering', label:'Engineering' }, { key:'production', label:'Production' } ];
+const CONSOLES = [ { key:'employees', label:'Human Resource' }, { key:'procurement', label:'Procurement' }, { key:'qsync', label:'QSync' }, { key:'engineering', label:'Engineering' }, { key:'production', label:'Production' }, { key:'improvement', label:'Process Improvement' } ];
 const SIGNOFFS = [ { key:'signoff.production', label:'Production' }, { key:'signoff.ipqa', label:'IPQA' },
                    { key:'signoff.qa_supervisor', label:'QA Supervisor' }, { key:'signoff.qc_supervisor', label:'QC Supervisor' },
                    { key:'signoff.qc_analyst', label:'QC Analyst' }, { key:'signoff.qc_manager', label:'QC Manager' }, { key:'signoff.qa_manager', label:'QA Manager' } ];
@@ -374,6 +374,12 @@ const ROLE_SIGNOFF = { 'Production Supervisor':'signoff.production', 'IPQA Inspe
 const LEVELS = [ { key:'', label:'No access' }, { key:'view', label:'View' }, { key:'submit', label:'Submit' }, { key:'edit', label:'Edit' } ];
 // 14 Nov 2026: what View and Edit allow on a page, where it is not obvious (the (i) beside the page in the access tree)
 const PAGE_HINT = {
+  'production.machine_issues': "The OKL report's machine stops and Engineering's daily report, side by side, before they become jobs.\nView: see them. Edit: paste Engineering's report, decide each issue and move them to jobs.",
+  'improvement.downtime': 'Every machine stop of a period, with where the time went.\nView: see it. Starting an RCA from a line also needs RCAs: Edit.',
+  'improvement.rca': 'Root cause analyses: the log, the open ones, effectiveness.\nView: see them. Edit: fill them in, add actions, close them, start clean.',
+  'improvement.gemba': 'Gemba walks: the plan, findings and the 5S walk score.\nView: see them. Edit: plan walks, raise and update findings, score.',
+  'improvement.five_s': 'Every room against the five S.\nView: see it. Edit: move rooms on, add rooms, areas and actions.',
+  'improvement.suggestions': 'Improvement ideas and their decisions.\nView: see them. Edit: type them in and decide.',
   'production.store': "The store's materials and their stock.\nView: see them. Edit: also add a material and change its details.",
   'production.store_received': 'Deliveries into the store.\nView: see the list. Edit: also receive a delivery and reverse a mistake.',
   'production.store_issued': 'Materials given out to the lines.\nView: see the list. Edit: also issue materials and reverse a mistake.',

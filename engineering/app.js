@@ -223,6 +223,10 @@ function matchRoute(path){
   return null;
 }
 
+// 097 (23 Nov 2026, user): the RCA page moves to the Process Improvement console. Set true ON THE DAY that console goes live
+// (users given its pages): the menu item and the banner on jobs go, and old /rca links open the RCAs there.
+const RCA_MOVED = false;
+const RCA_NEW_HOME = '../improvement/#/rca';
 /* Corrective and preventive actions were replaced by RCA (3 Nov 2026): /rca. Old /actions links go there. The old table and
    functions stay in the database, empty and unused. */
 /* The Machine stops page was removed (3 Nov 2026): Calls and jobs covers it (calls from the floor, "Start a job" for anything
@@ -239,7 +243,7 @@ function navModel(){
       { path:'/jobs', label:'Calls and jobs', icon:'wrench' },
       { path:'/pm', label:'Preventive maintenance', icon:'checkCircle' },
       { path:'/checks', label:'Periodic checks', icon:'check' },
-      { path:'/rca', label:'RCA', icon:'edit' },
+      ...(RCA_MOVED ? [] : [{ path:'/rca', label:'RCA', icon:'edit' }]),
     ] },
     { title:'Requests', items:[
       { path:'/requests', label:'Make a procurement request', icon:'box' },
@@ -2414,7 +2418,8 @@ function viewJob(params, ctx){
   else if (mgr && j.status === 'done') actions = `<button class="btn btn-ghost" onclick="jbDo('${esc(id)}', 'reopen')">Reopen</button><button class="btn btn-primary" onclick="jbSave('${esc(id)}', 'save')">${I.check} Save changes</button>`;
   return {
     title: j.machine_name || 'Job', crumb:'Maintenance', keepScroll: true,
-    html: `<div class="row between" style="margin-bottom:12px">${back}<span class="mono small muted">${esc(j.job_id)} · ${esc(JOB_TYPE[j.type] || j.type)}</span></div>
+    html: `<div class="row between" style="margin-bottom:12px">${back}<span class="row" style="gap:8px">${j.type === 'preventive' && j.status === 'done' && checks.length && typeof pmReportOpen === 'function'
+        ? `<button class="btn btn-ghost btn-sm" onclick="pmReportOpen('${esc(id)}')" title="The PM report as the paper form (OKL/ENG/002): print it or save it as PDF">${I.arrowDown} PM report</button>` : ''}<span class="mono small muted">${esc(j.job_id)} · ${esc(JOB_TYPE[j.type] || j.type)}</span></span></div>
     <div class="card" style="margin-bottom:14px"><div class="card-b">
       <div class="row between" style="align-items:flex-start;flex-wrap:nowrap"><div><h2 style="font-size:20px;margin:0">${j.asset ? `<a href="#/equipment/${esc(j.asset)}" style="color:inherit">${esc(j.machine_name || j.asset_name || j.asset)}</a>` : esc(j.machine_name || j.machine_code)}</h2>
         <div class="small muted" style="margin-top:4px">${[j.area || j.stage, j.stop_reason, j.called_by_name ? 'called by ' + j.called_by_name : ''].filter(Boolean).map(esc).join(' · ')}</div></div>${jbBadge(j)}</div>
@@ -2754,7 +2759,7 @@ function viewReport(){
       <td><button class="btn btn-primary btn-sm" data-rp-wait-save="${i}" ${RP.waitPick[g.key] ? '' : 'disabled'}>Save</button><span class="err-msg hide" data-err="rpWait${i}"></span></td></tr>`).join('')}</tbody></table></div></div>` : '';
   return { title:'Daily report machine names', crumb:'Setup', keepScroll: true,
     html: pageHead('Settings', 'The numbers behind the Engineering rules, and the machine names of the daily packaging report.') + back
-      + `<div class="small muted" style="margin-bottom:12px">The OKL report e-mail adds its machine stops to Calls and jobs (Other jobs) by itself: the last report day for technicians to fill in, earlier days as history. A machine name the register does not know waits here until you choose the machine once; the number on Settings in the menu says how many wait. A missed e-mail: upload the files on the home page, Daily production.</div>`
+      + `<div class="small muted" style="margin-bottom:12px">Since Machine issues started (Nov 2026), the OKL report's machine stops wait in the Production console (Daily production report &gt; Machine issues) beside Engineering's daily activity report; they become jobs here when they are moved from there, filled from your report where it covers them. Before that, the e-mail added them by itself; a machine name of those earlier days that the register does not know waits here until you choose the machine once.</div>`
       + (waitCard || `<div class="card"><div class="card-b">${emptyState('check', 'No machine names waiting', 'Every machine in the report was recognised.')}</div></div>`),
     bind(){
       $$('[data-rp-wait]').forEach(sel => sel.onchange = () => { RP.waitPick[groups[+sel.dataset.rpWait].key] = sel.value; render(); });
@@ -3006,7 +3011,7 @@ function rcList(){ return ((RC.data || {}).rcas || []).filter(r => (RC.filter ==
 function rcForJob(jobId){ return ((RC.data && RC.data.rcas) || []).find(r => (r.events || []).some(e => e.job_id === jobId)); }
 // on a job page: the RCA this job belongs to (loads the list once)
 function rcJobBanner(jobId){
-  if (!canOpen('/rca')) return '';
+  if (RCA_MOVED || !canOpen('/rca')) return '';
   if (!RC.data) { RC.data = 'loading'; rcLoad(); }   // once (not refreshed while someone may be typing on the job page)
   if (RC.data === 'loading' || RC.data.error) return '';
   const r = rcForJob(jobId); if (!r) return '';
@@ -3033,7 +3038,7 @@ function viewRcas(){
         || `<tr><td colspan="7" class="muted" style="padding:16px">No RCAs here.</td></tr>`}</tbody></table></div></div>`,
     bind(){ fltBind(RC.f, 'rcf', render); } };
 }
-route('/rca', viewRcas);
+route('/rca', () => RCA_MOVED ? (location.replace(RCA_NEW_HOME), { title:'RCA', crumb:'Maintenance', html:'' }) : viewRcas());
 // old links to the Actions page
 route('/actions', () => { location.replace('#/rca'); return { title:'RCA', crumb:'Maintenance', html:'' }; });
 function rcDownload(){
@@ -3106,7 +3111,7 @@ function viewRca(no){
     }); },
   };
 }
-route('/rca/:no', params => viewRca(params.no));
+route('/rca/:no', params => RCA_MOVED ? (location.replace(RCA_NEW_HOME), { title:'RCA', crumb:'Maintenance', html:'' }) : viewRca(params.no));
 route('/actions/:no', () => { location.replace('#/rca'); return { title:'RCA', crumb:'Maintenance', html:'' }; });
 
 /* ============================================================
@@ -3549,6 +3554,11 @@ const HELP = [
     'Pick <b>Fix</b> (something broke) or <b>Preventive (PM)</b>, then <b>Starting now</b> or <b>Already finished</b>.',
     'Already finished: fill in everything on that page. A fix needs its start and finish times; for a PM the checklist and parts matter, the times are optional.',
     'Starting now: the job opens under Other jobs; fill it in and tap <b>Job done</b> when you finish, or <b>Save, finish later</b>.']],
+  ['arrowDown', 'PM report (print or PDF)', [
+    'Open a finished PM job (Calls and jobs &gt; History, or PM effectiveness &gt; the PM). Top right: <b>PM report</b>.',
+    'It opens the PM report as the paper form OKL/ENG/002 in a new tab: the machine, its number and location, every checklist item with its standard and <b>OK</b> or <b>Not done</b>, the start, finish and total time.',
+    'Simpler than the paper: one result column, and a remark only where an item was not done (with the reason) or a note was written. It is signed by the people on the job (<b>Who worked on it</b>), with the time the job was closed.',
+    '<b>Print / Save as PDF</b> at the top. Choose "Save as PDF" as the printer to keep a file.']],
   ['users', 'Who worked on it', [
     'On a job, tap the others who worked with you. It is optional: working alone, leave it.']],
   ['x', 'Cancelling a job', [
@@ -3604,7 +3614,7 @@ const HELP = [
 ];
 // How to use shows a card only to people who can open its page; `true` = everyone in this console. A card missing here is HIDDEN
 // (fail closed, 12 Nov 2026): workflow/tests/help_cards_test.js fails until every card says who sees it.
-const HELP_PAGE = { 'A call from the floor (live)': '/jobs', 'A fix or a PM without a call': '/jobs', 'Who worked on it': '/jobs', 'Cancelling a job': '/jobs', 'Periodic checks': '/checks', 'Weekend watch': '/jobs', 'Spares: use per week and reorder level': '/spares', 'Parts: receive, issue, new names': '/spares', 'Requests (manager and storekeeper)': () => canRequest(), 'AHU temperature log': '/ahu', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
+const HELP_PAGE = { 'A call from the floor (live)': '/jobs', 'PM report (print or PDF)': '/jobs', 'A fix or a PM without a call': '/jobs', 'Who worked on it': '/jobs', 'Cancelling a job': '/jobs', 'Periodic checks': '/checks', 'Weekend watch': '/jobs', 'Spares: use per week and reorder level': '/spares', 'Parts: receive, issue, new names': '/spares', 'Requests (manager and storekeeper)': () => canRequest(), 'AHU temperature log': '/ahu', 'My approvals': true, 'Phone or laptop': true, 'Suggestions': true , 'Long lists': true};
 const HELP_MINE = () => HELP.filter(h => { const g = HELP_PAGE[h[1]]; return g === true || (!!g && (typeof g === 'function' ? g() : canOpen(g))); });
 function viewHelp(){
   return { title:'How to use', crumb:'Help', html: pageHead('How to use', 'The short version of each task. Ask the Engineering Manager if something is not clear.')
