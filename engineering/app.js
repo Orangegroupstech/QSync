@@ -223,9 +223,9 @@ function matchRoute(path){
   return null;
 }
 
-// 097 (23 Nov 2026, user): the RCA page moves to the Process Improvement console. Set true ON THE DAY that console goes live
-// (users given its pages): the menu item and the banner on jobs go, and old /rca links open the RCAs there.
-const RCA_MOVED = false;
+// 097/098 (23 Nov 2026, user): the RCA page lives in the Process Improvement console. The menu item, the banner on jobs and
+// the RCA rules in Settings are gone here; old /rca links open the RCAs there.
+const RCA_MOVED = true;    // moved 23 Nov 2026 (user: Engineering does not use it)
 const RCA_NEW_HOME = '../improvement/#/rca';
 /* Corrective and preventive actions were replaced by RCA (3 Nov 2026): /rca. Old /actions links go there. The old table and
    functions stay in the database, empty and unused. */
@@ -1368,7 +1368,7 @@ const ENG_SET_TABS = [
 const engSetTab = key => { const t = ENG_SET_TABS.find(x => x[2].includes(key)); return t ? t[0] : 'other'; };
 function settingsTabs(cur){
   const n = rpWaitingCount(), other = (ES.list || []).some(x => engSetTab(x.key) === 'other');
-  const tabs = ENG_SET_TABS.map(t => [t[0], t[1]]).concat(other ? [['other', 'Other']] : []);
+  const tabs = ENG_SET_TABS.filter(t => !(RCA_MOVED && t[0] === 'rca')).map(t => [t[0], t[1]]).concat(other ? [['other', 'Other']] : []);   // 098: RCA rules are in Process Improvement
   return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([k, l]) => `<a class="tab ${cur === k ? 'on' : ''}" href="#/settings${k === 'jobs' ? '' : '/' + k}">${esc(l)}</a>`).join('')}`
     + (levelOf('engineering.jobs') === 'edit' ? `<a class="tab ${cur === 'names' ? 'on' : ''}" href="#/settings/report-names">Daily report machine names${n ? ` <span class="badge b-warn" style="padding:1px 7px">${n}</span>` : ''}</a>` : '') + '</div>';
 }
@@ -1429,7 +1429,7 @@ function viewSettings(cur){
 }
 route('/settings', () => viewSettings('jobs'));
 route('/settings/report-names', () => viewReport());
-for (const k of ENG_SET_TABS.map(t => t[0]).concat(['other'])) if (k !== 'jobs') route('/settings/' + k, () => viewSettings(k));
+for (const k of ENG_SET_TABS.map(t => t[0]).concat(['other'])) if (k !== 'jobs') route('/settings/' + k, () => (RCA_MOVED && k === 'rca') ? (location.replace(RCA_NEW_HOME), { title:'RCA', crumb:'Settings', html:'' }) : viewSettings(k));
 
 
 /* ============================================================

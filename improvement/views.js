@@ -203,7 +203,7 @@ function viewPiRcaLog(mode){
   const q = PI.rcaQ.trim().toLowerCase();
   if (q) list = list.filter(x => [x.rca_no, x.asset_name, x.reason, x.trigger, x.root_cause].join(' ').toLowerCase().includes(q));
   const head = pageHead('RCAs', `Root cause analysis. New ones start by themselves: a stop of ${set.long} min or more, or the same reason ${set.repeat} times in ${set.days} days on a machine.`,
-    can ? `<button class="btn btn-ghost" id="rcaNew">${I.plus} RCA by hand</button>${mode !== 'open' ? `<button class="btn btn-ghost" id="rcaClean">Start clean from today</button>` : ''}` : '');
+    can ? `<button class="btn btn-ghost" id="rcaNew">${I.plus} RCA by hand</button>${mode !== 'open' ? `<button class="btn btn-ghost" id="rcaRules">Change the rules</button><button class="btn btn-ghost" id="rcaClean">Start clean from today</button>` : ''}` : '');
   let body;
   if (mode === 'open') {
     body = list.length ? `<div class="grid g2">${list.map(x => { const p = piRcaProgress(x);
@@ -226,6 +226,16 @@ function viewPiRcaLog(mode){
       $$('[data-rf]').forEach(b => b.onclick = () => { PI.rcaFilter = b.dataset.rf; render(); });
       const qq = $('#rcaQ'); if (qq) qq.oninput = debounce(() => { PI.rcaQ = qq.value; render(); setTimeout(() => { const e = $('#rcaQ'); if (e) { e.focus(); e.setSelectionRange(e.value.length, e.value.length); } }, 0); }, 300);
       const nb = $('#rcaNew'); if (nb) nb.onclick = piRcaNew;
+      // 098: the rules that start an RCA (they were under Engineering > Settings)
+      const ru = $('#rcaRules'); if (ru) ru.onclick = () => openModal({ title: 'The rules that start an RCA', size: 'narrow',
+        body: `<p class="small muted">An RCA starts by itself when a machine stops this long, or stops for the same reason this many times within these days.</p>
+          <div class="field"><label for="ruLong">A long stop (minutes, 5 to 1440)</label><input class="inp" id="ruLong" type="number" min="5" max="1440" value="${esc(set.long)}"></div>
+          <div class="field"><label for="ruRep">Repeats (times, 2 to 20)</label><input class="inp" id="ruRep" type="number" min="2" max="20" value="${esc(set.repeat)}"></div>
+          <div class="field"><label for="ruDays">Within (days, 1 to 90)</label><input class="inp" id="ruDays" type="number" min="1" max="90" value="${esc(set.days)}"></div>`,
+        footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="ruGo">Save the rules</button>`,
+        onMount: (w, close) => { $('#ruGo', w).onclick = async () => {
+          const r = await piSave({ op: 'rca_rules', ca_long_stop_minutes: $('#ruLong', w).value.trim(), ca_repeat_count: $('#ruRep', w).value.trim(), ca_repeat_days: $('#ruDays', w).value.trim() }, ['Rules saved', 'They apply from the next check (every 30 minutes).']);
+          if (r) close(); }; } });
       const cl = $('#rcaClean'); if (cl) cl.onclick = () => openModal({ title: 'Start clean from today', size: 'narrow',
         body: `<p class="small">Every RCA that is open, in progress or being watched (${(d.rcas || []).filter(x => openSt.includes(x.status)).length}) is closed as <b>Closed: not solved</b>. Nothing is deleted: they stay in the Log with this note.</p>
           <p class="small">From now on the rules look only at stops from today. A machine that keeps failing still starts a new RCA.</p>
@@ -569,7 +579,7 @@ const PI_HELP = [
     'Menu > <b>Downtime logs</b>. Pick the period, <b>Show</b>. Every stop: Engineering jobs, floor stops no job covers, and the OKL report stops that stayed on Machine issues (operator fixes, not a machine issue).',
     'The two bars show where the time went: by machine and by reason (the biggest first). <b>Start an RCA</b> on a line opens an RCA with that stop in it.']],
   ['wrench', 'RCAs: log, open, one RCA', [
-    'RCAs start by themselves (a long stop, or the same reason several times on a machine), from a downtime line, or <b>RCA by hand</b>. <b>Log</b> lists all; <b>Open RCAs</b> shows the work with its progress.',
+    'RCAs start by themselves (a long stop, or the same reason several times on a machine), from a downtime line, or <b>RCA by hand</b>. <b>Log</b> lists all; <b>Open RCAs</b> shows the work with its progress. <b>Change the rules</b> (Log, edit access) sets how long a stop, or how many repeats in how many days, starts one.',
     'One RCA, top to bottom: 1 what happened (read from Engineering), 2 your observation, 3 causes under the 6M, 4 the 5 whys and the root cause (<b>Save steps 2 to 4</b>), 5 actions, 6 verify.',
     'Actions: <b>corrective</b> (fix this one), <b>preventive</b> (stop it coming back), <b>horizontal deployment</b> (<b>Pick look-alike machines</b>: one line each), <b>periodic check</b> (pick the check in Engineering; its done-of-due shows here).',
     '<b>Done: start watching</b> when every action is done or not needed. Then <b>Effective: close it</b> or <b>Not effective</b>. <b>Closed: not solved</b> closes one without a fix; nothing is ever deleted.',
