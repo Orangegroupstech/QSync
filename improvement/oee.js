@@ -164,7 +164,7 @@ const COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'
 const OTHER = '#9a9a92', C_MACH = COLORS[0], C_OPS = COLORS[1];
 const OEE = { d: null, err: '', loading: false, all: [], runs: [], N: null, rname: {},
   f: { from: '', to: '', stage: OEE_STAGES.filter(s => s !== 'Granulation/Mixing'), sub: [], machine: [], product: [], type: [] },   // [] = all
-  by: 'stage', split: '', per: 'month', chart: 'pareto', pareto: 'all', ms: null, logQ: '', logOver: false, up: null, setQ: '', setCat: '', setStage: '' };
+  by: 'stage', split: '', per: 'month', bEnd: '', bN: 10, bT: null, chart: 'pareto', pareto: 'all', ms: null, logQ: '', logOver: false, up: null, setQ: '', setCat: '', setStage: '' };
 const pct = v => v == null ? '–' : (v * 100).toFixed(1) + '%';
 const hrs = m => (m / 60).toFixed(1) + ' h';
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -277,7 +277,7 @@ const meter = v => v == null ? '<span class="muted">–</span>' : `<div style="d
 /* ---------------- Dashboard: head, tabs, the one filter card ----------------
    user 24 Nov 2026: every filter at the top (several picks each), Granulation off until added, one table or chart per tab */
 const DEF_STAGES = OEE_STAGES.filter(s => s !== 'Granulation/Mixing');   // no output in the files: it would pull availability up
-const DASH_TABS = [['/oee', 'Summary'], ['/oee/logs', 'Logs'], ['/oee/trend', 'Trend'], ['/oee/downtime', 'Downtime analysis']];
+const DASH_TABS = [['/oee', 'Summary'], ['/oee/logs', 'Logs'], ['/oee/trend', 'Trend'], ['/oee/downtime', 'Downtime analysis'], ['/oee/bdrb', 'BDRB']];
 const MS_KEYS = { stage: 'Stage', sub: 'Group', machine: 'Machine', product: 'Product', type: 'Type' };
 function msel(key, list){
   const cur = OEE.f[key], fmt = v => key === 'type' ? (TYPE_LABEL[v] || v) : v;
@@ -493,6 +493,93 @@ function viewLogs(){
       $('#lgOver').onchange = e => { OEE.logOver = e.target.checked; render(); };
       const qq = $('#lgQ'); qq.oninput = debounce(() => { OEE.logQ = qq.value; render(); setTimeout(() => { const e = $('#lgQ'); if (e) { e.focus(); e.setSelectionRange(e.value.length, e.value.length); } }, 0); }, 300);
       $$('[data-run]').forEach(tr => tr.onclick = () => runModal(OEE.runs.find(r => String(r.id) === tr.dataset.run)));
+    });
+  return { title: 'OEE dashboard', crumb: 'Process Improvement', keepScroll: true, html: fr.html, bind: fr.bind };
+}
+
+/* ---------------- BDRB: the weekly report (user 24 Nov 2026: "my team prepares this report every week") ----------------
+   Slide 1 "OEE (%) Trend (Weekly)": OEE per week with the target, DT trend by month, A / P / Q / OEE per week.
+   Slide 2 "Downtime Result": hours per section for the report week (operational / machine), weekly DT trend (wk 1, wk 2, current).
+   Weeks are the 7 days ending on "Week ends on", stepping back 7 days at a time. */
+const SECTIONS = ['Granulation', 'Compression', 'Stripping', 'Blistering', 'Sachetting', 'Secondary Packaging'];
+const sectionOf = r => r.stage === 'Granulation/Mixing' ? 'Granulation' : r.stage === 'Primary Packaging' ? r.sub : r.stage;
+const C_TOT = COLORS[2];
+const addDays = (day, n) => { const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const dLabel = day => (+day.slice(8, 10)) + ' ' + MON[+day.slice(5, 7) - 1];
+const ordinal = n => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
+// bars side by side per label; series = [{name, color, values}], fmt for the axis and the labels; target = a line across
+function groupedBars(labels, series, opt){
+  const o = opt || {}, W = 760, H = 290, L = 48, R = 12, T = 18, B = o.twoLine ? 46 : 32, iw = W - L - R, ih = H - T - B;
+  const vals = series.flatMap(s => s.values).filter(v => v != null);
+  let top = o.max || Math.max(1, ...vals, o.target || 0);
+  if (!o.max){ const step = Math.pow(10, Math.floor(Math.log10(top))); top = Math.ceil(top / step * 2) * step / 2; }
+  const y = v => T + ih - v / top * ih, gw = iw / Math.max(1, labels.length), bw = Math.min(40, gw * 0.75 / series.length);
+  let g = '';
+  for (let k = 0; k <= 5; k++){ const v = top * k / 5; g += `<line x1="${L}" x2="${L + iw}" y1="${y(v)}" y2="${y(v)}" stroke="#e6e6e1"/><text x="${L - 6}" y="${y(v) + 4}" font-size="11" text-anchor="end" fill="#6b6b66">${o.fmt ? o.fmt(v, true) : Math.round(v)}</text>`; }
+  labels.forEach((lb, i) => {
+    const x0 = L + i * gw + (gw - bw * series.length - 2 * (series.length - 1)) / 2;
+    series.forEach((s, k) => {
+      const v = s.values[i]; if (v == null) return;
+      const x = x0 + k * (bw + 2), yt = y(v), h = Math.max(0, T + ih - yt);
+      g += `<path d="${h > 4 ? `M${x} ${T + ih}V${yt + 4}q0 -4 4 -4h${bw - 8}q4 0 4 4V${T + ih}z` : `M${x} ${T + ih}h${bw}v${-h}h${-bw}z`}" fill="${s.color}"><title>${esc(lb.join ? lb.join(' ') : lb)} · ${esc(s.name)}: ${o.fmt ? o.fmt(v) : v}</title></path>`;
+      g += `<text x="${x + bw / 2}" y="${yt - 5}" font-size="10.5" text-anchor="middle" fill="#3b3b38">${o.fmt ? o.fmt(v) : v}</text>`;
+    });
+    const cx = L + (i + 0.5) * gw;
+    (lb.join ? lb : [lb]).forEach((t, j) => { g += `<text x="${cx}" y="${H - B + 16 + j * 13}" font-size="10.5" text-anchor="middle" fill="#6b6b66">${esc(t)}</text>`; });
+  });
+  if (o.target != null) g += `<line x1="${L}" x2="${L + iw}" y1="${y(o.target)}" y2="${y(o.target)}" stroke="${COLORS[1]}" stroke-width="2.5"/><text x="${L + iw - 4}" y="${y(o.target) - 6}" font-size="11" text-anchor="end" fill="#3b3b38">Target ${o.fmt ? o.fmt(o.target) : o.target}</text>`;
+  return legend(series.map(s => [s.name, s.color]).concat(o.target != null ? [['Target', COLORS[1], true]] : [])) + `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="${esc(o.label || 'Bars')}">${g}</svg>`;
+}
+function viewBdrb(){
+  const w = wait('OEE dashboard'); if (w) return w;
+  if (!OEE.runs.length) return empty();
+  const lastDay = OEE.runs.reduce((m, r) => r.date > m ? r.date : m, '');
+  if (!OEE.bEnd) OEE.bEnd = lastDay;
+  if (OEE.bT == null) OEE.bT = +(localStorage.getItem('okl.oee.target') || 75);
+  const end = OEE.bEnd, n = OEE.bN, f = OEE.f;
+  // the top filters apply, except the months (the report date decides) and, for the downtime parts, the stage and group
+  const keep = (r, sections) => (sections || ((!f.stage.length || f.stage.includes(r.stage)) && (!f.sub.length || f.sub.includes(r.sub))))
+    && (!f.machine.length || f.machine.includes(r.machine)) && (!f.product.length || f.product.includes(r.product)) && (!f.type.length || f.type.includes(r.type));
+  const weeks = []; for (let i = n - 1; i >= 0; i--){ const e = addDays(end, -7 * i); weeks.push({ s: addDays(e, -6), e }); }
+  const inW = (r, wk) => r.date >= wk.s && r.date <= wk.e;
+  const per = weeks.map(wk => oeeSum(OEE.runs.filter(r => inW(r, wk) && keep(r))));
+  const wLab = weeks.map(wk => [ordinal(+wk.s.slice(8, 10)) + ' ' + MON[+wk.s.slice(5, 7) - 1] + ' -', ordinal(+wk.e.slice(8, 10)) + ' ' + MON[+wk.e.slice(5, 7) - 1]]);
+  const year = end.slice(0, 4), dtRuns = OEE.runs.filter(r => keep(r, true));
+  const months = [...new Set(dtRuns.filter(r => r.month.slice(0, 4) === year && r.date <= end).map(r => r.month))].sort();
+  const mSum = months.map(m => dtRuns.filter(r => r.month === m && r.date <= end).reduce((a, r) => { a.o += r.ops; a.m += r.mach; return a; }, { o: 0, m: 0 }));
+  const h0 = v => Math.round(v / 60), h1 = v => (v / 60).toFixed(1);
+  const cur = weeks[weeks.length - 1], wkRuns = dtRuns.filter(r => inW(r, cur));
+  const sec = SECTIONS.map(sn => { const l = wkRuns.filter(r => sectionOf(r) === sn); const o = l.reduce((t, r) => t + r.ops, 0), m = l.reduce((t, r) => t + r.mach, 0); return { sn, o, m, t: o + m }; });
+  const pt = sec.reduce((a, x) => ({ o: a.o + x.o, m: a.m + x.m, t: a.t + x.t }), { o: 0, m: 0, t: 0 });
+  const sh = (a, b) => b > 0 ? Math.round(a / b * 100) + '%' : '0%';
+  const last3 = weeks.slice(-3).map((wk, i, a) => ({ lab: i === a.length - 1 ? 'current' : 'wk ' + (i + 1), title: dLabel(wk.s) + ' - ' + dLabel(wk.e), ...dtRuns.filter(r => inW(r, wk)).reduce((t, r) => { t.o += r.ops; t.m += r.mach; return t; }, { o: 0, m: 0 }) }));
+  const controls = `<div class="field" style="margin:0"><label>Week ends on ${piInfo('The report week is the 7 days ending on this day; earlier weeks step back 7 days at a time.')}</label><input class="inp" type="date" id="bEnd" value="${esc(end)}" max="${esc(lastDay)}"></div>`
+    + viewSel('bN', 'Weeks shown', String(n), [['6', '6'], ['8', '8'], ['10', '10'], ['12', '12']])
+    + `<div class="field" style="margin:0;width:110px"><label>Target OEE %</label><input class="inp" type="number" id="bT" min="1" max="100" value="${esc(OEE.bT)}"></div>
+       <button class="btn btn-ghost" id="bPrint" style="margin-bottom:1px">${I.arrowDown} Print / PDF</button>`;
+  // user 24 Nov 2026: not slides: the visuals one under the other on the page
+  const card = (title, sub, body) => `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>${title}</h3><div class="sub">${sub}</div></div></div><div class="card-b">${body}</div></div>`;
+  const fr = dashFrame('/oee/bdrb', controls,
+    card('OEE trend (weekly)', `${n} weeks to ${esc(dLabel(end))} ${esc(year)}; the stage, group, machine, product and type filters apply`,
+      groupedBars(wLab, [{ name: 'OEE (%)', color: COLORS[0], values: per.map(p => p.OEE == null ? null : Math.round(p.OEE * 100)) }], { max: 100, target: OEE.bT, fmt: v => Math.round(v) + '%', twoLine: true, label: 'OEE trend' }))
+    + card('Availability, productivity, quality and OEE (weekly)', 'The same weeks',
+      `<div class="tbl-wrap"><table class="tbl" data-nosort style="min-width:${160 + n * 100}px"><thead><tr><th></th>${wLab.map(l => `<th class="num">${esc(l.join(' '))}</th>`).join('')}</tr></thead><tbody>
+        ${[['Availability', 'A'], ['Productivity', 'P'], ['Quality', 'Q'], ['OEE', 'OEE']].map(([lb, k]) => `<tr><td class="strong">${lb}</td>${per.map(p => `<td class="num mono">${p[k] == null ? '–' : Math.round(p[k] * 100) + '%'}</td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>`)
+    + card('DT trend (monthly)', `Hours lost in ${esc(year)} to ${esc(dLabel(end))}, every section`,
+      groupedBars(months.map(m => MON[+m.slice(5, 7) - 1].toLowerCase()), [{ name: 'Operational', color: C_OPS, values: mSum.map(x => h0(x.o)) }, { name: 'Machine', color: C_MACH, values: mSum.map(x => h0(x.m)) }, { name: 'Total', color: C_TOT, values: mSum.map(x => h0(x.o + x.m)) }], { label: 'DT trend' }))
+    + card(`Downtime result (week ${esc(dLabel(cur.s))} - ${esc(dLabel(cur.e))})`, 'Every section; the machine, product and type filters apply',
+      `<div class="tbl-wrap"><table class="tbl" data-nosort style="min-width:620px"><thead><tr><th>Section</th><th class="num">Downtime (Hrs)</th><th class="num">Operational (Hrs)</th><th class="num">Machine (Hrs)</th><th class="num">Ops(%)</th><th class="num">Mach(%)</th></tr></thead><tbody>
+        ${sec.map(x => `<tr><td>${esc(x.sn)}</td><td class="num mono">${h1(x.t)}</td><td class="num mono">${h1(x.o)}</td><td class="num mono">${h1(x.m)}</td><td class="num mono">${sh(x.o, x.t)}</td><td class="num mono">${sh(x.m, x.t)}</td></tr>`).join('')}
+        <tr><td><b>Plant Total</b></td><td class="num mono"><b>${h0(pt.t)}</b></td><td class="num mono"><b>${h0(pt.o)}</b></td><td class="num mono"><b>${h0(pt.m)}</b></td><td class="num mono"><b>${sh(pt.o, pt.t)}</b></td><td class="num mono"><b>${sh(pt.m, pt.t)}</b></td></tr>
+      </tbody></table></div>`)
+    + card('Weekly DT trend', 'The last three weeks, hours',
+      groupedBars(last3.map(x => [x.lab, x.title]), [{ name: 'Weekly DT machine', color: C_MACH, values: last3.map(x => h0(x.m)) }, { name: 'Weekly DT operational', color: C_OPS, values: last3.map(x => h0(x.o)) }, { name: 'Weekly DT total', color: C_TOT, values: last3.map(x => h0(x.o + x.m)) }], { twoLine: true, label: 'Weekly DT trend' })),
+    () => {
+      const e = $('#bEnd'); e.onchange = () => { if (e.value) { OEE.bEnd = e.value; render(); } };
+      bindSel('bN', v => { OEE.bN = +v; });
+      const t = $('#bT'); t.onchange = () => { const v = +t.value; if (v >= 1 && v <= 100) { OEE.bT = v; try { localStorage.setItem('okl.oee.target', String(v)); } catch (x) { /* ignore */ } render(); } };
+      $('#bPrint').onclick = () => window.print();
     });
   return { title: 'OEE dashboard', crumb: 'Process Improvement', keepScroll: true, html: fr.html, bind: fr.bind };
 }
@@ -751,6 +838,7 @@ route('/oee', viewSummary);
 route('/oee/trend', viewTrend);
 route('/oee/downtime', viewDowntime);
 route('/oee/logs', viewLogs);
+route('/oee/bdrb', viewBdrb);
 route('/oee/upload', viewUpload);
 route('/settings', () => namesTab('reason'));
 route('/settings/machines', () => namesTab('machine'));
@@ -761,6 +849,7 @@ PI_HELP.push(['chart', 'OEE dashboard', [
   'Every filter is in the card at the top and applies to every tab; stage, group, machine, product and type take several picks. Granulation is left out until you tick it (no output in the files). <b>Clear</b> goes back to that.',
   '<b>Summary</b>: the tiles and one table, <b>View by</b> stage and group, group, machine or product (tap a heading to sort, a line to filter by it). <b>Logs</b>: every batch run, search and "only over 100%"; tap one for its lost minutes.',
   '<b>Trend</b>: <b>Period</b> = month, week or day; <b>Lines</b> = OEE with availability, performance and quality, or OEE per stage, group, machine or product. <b>Downtime analysis</b>: <b>Chart</b> = the Pareto by reason (80% line; tap a reason for its batch runs), lost time by month, or the machines that lose the most; <b>Downtime</b> = machine, operational or both.',
+  '<b>BDRB</b>: the weekly report. <b>Week ends on</b> sets the report week (7 days to that day); <b>Weeks shown</b> and <b>Target OEE %</b> (kept on this computer). OEE per week with the target, DT by month, availability / productivity / quality / OEE per week, the downtime by section for the week and the last three weeks. <b>Print / PDF</b> prints it.',
   'Notes: OEE = availability x performance x quality from the summed minutes and pieces; a run over 100% performance counts as 100% (tap the Performance tile for the list). <b>Excel</b> downloads what is on screen.']]);
 PI_HELP.push(['settings', 'Settings', [
   'Menu > <b>Settings</b>. <b>Downtime reasons</b>: one list, every spelling of a reason together; the category is used for workbooks before August 2026. <b>Machines</b>: machine, stage and group of each spelling. <b>Products</b>: solid, liquid or not counted.',
