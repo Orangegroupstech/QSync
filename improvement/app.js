@@ -81,7 +81,7 @@ function meFromAuth(auth, scope){
 // Access per page (migration 016): 'edit' | 'submit' | 'view' | undefined. Admins may do everything.
 function levelOf(scope){ return !S || !S.me ? undefined : (S.me.is_admin ? 'edit' : S.me.access[scope]); }
 // 11 Nov 2026: My approvals (and How to use) need only the console: the list is the person's own (the server asks only for a sign-in).
-const PAGES = [["/overview", "improvement"], ["/help", "improvement"], ["/downtime", "improvement.downtime"], ["/rca", "improvement.rca"], ["/gemba", "improvement.gemba"], ["/5s", "improvement.five_s"], ["/suggestions", "improvement.suggestions"], ["/", "improvement"]];   // route prefix -> page, first match wins
+const PAGES = [["/overview", "improvement"], ["/help", "improvement"], ["/downtime", "improvement.downtime"], ["/rca/stops", "improvement.downtime"], ["/rca", "improvement.rca"], ["/gemba", "improvement.gemba"], ["/5s", "improvement.five_s"], ["/suggestions", "improvement.suggestions"], ["/oee", "improvement.oee"], ["/settings", "improvement"], ["/", "improvement"]];   // route prefix -> page, first match wins
 function pageOf(path){
   const p = String(path == null ? currentPath() : path).split('?')[0];
   const hit = PAGES.find(([pre]) => pre === '/' ? p === '/' : (p === pre || p.startsWith(pre + '/')));
@@ -215,11 +215,12 @@ function navModel(){
   // 097: parent and child, as the user asked: Downtime logs, RCAs (Log, Open RCAs, Effectiveness), Gemba, 5S, Suggestions
   return [
     { title:'Overview', items:[ { path:'/overview', label:'Open actions', icon:'check' } ] },
-    { title:'Downtime', items:[ { path:'/downtime', label:'Downtime logs', icon:'chart' } ] },
-    { title:'RCAs', items:[ { path:'/rca', label:'Log', icon:'wrench' }, { path:'/rca/open', label:'Open RCAs', icon:'alert' }, { path:'/rca/effect', label:'Effectiveness', icon:'checkCircle' } ] },
+    { title:'OEE', items:[ { path:'/oee', label:'OEE dashboard', icon:'chart' } ] },   // 101; Downtime logs = RCAs > Stops
+    { title:'RCAs', items:[ { path:'/rca', label:'RCAs', icon:'wrench', also:['/rca/stops'] } ] },   // Log, Open RCAs, Effectiveness are tabs on the page
     { title:'Gemba', items:[ { path:'/gemba', label:'Gemba walks', icon:'users' } ] },
     { title:'5S', items:[ { path:'/5s', label:'5S rooms', icon:'layers' } ] },
     { title:'Suggestions', items:[ { path:'/suggestions', label:'Suggestions', icon:'edit' } ] },
+    { title:'Settings', items:[ { path:'/settings', label:'Settings', icon:'settings' } ] },   // OEE names, RCA rules
     { title:'Help', items:[ { path:'/help', label:'How to use', icon:'info' } ] },
   ];
 }

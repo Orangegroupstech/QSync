@@ -375,7 +375,7 @@ const LEVELS = [ { key:'', label:'No access' }, { key:'view', label:'View' }, { 
 // 14 Nov 2026: what View and Edit allow on a page, where it is not obvious (the (i) beside the page in the access tree)
 const PAGE_HINT = {
   'production.machine_issues': "The OKL report's machine stops and Engineering's daily report, side by side, before they become jobs.\nView: see them. Edit: paste Engineering's report, decide each issue and move them to jobs.",
-  'improvement.downtime': 'Every machine stop of a period, with where the time went.\nView: see it. Starting an RCA from a line also needs RCAs: Edit.',
+  'improvement.downtime': 'RCAs > Stops: every machine stop of a period, the way into an RCA.\nView: see it. Starting an RCA from a line also needs RCAs: Edit.',
   'improvement.rca': 'Root cause analyses: the log, the open ones, effectiveness.\nView: see them. Edit: fill them in, add actions, close them, start clean.',
   'improvement.gemba': 'Gemba walks: the plan, findings and the 5S walk score.\nView: see them. Edit: plan walks, raise and update findings, score.',
   'improvement.five_s': 'Every room against the five S.\nView: see it. Edit: move rooms on, add rooms, areas and actions.',

@@ -58,7 +58,8 @@ const piBadge = (pair) => `<span class="badge ${pair[1]}">${esc(pair[0])}</span>
 const piInfo = t => (typeof oklInfo === 'function' ? oklInfo(t) : '');
 const piToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
 function piTabs(cur, tabs){ return `<div class="tabs" style="margin-bottom:14px">${tabs.map(([h, l]) => `<a class="tab ${h === cur ? 'on' : ''}" href="#${h}">${l}</a>`).join('')}</div>`; }
-const RCA_TABS = () => [['/rca', 'Log'], ['/rca/open', 'Open RCAs'], ['/rca/effect', 'Effectiveness']];
+// 101 (user 24 Nov 2026): the old Downtime logs page is the Stops tab: every stop, the way into an RCA
+const RCA_TABS = () => (canOpen('/rca/stops') ? [['/rca/stops', 'Stops']] : []).concat([['/rca', 'Log'], ['/rca/open', 'Open RCAs'], ['/rca/effect', 'Effectiveness']]);
 function piPeopleList(list){ return `<datalist id="piPeople">${(list || []).map(n => `<option value="${esc(n)}">`).join('')}</datalist>`; }
 
 /* ---------------- actions (one list for every source) ---------------- */
@@ -153,23 +154,20 @@ function piBars(list, total){
 function viewPiDowntime(){
   const q = (PI.dt.from ? 'from=' + PI.dt.from : '') + (PI.dt.to ? (PI.dt.from ? '&' : '') + 'to=' + PI.dt.to : '');
   const { d, err } = piData('downtime', q);
-  if (!d) return piWait('Downtime logs', 'Process Improvement', err, 'downtime', q);
+  if (!d) return piWait('RCAs', 'Process Improvement', err, 'downtime', q);
   const rows = d.rows || [], total = rows.reduce((s, r) => s + (r.minutes || 0), 0);
   const kind = r => r.kind === 'job' ? `<a href="../engineering/#/jobs/${esc(r.job_id)}" target="_blank" rel="noopener" class="badge b-info">Job ${esc(r.job_id)}</a>`
     : r.kind === 'stop' ? '<span class="badge b-slate">Floor stop (no job)</span>' : `<span class="badge b-warn">${esc(r.note || 'Production report')}</span>`;
-  return { title: 'Downtime logs', crumb: 'Process Improvement', keepScroll: true,
-    html: pageHead('Downtime logs', 'Every machine stop of the period: Engineering jobs, floor stops no job covers, and the report stops that are not jobs.')
+  return { title: 'RCAs', crumb: 'Process Improvement', keepScroll: true,
+    html: pageHead('RCAs', 'Stops: every machine stop of the period (Engineering jobs, floor stops no job covers, report stops that are not jobs). Start an RCA from a line.')
+      + piTabs('/rca/stops', RCA_TABS())
       + `<div class="card" style="margin-bottom:14px"><div class="card-b row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div class="field" style="margin:0"><label>From</label><input class="inp" type="date" id="dtFrom" value="${esc(d.from)}"></div>
           <div class="field" style="margin:0"><label>To</label><input class="inp" type="date" id="dtTo" value="${esc(d.to)}"></div>
           <button class="btn btn-primary" id="dtGo">Show</button>
           <div class="small muted" style="margin-left:auto">${rows.length} stops · ${piMin(total)} ${piInfo('Lost time on the machines in the period.\nA stop counted in an Engineering job is counted once (the floor stop it came from is not added again).')}</div></div></div>
-      <div class="grid g2" style="margin-bottom:14px;align-items:start">
-        <div class="card"><div class="card-h"><div><h3>By machine</h3><div class="sub">Where the time went (Pareto)</div></div></div><div class="card-b">${piBars(d.by_machine || [], total)}</div></div>
-        <div class="card"><div class="card-h"><div><h3>By reason</h3><div class="sub">What it was</div></div></div><div class="card-b">${piBars(d.by_reason || [], total)}</div></div></div>
-      <div class="card"><div class="card-h"><div><h3>Every stop</h3></div></div>
-        <div class="tbl-wrap"><table class="tbl" style="min-width:760px"><thead><tr><th>When</th><th>Machine</th><th>Reason</th><th>Minutes</th><th>Source</th><th>RCA</th></tr></thead><tbody>
-        ${rows.map((r, i) => `<tr><td class="small">${esc(r.kind === 'report' ? piDay(r.at) : piDayHm(r.at))}</td><td>${esc(r.asset_name || r.asset || '(not known)')}</td><td class="small">${esc(r.reason || '')}</td>
+      <div class="card"><div class="tbl-wrap"><table class="tbl" style="min-width:760px"><thead><tr><th>When</th><th>Machine</th><th>Reason</th><th>Minutes</th><th>Source</th><th>RCA</th></tr></thead><tbody>
+        ${rows.map((r, i) => `<tr><td class="small" data-sort="${esc(r.at)}">${esc(r.kind === 'report' ? piDay(r.at) : piDayHm(r.at))}</td><td>${esc(r.asset_name || r.asset || '(not known)')}</td><td class="small">${esc(r.reason || '')}</td>
           <td class="mono">${r.minutes}</td><td>${kind(r)}</td>
           <td>${r.rca ? `<a href="#/rca/${r.rca.id}">${esc(r.rca.rca_no)}</a>` : d.can_rca && r.asset ? `<button class="btn btn-ghost btn-sm" data-dt-rca="${i}">Start an RCA</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No stops in this period.</td></tr>'}
         </tbody></table></div></div>`,
@@ -203,7 +201,7 @@ function viewPiRcaLog(mode){
   const q = PI.rcaQ.trim().toLowerCase();
   if (q) list = list.filter(x => [x.rca_no, x.asset_name, x.reason, x.trigger, x.root_cause].join(' ').toLowerCase().includes(q));
   const head = pageHead('RCAs', `Root cause analysis. New ones start by themselves: a stop of ${set.long} min or more, or the same reason ${set.repeat} times in ${set.days} days on a machine.`,
-    can ? `<button class="btn btn-ghost" id="rcaNew">${I.plus} RCA by hand</button>${mode !== 'open' ? `<button class="btn btn-ghost" id="rcaRules">Change the rules</button><button class="btn btn-ghost" id="rcaClean">Start clean from today</button>` : ''}` : '');
+    can ? `<button class="btn btn-ghost" id="rcaNew">${I.plus} RCA by hand</button>${mode !== 'open' ? `<button class="btn btn-ghost" id="rcaClean">Start clean from today</button>` : ''}` : '');
   let body;
   if (mode === 'open') {
     body = list.length ? `<div class="grid g2">${list.map(x => { const p = piRcaProgress(x);
@@ -226,16 +224,6 @@ function viewPiRcaLog(mode){
       $$('[data-rf]').forEach(b => b.onclick = () => { PI.rcaFilter = b.dataset.rf; render(); });
       const qq = $('#rcaQ'); if (qq) qq.oninput = debounce(() => { PI.rcaQ = qq.value; render(); setTimeout(() => { const e = $('#rcaQ'); if (e) { e.focus(); e.setSelectionRange(e.value.length, e.value.length); } }, 0); }, 300);
       const nb = $('#rcaNew'); if (nb) nb.onclick = piRcaNew;
-      // 098: the rules that start an RCA (they were under Engineering > Settings)
-      const ru = $('#rcaRules'); if (ru) ru.onclick = () => openModal({ title: 'The rules that start an RCA', size: 'narrow',
-        body: `<p class="small muted">An RCA starts by itself when a machine stops this long, or stops for the same reason this many times within these days.</p>
-          <div class="field"><label for="ruLong">A long stop (minutes, 5 to 1440)</label><input class="inp" id="ruLong" type="number" min="5" max="1440" value="${esc(set.long)}"></div>
-          <div class="field"><label for="ruRep">Repeats (times, 2 to 20)</label><input class="inp" id="ruRep" type="number" min="2" max="20" value="${esc(set.repeat)}"></div>
-          <div class="field"><label for="ruDays">Within (days, 1 to 90)</label><input class="inp" id="ruDays" type="number" min="1" max="90" value="${esc(set.days)}"></div>`,
-        footer: `<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="ruGo">Save the rules</button>`,
-        onMount: (w, close) => { $('#ruGo', w).onclick = async () => {
-          const r = await piSave({ op: 'rca_rules', ca_long_stop_minutes: $('#ruLong', w).value.trim(), ca_repeat_count: $('#ruRep', w).value.trim(), ca_repeat_days: $('#ruDays', w).value.trim() }, ['Rules saved', 'They apply from the next check (every 30 minutes).']);
-          if (r) close(); }; } });
       const cl = $('#rcaClean'); if (cl) cl.onclick = () => openModal({ title: 'Start clean from today', size: 'narrow',
         body: `<p class="small">Every RCA that is open, in progress or being watched (${(d.rcas || []).filter(x => openSt.includes(x.status)).length}) is closed as <b>Closed: not solved</b>. Nothing is deleted: they stay in the Log with this note.</p>
           <p class="small">From now on the rules look only at stops from today. A machine that keeps failing still starts a new RCA.</p>
@@ -575,11 +563,11 @@ function viewPiSugg(){
 const PI_HELP = [
   ['check', 'Overview: open actions', [
     'Menu > <b>Overview</b>: every action not done yet from RCAs, Gemba walks, 5S rooms and suggestions, overdue ones in red. Filter by where they come from; <b>Open</b> takes you to it.']],
-  ['chart', 'Downtime logs', [
-    'Menu > <b>Downtime logs</b>. Pick the period, <b>Show</b>. Every stop: Engineering jobs, floor stops no job covers, and the OKL report stops that stayed on Machine issues (operator fixes, not a machine issue).',
-    'The two bars show where the time went: by machine and by reason (the biggest first). <b>Start an RCA</b> on a line opens an RCA with that stop in it.']],
+  ['chart', 'RCAs: stops', [
+    'RCAs > <b>Stops</b>. Pick the period, <b>Show</b>. Every stop: Engineering jobs, floor stops no job covers, and the OKL report stops that stayed on Machine issues (operator fixes, not a machine issue).',
+    '<b>Start an RCA</b> on a line opens an RCA with that stop in it. Where the time went (Pareto) is on the OEE dashboard.']],
   ['wrench', 'RCAs: log, open, one RCA', [
-    'RCAs start by themselves (a long stop, or the same reason several times on a machine), from a downtime line, or <b>RCA by hand</b>. <b>Log</b> lists all; <b>Open RCAs</b> shows the work with its progress. <b>Change the rules</b> (Log, edit access) sets how long a stop, or how many repeats in how many days, starts one.',
+    'RCAs start by themselves (a long stop, or the same reason several times on a machine), from a downtime line, or <b>RCA by hand</b>. <b>Log</b> lists all; <b>Open RCAs</b> shows the work with its progress. <b>Settings</b> > <b>RCA rules</b> (edit access) sets how long a stop, or how many repeats in how many days, starts one.',
     'One RCA, top to bottom: 1 what happened (read from Engineering), 2 your observation, 3 causes under the 6M, 4 the 5 whys and the root cause (<b>Save steps 2 to 4</b>), 5 actions, 6 verify.',
     'Actions: <b>corrective</b> (fix this one), <b>preventive</b> (stop it coming back), <b>horizontal deployment</b> (<b>Pick look-alike machines</b>: one line each), <b>periodic check</b> (pick the check in Engineering; its done-of-due shows here).',
     '<b>Done: start watching</b> when every action is done or not needed. Then <b>Effective: close it</b> or <b>Not effective</b>. <b>Closed: not solved</b> closes one without a fix; nothing is ever deleted.',
@@ -596,7 +584,7 @@ const PI_HELP = [
     'Menu > <b>Suggestions</b>: <b>New suggestion</b> types in an idea (name, department, impact, the idea, benefits, now and after).',
     '<b>Decide</b>: accepted (and the department that takes it on), in progress, done (with the savings), or not taken (with why). Actions on a suggestion show on the Overview too.']],
 ];
-const PI_HELP_PAGE = { 'Overview: open actions': true, 'Downtime logs': '/downtime', 'RCAs: log, open, one RCA': '/rca', 'RCA effectiveness': '/rca', 'Gemba walks': '/gemba', '5S rooms': '/5s', 'Suggestions (improvement ideas)': '/suggestions' };
+const PI_HELP_PAGE = { 'Overview: open actions': true, 'RCAs: stops': '/rca/stops', 'RCAs: log, open, one RCA': '/rca', 'RCA effectiveness': '/rca', 'Gemba walks': '/gemba', '5S rooms': '/5s', 'Suggestions (improvement ideas)': '/suggestions' };
 const PI_HELP_MINE = () => PI_HELP.filter(h => { const g = PI_HELP_PAGE[h[1]]; return g === true || (!!g && canOpen(g)); });
 function viewPiHelp(){
   const mine = PI_HELP_MINE();
@@ -606,7 +594,8 @@ function viewPiHelp(){
 }
 
 route('/overview', viewPiOverview);
-route('/downtime', viewPiDowntime);
+route('/rca/stops', viewPiDowntime);
+route('/downtime', () => { go('/rca/stops'); return { title: 'RCAs', crumb: '', html: '' }; });   // old links
 route('/rca', () => viewPiRcaLog('log'));
 route('/rca/open', () => viewPiRcaLog('open'));
 route('/rca/effect', viewPiEffect);

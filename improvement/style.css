@@ -673,3 +673,24 @@ input.inp,select.inp,textarea.inp{border-color:#9FAEA4}
 .chips-line > *{flex:0 0 auto;white-space:nowrap}
 /* long words (e-mails, codes) wrap inside their cell instead of spilling out */
 .wrap-any{overflow-wrap:anywhere;word-break:break-word}
+
+/* ---- OEE (101): Pareto rows */
+.oee-par{display:flex;gap:10px;align-items:center;padding:3px 4px;border-radius:6px;cursor:pointer;font-size:12.5px}
+.oee-par:hover,.oee-par.on{background:var(--brand-50)}
+.oee-par-name{flex:0 0 34%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oee-par-bar{flex:1;height:14px}
+.oee-par-bar div{height:14px;border-radius:0 4px 4px 0}
+.oee-par-val{flex:0 0 150px;text-align:right;font-size:12px}
+.oee-cut{border-top:1.5px dashed var(--text-3);margin:6px 0;padding-top:2px;font-size:11px;color:var(--text-3);text-align:center}
+.oee-sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+@media (max-width:640px){ .oee-par-name{flex-basis:40%} .oee-par-val{flex-basis:96px} .oee-par-val .muted{display:none} }
+
+/* ---- OEE (101): multi-pick filters, the view row */
+.oee-filters,.oee-filters .card-b{overflow:visible}
+.oee-ms{position:relative}
+.oee-ms-btn{display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;cursor:pointer;width:100%;min-width:130px;max-width:230px}
+.oee-ms-btn span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oee-ms-pop{position:absolute;z-index:40;top:100%;left:0;margin-top:4px;background:var(--surface,#fff);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:10px;min-width:230px;max-width:320px}
+.oee-ms-list{max-height:280px;overflow:auto}
+.oee-ms-opt{display:flex;gap:8px;align-items:center;padding:4px 2px;font-size:13px;cursor:pointer}
+.oee-viewrow{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
