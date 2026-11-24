@@ -164,11 +164,17 @@ const COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'
 const OTHER = '#9a9a92', C_MACH = COLORS[0], C_OPS = COLORS[1];
 const OEE = { d: null, err: '', loading: false, all: [], runs: [], N: null, rname: {},
   f: { from: '', to: '', stage: OEE_STAGES.filter(s => s !== 'Granulation/Mixing'), sub: [], machine: [], product: [], type: [] },   // [] = all
-  by: 'stage', split: '', chart: 'pareto', pareto: 'all', ms: null, logQ: '', logOver: false, up: null, setQ: '', setCat: '', setStage: '' };
+  by: 'stage', split: '', per: 'month', chart: 'pareto', pareto: 'all', ms: null, logQ: '', logOver: false, up: null, setQ: '', setCat: '', setStage: '' };
 const pct = v => v == null ? '–' : (v * 100).toFixed(1) + '%';
 const hrs = m => (m / 60).toFixed(1) + ' h';
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monLabel = ym => MON[+ym.slice(5, 7) - 1] + ' ' + ym.slice(2, 4);
+// user 24 Nov 2026: trends by month, week or day (Period, in the filter card)
+const PERIODS = { month: 'Month', week: 'Week', day: 'Day' };
+const weekOf = day => { const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0, 10); };
+const pk = r => OEE.per === 'day' ? r.date : OEE.per === 'week' ? weekOf(r.date) : r.month;
+const pLabel = k => k.length === 7 ? monLabel(k) : (OEE.per === 'week' ? 'Wk ' : '') + (+k.slice(8, 10)) + ' ' + MON[+k.slice(5, 7) - 1];
+const pTitle = k => k.length === 7 ? monLabel(k) : (OEE.per === 'week' ? 'Week of ' : '') + (+k.slice(8, 10)) + ' ' + MON[+k.slice(5, 7) - 1] + ' ' + k.slice(0, 4);
 const TYPE_LABEL = { Solid: 'Solid', Liquid: 'Liquid', Skip: 'Not counted' };
 const SPLIT_LABEL = { stage: 'stage', sub: 'group', machine: 'machine', product: 'product', type: 'type' };
 
@@ -207,7 +213,7 @@ function unknownsOf(runs){
   runs.forEach(r => r.unknown.forEach(([kind, key, raw, sheet]) => { const k = kind + '|' + oeeCompact(key); (u[k] = u[k] || { kind, key, raw, sheet, n: 0 }).n++; }));
   return Object.values(u);
 }
-const span = () => [...new Set(OEE.runs.map(r => r.month))].sort().filter(m => (!OEE.f.from || m >= OEE.f.from) && (!OEE.f.to || m <= OEE.f.to));
+const span = () => [...new Set(filtered().map(pk))].sort();   // the periods with data in the filters
 const sumBy = (runs, key) => { const g = {}; runs.forEach(r => { (g[r[key]] = g[r[key]] || []).push(r); }); return g; };
 const ns = v => `data-sort="${v == null ? '' : v}"`;
 
@@ -220,13 +226,14 @@ function lineChart(months, series){
   const x = i => L + (months.length < 2 ? iw / 2 : i * iw / (months.length - 1)), y = v => T + ih - v * ih;
   let g = '';
   for (let v = 0; v <= 1.0001; v += 0.2) g += `<line x1="${L}" x2="${L + iw}" y1="${y(v)}" y2="${y(v)}" stroke="#e6e6e1"/><text x="${L - 6}" y="${y(v) + 4}" font-size="11" text-anchor="end" fill="#6b6b66">${Math.round(v * 100)}%</text>`;
-  months.forEach((m, i) => { g += `<text x="${x(i)}" y="${H - 10}" font-size="11" text-anchor="middle" fill="#6b6b66">${monLabel(m)}</text>`; });
+  const every = Math.max(1, Math.ceil(months.length / 12)), dot = months.length > 40 ? 2.5 : 4;
+  months.forEach((m, i) => { if (i % every === 0) g += `<text x="${x(i)}" y="${H - 10}" font-size="11" text-anchor="middle" fill="#6b6b66">${pLabel(m)}</text>`; });
   series.forEach(s => {
     const pts = s.values.map((v, i) => v == null ? null : [x(i), y(Math.min(v, 1))]);
     let d = '', open = false;
     pts.forEach(p => { if (!p) { open = false; return; } d += (open ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); open = true; });
     g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
-    pts.forEach((p, i) => { if (p) g += `<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="${s.color}" stroke="#fff" stroke-width="2"><title>${esc(s.name)} · ${monLabel(months[i])}: ${pct(s.values[i])}${s.tip ? '\n' + esc(s.tip[i] || '') : ''}</title></circle>`; });
+    pts.forEach((p, i) => { if (p) g += `<circle cx="${p[0]}" cy="${p[1]}" r="${dot}" fill="${s.color}" stroke="#fff" stroke-width="${dot > 3 ? 2 : 1}"><title>${esc(s.name)} · ${pTitle(months[i])}: ${pct(s.values[i])}${s.tip ? '\n' + esc(s.tip[i] || '') : ''}</title></circle>`; });
     const last = pts.map((p, i) => [p, i]).filter(z => z[0]).pop();
     if (last && series.length <= 4) g += `<text x="${last[0][0] + 8}" y="${last[0][1] + 4}" font-size="11" fill="#3b3b38">${esc(s.name)} ${pct(s.values[last[1]])}</text>`;
   });
@@ -246,13 +253,13 @@ function columns(months, series){
       const h = s.values[i] / 60; if (h <= 0) return;
       const y1 = y(base + h), y0 = y(base), ht = Math.max(0, y0 - y1 - (base > 0 ? 2 : 0));
       const isTop = k === series.length - 1 || series.slice(k + 1).every(z => z.values[i] <= 0);
-      g += `<path d="${isTop ? `M${cx - bw / 2} ${y1 + ht}V${y1 + 4}q0 -4 4 -4h${bw - 8}q4 0 4 4V${y1 + ht}z` : `M${cx - bw / 2} ${y1}h${bw}v${ht}h${-bw}z`}" fill="${s.color}"><title>${monLabel(m)} · ${esc(s.name)}: ${h.toFixed(1)} h</title></path>`;
-      if (ht >= 15) g += `<text x="${cx}" y="${y1 + ht / 2 + 4}" font-size="10.5" text-anchor="middle" fill="#fff" font-weight="600">${h >= 10 ? h.toFixed(0) : h.toFixed(1)}</text>`;
-      else if (h > 0) g += `<text x="${cx + bw / 2 + 3}" y="${y1 + ht / 2 + 4}" font-size="10" fill="${s.color}">${h >= 10 ? h.toFixed(0) : h.toFixed(1)}</text>`;
+      g += `<path d="${isTop ? `M${cx - bw / 2} ${y1 + ht}V${y1 + 4}q0 -4 4 -4h${bw - 8}q4 0 4 4V${y1 + ht}z` : `M${cx - bw / 2} ${y1}h${bw}v${ht}h${-bw}z`}" fill="${s.color}"><title>${pTitle(m)} · ${esc(s.name)}: ${h.toFixed(1)} h</title></path>`;
+      if (bw < 16) {} else if (ht >= 15) g += `<text x="${cx}" y="${y1 + ht / 2 + 4}" font-size="10.5" text-anchor="middle" fill="#fff" font-weight="600">${h >= 10 ? h.toFixed(0) : h.toFixed(1)}</text>`;
+      else if (h > 0 && months.length <= 14) g += `<text x="${cx + bw / 2 + 3}" y="${y1 + ht / 2 + 4}" font-size="10" fill="${s.color}">${h >= 10 ? h.toFixed(0) : h.toFixed(1)}</text>`;
       base += h;
     });
-    if (tot[i] > 0 && series.length > 1) g += `<text x="${cx}" y="${y(tot[i] / 60) - 5}" font-size="10.5" text-anchor="middle" fill="#3b3b38" font-weight="650">${(tot[i] / 60).toFixed(0)} h</text>`;
-    g += `<text x="${cx}" y="${H - 10}" font-size="11" text-anchor="middle" fill="#6b6b66">${monLabel(m)}</text>`;
+    if (tot[i] > 0 && series.length > 1 && bw >= 16) g += `<text x="${cx}" y="${y(tot[i] / 60) - 5}" font-size="10.5" text-anchor="middle" fill="#3b3b38" font-weight="650">${(tot[i] / 60).toFixed(0)} h</text>`;
+    if (i % Math.max(1, Math.ceil(months.length / 12)) === 0) g += `<text x="${cx}" y="${H - 10}" font-size="11" text-anchor="middle" fill="#6b6b66">${pLabel(m)}</text>`;
   });
   return legend(series.map(s => [s.name, s.color])) + `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="Lost time by month">${g}</svg>`;
 }
@@ -270,7 +277,7 @@ const meter = v => v == null ? '<span class="muted">–</span>' : `<div style="d
 /* ---------------- Dashboard: head, tabs, the one filter card ----------------
    user 24 Nov 2026: every filter at the top (several picks each), Granulation off until added, one table or chart per tab */
 const DEF_STAGES = OEE_STAGES.filter(s => s !== 'Granulation/Mixing');   // no output in the files: it would pull availability up
-const DASH_TABS = [['/oee', 'Summary'], ['/oee/logs', 'Logs'], ['/oee/trend', 'Trend by month'], ['/oee/downtime', 'Downtime analysis']];
+const DASH_TABS = [['/oee', 'Summary'], ['/oee/logs', 'Logs'], ['/oee/trend', 'Trend'], ['/oee/downtime', 'Downtime analysis']];
 const MS_KEYS = { stage: 'Stage', sub: 'Group', machine: 'Machine', product: 'Product', type: 'Type' };
 function msel(key, list){
   const cur = OEE.f[key], fmt = v => key === 'type' ? (TYPE_LABEL[v] || v) : v;
@@ -380,13 +387,13 @@ function viewSummary(){
 function trendSeries(runs, months){
   const sp = OEE.split;
   if (!sp){
-    const per = months.map(m => oeeSum(runs.filter(r => r.month === m)));
+    const per = months.map(m => oeeSum(runs.filter(r => pk(r) === m)));
     return [['OEE', 'OEE'], ['Availability', 'A'], ['Performance', 'P'], ['Quality', 'Q']].map(([n, k], i) => ({ name: n, key: k, color: COLORS[i], values: per.map(p => p[k]), total: oeeSum(runs)[k] }));
   }
   const tot = {}; runs.forEach(r => { tot[r[sp]] = (tot[r[sp]] || 0) + r.pw; });
   const groups = Object.keys(tot).sort((a, b) => tot[b] - tot[a]);
   const shown = (groups.length > 8 ? groups.slice(0, 7) : groups).sort((a, b) => sp === 'stage' ? OEE_STAGES.indexOf(a) - OEE_STAGES.indexOf(b) : a.localeCompare(b));
-  const mk = (name, color, test) => { const per = months.map(m => oeeSum(runs.filter(r => r.month === m && test(r))));
+  const mk = (name, color, test) => { const per = months.map(m => oeeSum(runs.filter(r => pk(r) === m && test(r))));
     return { name, color, values: per.map(p => p.OEE), tip: per.map(p => `A ${pct(p.A)} · P ${pct(p.P)} · Q ${pct(p.Q)}`), total: oeeSum(runs.filter(test)).OEE }; };
   const out = shown.map((g, i) => mk(g, COLORS[i], r => r[sp] === g));
   if (groups.length > 8){ const rest = new Set(groups.slice(7)); out.push(mk('Other (' + rest.size + ')', OTHER, r => rest.has(r[sp]))); }
@@ -396,18 +403,24 @@ function viewTrend(){
   const w = wait('OEE dashboard'); if (w) return w;
   if (!OEE.runs.length) return empty();
   const runs = filtered(), months = span(), series = trendSeries(runs, months);
-  const tbl = `<div class="tbl-wrap"><table class="tbl" style="min-width:${220 + months.length * 72}px"><thead><tr><th>${OEE.split ? esc(SPLIT_LABEL[OEE.split][0].toUpperCase() + SPLIT_LABEL[OEE.split].slice(1)) + ' (OEE)' : 'Measure'}</th>${months.map(m => `<th class="num">${monLabel(m)}</th>`).join('')}<th class="num">Period</th></tr></thead><tbody>
-    ${series.map(se => `<tr><td><span class="oee-sw" style="background:${se.color}"></span>${esc(se.name)}</td>${se.values.map((v, i) => `<td class="num mono" ${ns(v)} title="${esc(se.tip ? se.tip[i] : '')}">${pct(v)}</td>`).join('')}<td class="num mono" ${ns(se.total)}><b>${pct(se.total)}</b></td></tr>`).join('')}
-    </tbody></table></div>`;
-  const fr = dashFrame('/oee/trend', viewSel('oSp', 'Lines', OEE.split, [['', 'OEE, availability, performance, quality']].concat(Object.entries(SPLIT_LABEL).map(([k, l]) => [k, 'OEE by ' + l]))),
-    `<div class="card"><div class="card-h"><div><h3>Trend by month</h3><div class="sub">${OEE.split ? 'OEE per ' + SPLIT_LABEL[OEE.split] + '; hover a point for availability, performance and quality' : 'OEE with its three parts'}</div></div></div>
+  const head1 = OEE.split ? esc(SPLIT_LABEL[OEE.split][0].toUpperCase() + SPLIT_LABEL[OEE.split].slice(1)) + ' (OEE)' : 'Measure';
+  const tbl = OEE.per === 'month'
+    ? `<div class="tbl-wrap"><table class="tbl" style="min-width:${220 + months.length * 72}px"><thead><tr><th>${head1}</th>${months.map(m => `<th class="num">${pLabel(m)}</th>`).join('')}<th class="num">Whole period</th></tr></thead><tbody>
+      ${series.map(se => `<tr><td><span class="oee-sw" style="background:${se.color}"></span>${esc(se.name)}</td>${se.values.map((v, i) => `<td class="num mono" ${ns(v)} title="${esc(se.tip ? se.tip[i] : '')}">${pct(v)}</td>`).join('')}<td class="num mono" ${ns(se.total)}><b>${pct(se.total)}</b></td></tr>`).join('')}
+      </tbody></table></div>`
+    : `<div class="tbl-wrap" style="max-height:520px"><table class="tbl" style="min-width:${180 + series.length * 110}px"><thead><tr><th>${PERIODS[OEE.per]}</th>${series.map(se => `<th class="num"><span class="oee-sw" style="background:${se.color}"></span>${esc(se.name)}</th>`).join('')}</tr></thead><tbody>
+      ${months.map((m, i) => `<tr><td ${ns(m)}>${esc(pTitle(m))}</td>${series.map(se => `<td class="num mono" ${ns(se.values[i])} title="${esc(se.tip ? se.tip[i] : '')}">${pct(se.values[i])}</td>`).join('')}</tr>`).join('')}
+      <tr><td ${ns('9999')}><b>Whole period</b></td>${series.map(se => `<td class="num mono" ${ns(se.total)}><b>${pct(se.total)}</b></td>`).join('')}</tr>
+      </tbody></table></div>`;
+  const fr = dashFrame('/oee/trend', viewSel('oPer', 'Period', OEE.per, Object.entries(PERIODS)) + viewSel('oSp', 'Lines', OEE.split, [['', 'OEE, availability, performance, quality']].concat(Object.entries(SPLIT_LABEL).map(([k, l]) => [k, 'OEE by ' + l]))),
+    `<div class="card"><div class="card-h"><div><h3>Trend by ${PERIODS[OEE.per].toLowerCase()}</h3><div class="sub">${OEE.split ? 'OEE per ' + SPLIT_LABEL[OEE.split] + '; hover a point for availability, performance and quality' : 'OEE with its three parts'}</div></div></div>
       <div class="card-b">${lineChart(months, series)}<div style="margin-top:12px">${tbl}</div></div></div>`,
-    () => bindSel('oSp', v => { OEE.split = v; }));
+    () => { bindSel('oSp', v => { OEE.split = v; }); bindSel('oPer', v => { OEE.per = v; }); });
   return { title: 'OEE dashboard', crumb: 'Process Improvement', keepScroll: true, html: fr.html, bind: fr.bind };
 }
 
 /* ---------------- Downtime analysis: ONE chart (Chart), machine / operational as a filter ---------------- */
-const CHARTS = { pareto: 'Pareto by reason', month: 'Lost time by month', machine: 'Machines with the most lost time' };
+const CHARTS = { pareto: 'Pareto by reason', month: 'Lost time by month, week or day', machine: 'Machines with the most lost time' };
 const wantCat = c => OEE.pareto === 'all' || OEE.pareto === c;
 function paretoList(runs){
   const par = {}; let tot = 0;
@@ -423,8 +436,8 @@ function viewDowntime(){
   let card;
   if (OEE.chart === 'month'){
     const series = [['Machine', C_MACH, 'mach'], ['Operational', C_OPS, 'ops']].filter(([n]) => wantCat(n))
-      .map(([name, color, k]) => ({ name, color, values: months.map(m => runs.filter(r => r.month === m).reduce((t, r) => t + r[k], 0)) }));
-    card = `<h3>Unplanned downtime by month</h3><div class="sub">Hours lost; each part is labelled, the total is above the column.</div></div></div><div class="card-b">${columns(months, series)}`;
+      .map(([name, color, k]) => ({ name, color, values: months.map(m => runs.filter(r => pk(r) === m).reduce((t, r) => t + r[k], 0)) }));
+    card = `<h3>Unplanned downtime by ${PERIODS[OEE.per].toLowerCase()}</h3><div class="sub">Hours lost; each part is labelled, the total is above the column.</div></div></div><div class="card-b">${columns(months, series)}`;
   } else if (OEE.chart === 'machine'){
     const byM = Object.entries(sumBy(runs, 'machine')).map(([m, l]) => ({ m, s: oeeSum(l) })).map(x => Object.assign(x, { t: (wantCat('Machine') ? x.s.mach : 0) + (wantCat('Operational') ? x.s.ops : 0) }))
       .filter(x => x.t > 0).sort((a, b) => b.t - a.t).slice(0, 20);
@@ -443,10 +456,10 @@ function viewDowntime(){
     OEE._par = P.par;
     card = `<h3>Pareto: unplanned downtime by reason</h3><div class="sub">${hrs(P.tot)} lost, biggest first. Tap a reason for its batch runs.</div></div></div><div class="card-b">${lg}${hbars(rows)}`;
   }
-  const fr = dashFrame('/oee/downtime', viewSel('oCh', 'Chart', OEE.chart, Object.entries(CHARTS)) + viewSel('oPk', 'Downtime', OEE.pareto, [['all', 'Machine and operational'], ['Machine', 'Machine only'], ['Operational', 'Operational only']]),
+  const fr = dashFrame('/oee/downtime', viewSel('oCh', 'Chart', OEE.chart, Object.entries(CHARTS)) + (OEE.chart === 'month' ? viewSel('oPer', 'Period', OEE.per, Object.entries(PERIODS)) : '') + viewSel('oPk', 'Downtime', OEE.pareto, [['all', 'Machine and operational'], ['Machine', 'Machine only'], ['Operational', 'Operational only']]),
     `<div class="card"><div class="card-h"><div>${card}</div></div>`,
     () => {
-      bindSel('oCh', v => { OEE.chart = v; }); bindSel('oPk', v => { OEE.pareto = v; });
+      bindSel('oCh', v => { OEE.chart = v; }); bindSel('oPk', v => { OEE.pareto = v; }); bindSel('oPer', v => { OEE.per = v; });
       $$('[data-par]').forEach(b => b.onclick = () => { const k = b.dataset.par; if (k !== 'other') reasonModal(k, runs); });
     });
   return { title: 'OEE dashboard', crumb: 'Process Improvement', keepScroll: true, html: fr.html, bind: fr.bind };
@@ -490,14 +503,14 @@ function runModal(r){
   const SEC = { I: 'Idle', P: 'Planned shutdown', O: 'Operational', M: 'Machine', D: 'Down Time (old template)' };
   const lines = Object.entries(L || {}).filter(([, v]) => v > 0).sort((x, y) => 'IPODM'.indexOf(x[0][0]) - 'IPODM'.indexOf(y[0][0]) || y[1] - x[1]);
   openModal({ title: `${a.machine} · ${a.date}`, sub: `${a.product} · batch ${a.batch || '–'} · sheet ${a.sheet}`, size: 'wide',
-    body: `<div class="grid g2"><div><table class="tbl kv"><tbody>
+    body: `<div class="oee-run"><table class="tbl" data-nosort style="width:100%;margin-bottom:14px"><tbody>
         <tr><td>Available</td><td class="mono">${a.av} min</td></tr><tr><td>Idle</td><td class="mono">${a.idle} min</td></tr><tr><td>Planned shutdown</td><td class="mono">${a.planned} min</td></tr>
         <tr><td>Planned working</td><td class="mono">${a.pw} min</td></tr><tr><td>Unplanned (machine / operational)</td><td class="mono">${a.mach} / ${a.ops} min</td></tr><tr><td>Running</td><td class="mono">${a.op} min</td></tr>
         <tr><td>Speed</td><td class="mono">${a.speed} pcs/min</td></tr><tr><td>Made / could make</td><td class="mono">${Math.round(a.prod).toLocaleString()} / ${Math.round(a.theory).toLocaleString()}</td></tr>
-        <tr><td>Performance</td><td class="mono">${pct(a.perf)}${a.flag ? ' (counted as 100%)' : ''}</td></tr></tbody></table></div>
-      <div><table class="tbl" data-nosort><thead><tr><th>Lost minutes as written</th><th>Counted as</th><th class="num">Min</th></tr></thead><tbody>
+        <tr><td>Performance</td><td class="mono">${pct(a.perf)}${a.flag ? ' (counted as 100%)' : ''}</td></tr></tbody></table>
+      <table class="tbl" data-nosort style="width:100%"><thead><tr><th>Lost minutes as written</th><th>Counted as</th><th class="num">Min</th></tr></thead><tbody>
         ${lines.map(([k, v]) => { const u = a.un.find(z => z[1] === k.slice(2)); return `<tr><td>${esc(k.slice(2))}</td><td class="small">${esc(SEC[k[0]])}${k[0] === 'D' && u ? ' → ' + u[0] : ''}</td><td class="num mono">${v}</td></tr>`; }).join('') || '<tr><td colspan="3" class="muted">None.</td></tr>'}
-      </tbody></table></div></div>` });
+      </tbody></table></div>` });
 }
 async function exportXlsx(){
   try {
@@ -506,7 +519,7 @@ async function exportXlsx(){
     add('Filters', ['Filter', 'Value'], [['From', f.from], ['To', f.to], ['Stage', f.stage.join(', ') || 'All'], ['Group', f.sub.join(', ') || 'All'], ['Machine', f.machine.join(', ') || 'All'], ['Product', f.product.join(', ') || 'All'], ['Type', f.type.join(', ') || 'All']]);
     add('Machines', ['Machine', 'Stage', 'Group', 'Runs', 'Availability %', 'Performance %', 'Quality %', 'OEE %', 'Unplanned h', 'MTBF h', 'MTTR min'],
       Object.entries(sumBy(runs, 'machine')).map(([m, l]) => { const s = oeeSum(l); return [m, l[0].stage, l[0].sub, s.n, r1(s.A), r1(s.P), r1(s.Q), r1(s.OEE), Math.round((s.ops + s.mach) / 6) / 10, s.MTBF == null ? '' : Math.round(s.MTBF / 6) / 10, s.MTTR == null ? '' : Math.round(s.MTTR)]; }));
-    add('Trend', ['Line', ...months.map(monLabel), 'Period'], trendSeries(runs, months).map(s => [s.name, ...s.values.map(r1), r1(s.total)]));
+    add('Trend', ['Line', ...months.map(pTitle), 'Whole period'], trendSeries(runs, months).map(s => [s.name, ...s.values.map(r1), r1(s.total)]));
     const P = paretoList(runs); let cum = 0;
     add('Pareto', ['Reason', 'Category', 'Hours', 'Times', '% of lost time', 'Running %'], P.list.map(x => { cum += x.min; return [x.reason, x.cat, Math.round(x.min / 6) / 10, x.n, r1(x.min / P.tot), r1(cum / P.tot)]; }));
     add('Runs', ['Date', 'Stage', 'Group', 'Machine', 'Product', 'Type', 'Batch', 'Available min', 'Idle', 'Planned shutdown', 'Planned working', 'Operational downtime', 'Machine downtime', 'Running', 'Speed', 'Made', 'Could make', 'Performance %', 'Over 100%', 'Good', 'Defect'],
@@ -747,7 +760,7 @@ PI_HELP.push(['chart', 'OEE dashboard', [
   'Menu > <b>OEE dashboard</b>. <b>Upload workbooks</b> (top right, edit access): pick the monthly "Machine Hours & OEE" files, several at once. A name the console has not seen is asked once, then kept. Uploading a month again replaces it.',
   'Every filter is in the card at the top and applies to every tab; stage, group, machine, product and type take several picks. Granulation is left out until you tick it (no output in the files). <b>Clear</b> goes back to that.',
   '<b>Summary</b>: the tiles and one table, <b>View by</b> stage and group, group, machine or product (tap a heading to sort, a line to filter by it). <b>Logs</b>: every batch run, search and "only over 100%"; tap one for its lost minutes.',
-  '<b>Trend by month</b>: <b>Lines</b> = OEE with availability, performance and quality, or OEE per stage, group, machine or product. <b>Downtime analysis</b>: <b>Chart</b> = the Pareto by reason (80% line; tap a reason for its batch runs), lost time by month, or the machines that lose the most; <b>Downtime</b> = machine, operational or both.',
+  '<b>Trend</b>: <b>Period</b> = month, week or day; <b>Lines</b> = OEE with availability, performance and quality, or OEE per stage, group, machine or product. <b>Downtime analysis</b>: <b>Chart</b> = the Pareto by reason (80% line; tap a reason for its batch runs), lost time by month, or the machines that lose the most; <b>Downtime</b> = machine, operational or both.',
   'Notes: OEE = availability x performance x quality from the summed minutes and pieces; a run over 100% performance counts as 100% (tap the Performance tile for the list). <b>Excel</b> downloads what is on screen.']]);
 PI_HELP.push(['settings', 'Settings', [
   'Menu > <b>Settings</b>. <b>Downtime reasons</b>: one list, every spelling of a reason together; the category is used for workbooks before August 2026. <b>Machines</b>: machine, stage and group of each spelling. <b>Products</b>: solid, liquid or not counted.',
