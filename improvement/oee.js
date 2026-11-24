@@ -542,7 +542,8 @@ function viewBdrb(){
     && (!f.machine.length || f.machine.includes(r.machine)) && (!f.product.length || f.product.includes(r.product)) && (!f.type.length || f.type.includes(r.type));
   const weeks = []; for (let i = n - 1; i >= 0; i--){ const e = addDays(end, -7 * i); weeks.push({ s: addDays(e, -6), e }); }
   const inW = (r, wk) => r.date >= wk.s && r.date <= wk.e;
-  const per = weeks.map(wk => oeeSum(OEE.runs.filter(r => inW(r, wk) && keep(r))));
+  // user 24 Nov 2026: the weekly OEE of the report is Secondary Packaging only (as the team's slide); machine, product and type filters still apply
+  const per = weeks.map(wk => oeeSum(OEE.runs.filter(r => inW(r, wk) && r.stage === 'Secondary Packaging' && keep(r, true))));
   const wLab = weeks.map(wk => [ordinal(+wk.s.slice(8, 10)) + ' ' + MON[+wk.s.slice(5, 7) - 1] + ' -', ordinal(+wk.e.slice(8, 10)) + ' ' + MON[+wk.e.slice(5, 7) - 1]]);
   const year = end.slice(0, 4), dtRuns = OEE.runs.filter(r => keep(r, true));
   const months = [...new Set(dtRuns.filter(r => r.month.slice(0, 4) === year && r.date <= end).map(r => r.month))].sort();
@@ -560,9 +561,9 @@ function viewBdrb(){
   // user 24 Nov 2026: not slides: the visuals one under the other on the page
   const card = (title, sub, body) => `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><h3>${title}</h3><div class="sub">${sub}</div></div></div><div class="card-b">${body}</div></div>`;
   const fr = dashFrame('/oee/bdrb', controls,
-    card('OEE trend (weekly)', `${n} weeks to ${esc(dLabel(end))} ${esc(year)}; the stage, group, machine, product and type filters apply`,
+    card('OEE trend (weekly), Secondary Packaging', `${n} weeks to ${esc(dLabel(end))} ${esc(year)}; Secondary Packaging only, whatever the stage filter; the machine, product and type filters apply`,
       groupedBars(wLab, [{ name: 'OEE (%)', color: COLORS[0], values: per.map(p => p.OEE == null ? null : Math.round(p.OEE * 100)) }], { max: 100, target: OEE.bT, fmt: v => Math.round(v) + '%', twoLine: true, label: 'OEE trend' }))
-    + card('Availability, productivity, quality and OEE (weekly)', 'The same weeks',
+    + card('Availability, productivity, quality and OEE (weekly), Secondary Packaging', 'The same weeks, Secondary Packaging only',
       `<div class="tbl-wrap"><table class="tbl" data-nosort style="min-width:${160 + n * 100}px"><thead><tr><th></th>${wLab.map(l => `<th class="num">${esc(l.join(' '))}</th>`).join('')}</tr></thead><tbody>
         ${[['Availability', 'A'], ['Productivity', 'P'], ['Quality', 'Q'], ['OEE', 'OEE']].map(([lb, k]) => `<tr><td class="strong">${lb}</td>${per.map(p => `<td class="num mono">${p[k] == null ? '–' : Math.round(p[k] * 100) + '%'}</td>`).join('')}</tr>`).join('')}
       </tbody></table></div>`)
