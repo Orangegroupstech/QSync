@@ -351,6 +351,87 @@
     return { count: open.length, slot, bind, refresh: (r, line) => { if (line && line._rqs) refresh(r, line); }, refreshAll: () => { if (root) refreshAll(); }, link };
   };
 
+  /* ---------------- A delivery entered late (099, Production store and Engineering spares) ----------------
+     24 Nov 2026 (user): the paper-period deliveries. Under the lines of a Receive form:
+       * received more than 7 days ago: "Why is it entered late?" (needed; up to 60 days back, further back the Manager);
+       * an item COUNTED on or after the received date (the receipt entered after that count): was this delivery on the shelf
+         then? Asked, never assumed (user, 24 Nov 2026), with the stock each answer gives: "Yes" keeps it, "No" adds it;
+       * the same item, quantity and day already received (the server says so): "It is a second delivery" to save it again.
+     cfg: { date: () => 'YYYY-MM-DD', lines: () => [{ code, label, counted_at, stock, unit, qty }], manager: 'the Engineering Manager' }
+     returns { html, bind(form), refresh(), values() -> { late_reason, repeat_ok, in_count: {code: true|false} } | { error }, failed(msg) } */
+  window.oklLateReceipt = function (cfg) {
+    let root = null, repeatAsked = false; const answer = {};
+    const lagos = iso => { try { return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' }); } catch (e) { return String(iso || '').slice(0, 10); } };
+    const hhmm = iso => { try { return new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Africa/Lagos', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
+    const dayTxt = d => { try { return new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }); } catch (e) { return d; } };
+    const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+    const daysBack = d => d ? Math.round((Date.parse(today() + 'T00:00:00Z') - Date.parse(d + 'T00:00:00Z')) / 864e5) : 0;
+    const num = n => String(Math.round(+n * 1000) / 1000);
+    // the lines whose item was COUNTED on or after the received date (this receipt is entered after that count): asked, once
+    // per item (user, 24 Nov 2026: only after a stock count; an opening stock or a count before that date asks nothing)
+    function asked(d) {
+      const seen = {}, out = [];
+      if (!d) return out;
+      (cfg.lines() || []).forEach(l => {
+        if (!l || !l.code || seen[l.code] || !l.counted_at || lagos(l.counted_at) < d) return;
+        seen[l.code] = 1; out.push(Object.assign({}, l, { base_at: l.counted_at }));
+      });
+      return out;
+    }
+    function inner() {
+      const d = cfg.date(), back = daysBack(d), out = [];
+      if (back > 7) out.push('<div class="field" style="margin:0"><label for="lrWhy">Received ' + back + ' days ago: why is it entered late?</label>'
+        + '<input class="inp" id="lrWhy" maxlength="200" placeholder="e.g. Received during the paper period" value="' + esc(answer._why || '') + '">'
+        + (back > 60 ? '<div class="tiny" style="color:var(--danger,#b42318);margin-top:4px">More than 60 days back: only ' + esc(cfg.manager || 'the Manager') + ' can enter it.</div>' : '') + '</div>');
+      asked(d).forEach(l => {
+        const a = answer[l.code], nm = 'lrIn' + l.code.replace(/[^A-Za-z0-9]/g, ''), bd = lagos(l.base_at);
+        const unit = l.unit ? ' ' + esc(l.unit) : '', st = +l.stock || 0, q = +l.qty > 0 ? +l.qty : null;
+        const when = 'was counted' + (bd === d ? ' that day at ' + esc(hhmm(l.base_at)) : ' on ' + esc(dayTxt(bd)) + ', after this delivery arrived');
+        out.push('<div class="lr-note" data-lr-q="' + esc(l.code) + '"><b>' + esc(l.label || l.code) + '</b> ' + when + '. Stock now: <b>' + num(st) + unit + '</b>. Was this delivery already on the shelf then?'
+          + '<label class="row small" style="gap:6px;margin-top:4px;align-items:flex-start"><input type="radio" name="' + nm + '" data-lr-in="' + esc(l.code) + '" value="true"' + (a === true ? ' checked' : '') + '>'
+          + '<span>Yes, that count already has it: the stock stays <b>' + num(st) + unit + '</b> (the receipt is kept, marked "In a count")</span></label>'
+          + '<label class="row small" style="gap:6px;align-items:flex-start"><input type="radio" name="' + nm + '" data-lr-in="' + esc(l.code) + '" value="false"' + (a === false ? ' checked' : '') + '>'
+          + '<span>No, it came after: the stock becomes <b>' + (q != null ? num(st + q) + unit : num(st) + ' + this delivery') + '</b></span></label></div>');
+      });
+      if (repeatAsked) out.push('<label class="row small lr-note" style="gap:6px"><input type="checkbox" id="lrRepeat"' + (answer._repeat ? ' checked' : '') + '> It is a second delivery (not the same one entered again)</label>');
+      return out.join('');
+    }
+    function refresh() { const b = root && root.querySelector('[data-lr]'); if (b) b.innerHTML = inner(); }
+    function bind(form) {
+      root = form;
+      form.addEventListener('change', e => {
+        const t = e.target;
+        if (t.dataset && t.dataset.lrIn) { answer[t.dataset.lrIn] = t.value === 'true'; return; }
+        if (t.id === 'lrRepeat') { answer._repeat = t.checked; return; }
+        if (t.id !== 'lrWhy') refresh();
+      });
+      // typing a date or a part: the notes follow at once (not only when the field is left)
+      form.addEventListener('input', e => {
+        if (e.target.id === 'lrWhy') { answer._why = e.target.value; return; }
+        if (!(e.target.closest && e.target.closest('[data-lr]'))) refresh();
+      });
+      refresh();
+    }
+    function values() {
+      const d = cfg.date(), back = daysBack(d), why = String(answer._why || '').trim(), inc = {};
+      if (back > 7 && why.length < 5) return { error: 'Received ' + back + ' days ago: say why it is entered late (for example "Received during the paper period").', at: 'lrWhy' };
+      for (const l of asked(d)) {
+        if (answer[l.code] === undefined) return { error: l.code + ' was counted on or after the day it arrived: say whether this delivery was already on the shelf then (yes keeps the stock, no adds it).' };
+        inc[l.code] = answer[l.code];
+      }
+      return Object.assign({ in_count: inc }, back > 7 ? { late_reason: why } : {}, repeatAsked && answer._repeat ? { repeat_ok: true } : {});
+    }
+    // a refusal: the second-delivery question when the server asks it; the error in view (it sits under a long form)
+    function failed(msg) {
+      if (/second delivery/.test(String(msg || '')) && !repeatAsked) { repeatAsked = true; refresh(); }
+      setTimeout(() => {
+        const el = root && (root.querySelector('.err-msg:not(.hide)') || root.querySelector('[data-lr]'));
+        if (el && el.scrollIntoView) try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { el.scrollIntoView(); }
+      }, 30);
+    }
+    return { html: '<div data-lr class="lr"></div>', bind, refresh, values, failed };
+  };
+
   function infoStyle() {
     if (document.getElementById('oklInfoStyle')) return;
     const st = document.createElement('style'); st.id = 'oklInfoStyle';
@@ -367,7 +448,9 @@
       + '.rqs-opt{display:flex;gap:8px;align-items:flex-start;padding:5px 6px;border:1px solid var(--line-2,#e5e8eb);border-radius:6px;margin-top:4px;background:#fff;cursor:pointer;font-size:12px;line-height:1.35}'
       + '.rqs-opt input{margin-top:2px}.rqs-opt.on{border-color:var(--brand,#ED6B1F);background:#FFF3EA}'
       + '.rqs-link{background:none;border:0;padding:0;margin-top:4px;color:var(--brand,#ED6B1F);text-decoration:underline;cursor:pointer;font:inherit;font-size:12px}'
-      + '.rqs-ok{color:var(--ok-ink,#166534);font-weight:600}';
+      + '.rqs-ok{color:var(--ok-ink,#166534);font-weight:600}'
+      // a delivery entered late (099)
+      + '.lr:empty{display:none}.lr{display:grid;gap:8px;margin-top:10px}.lr-note{padding:8px 10px;border-left:3px solid #F6C9A8;background:#FFFBF7;border-radius:0 6px 6px 0;font-size:13px;line-height:1.4}';
     document.head.appendChild(st);
   }
   function infoClose() { const p = document.getElementById('oklInfoPop'); if (p) p.remove(); }

@@ -1512,7 +1512,7 @@ function spRules(){
     min: 'The lowest the reorder level can ever be (until 13 Nov 2026 this was the reorder level).\nWhen there is too little use to work one out, this is the reorder level.',
     lead: 'How many weeks a delivery takes, from the request to the store.\nEmpty means the default, ' + lead + ' weeks.',
     receipt: 'Record what arrived in the store, so the stock goes up.\n'
-      + 'Under each part, the open requests it could be for are shown: confirm the right one, and Procurement sees it as received.\nA request comes off the list when it has all arrived, or when you tick "Nothing more is coming".',
+      + 'Under each part, confirm the open request it came for, or "No, not on a request".\nArrived over 7 days ago: give the reason (up to 60 days back), and if it was counted since, say whether that count already has it.',
   };
 }
 function spWhy(x){
@@ -1832,6 +1832,11 @@ async function spReceive(sku){
   const me = S.me.name, L = [plNew(sku)], N = [];
   const sug = window.oklReqSuggest({ requests: reqs, what: 'part', lines: () => L.concat(N) });
   const opt = { id: 'rcLines', sug };
+  // 099: entered late (reason), already in a count, a second delivery
+  let win = null;
+  const late = window.oklLateReceipt({ date: () => (win && $('#rcDate', win) ? $('#rcDate', win).value : ''), manager: 'the Engineering Manager',
+    lines: () => L.map(l => ({ l, it: spBySku(l.sku) })).filter(x => x.it).map(({ l, it }) => ({ code: it.sku, label: it.sku + ' ' + it.description,
+      counted_at: it.last_count_at, stock: it.stock, unit: it.unit, qty: l.qty })) });
   openModal({
     title:'Receive parts', size:'wide', sub:'What arrived in the store: one line per part.',
     body: `<form novalidate><div class="grid g2">
@@ -1842,13 +1847,17 @@ async function spReceive(sku){
       ${sug.count ? `<div class="tiny muted" style="margin-bottom:6px">Under each part, the requests it could be for are shown. Confirm the right one.</div>` : ''}
       ${plHtml(L, opt)}
       <div data-nl-rows>${nlRows(N, sug)}</div>
-      <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A part not in the catalogue</button></div>
+      <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A part not in the catalogue</button>
+      ${late.html}</div>
     <div class="field"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
     <div class="err-msg hide" data-err="rcDate"></div></form>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Receive</button>`,
     onMount: (w, close) => {
+      win = w;
       plBind(w, L, opt);
       sug.bind($('form', w));
+      late.bind($('form', w));
+      const fail = msg => { setErr('rcDate', msg, w); late.failed(msg); };
       const nbox = $('[data-nl-rows]', w);
       const wireN = () => {
         $$('[data-nl-name]', w).forEach(el => { el.oninput = () => { const l = N[+el.dataset.nlName]; l.name = el.value; $(`[data-nl-info="${el.dataset.nlName}"]`, w).innerHTML = nlInfo(l);
@@ -1864,30 +1873,35 @@ async function spReceive(sku){
       sv.onclick = async () => {
         clearErrors(w);
         const chk = plCheck(L, Object.assign({}, opt, { optional: true }));
-        if (chk.error) return setErr('rcDate', chk.error, w);
+        if (chk.error) return fail(chk.error);
         const newLines = [];
         for (let i = 0; i < N.length; i++) {
           const l = N[i], n = 'New part ' + (i + 1) + ': ', nm = l.name.trim().replace(/\s+/g, ' ');
           if (!nm && !String(l.qty).trim()) continue;
-          if (nm.length < 2 || letters(nm) < 2) return setErr('rcDate', n + 'type its name in words.', w);
+          if (nm.length < 2 || letters(nm) < 2) return fail(n + 'type its name in words.');
           const same = (SP.list || []).find(x => x.active && nameKey(x.description) === nameKey(nm));
-          if (!same && !l.prefix) return setErr('rcDate', n + 'choose its type (MP, EP, PP...).', w);
-          if (!same && !l.confirm && spAlike(nm).length) return setErr('rcDate', n + '"' + nm + '" looks like ' + spAlike(nm).map(x => x.sku + ' ' + x.description).join(', ') + '. Pick that part, or tick "It is a new part".', w);
+          if (!same && !l.prefix) return fail(n + 'choose its type (MP, EP, PP...).');
+          if (!same && !l.confirm && spAlike(nm).length) return fail(n + '"' + nm + '" looks like ' + spAlike(nm).map(x => x.sku + ' ' + x.description).join(', ') + '. Pick that part, or tick "It is a new part".');
           const unit = same ? same.unit : l.unit, whole = !['m', 'L', 'kg'].includes(unit);
-          if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return setErr('rcDate', n + 'enter a quantity above 0' + (whole ? ', in whole ' + unit + '.' : '.'), w);
-          if (chk.lines.some(c => same && c.sku === same.sku) || newLines.some(c => nameKey(c.new.description) === nameKey(nm))) return setErr('rcDate', n + 'this part is listed twice.', w);
+          if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return fail(n + 'enter a quantity above 0' + (whole ? ', in whole ' + unit + '.' : '.'));
+          if (chk.lines.some(c => same && c.sku === same.sku) || newLines.some(c => nameKey(c.new.description) === nameKey(nm))) return fail(n + 'this part is listed twice.');
           newLines.push(Object.assign({ new: { description: nm, prefix: l.prefix, unit: l.unit, confirm: !!l.confirm }, qty: String(l.qty).trim() }, sug.link(l)));
         }
-        const receipt = { date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim(),
-          lines: chk.lines.map(l => Object.assign({ sku: l.sku, qty: l.qty }, l.request_item_id ? { request_item_id: l.request_item_id, close_line: l.close_line } : {})).concat(newLines) };
-        if (!receipt.lines.length) return setErr('rcDate', 'Add at least one part.', w);
+        const lv = late.values();
+        if (lv.error) return fail(lv.error);
+        const receipt = Object.assign({ date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim(),
+          lines: chk.lines.map(l => Object.assign({ sku: l.sku, qty: l.qty }, l.request_item_id ? { request_item_id: l.request_item_id, close_line: l.close_line } : {},
+                                                  lv.in_count[l.sku] !== undefined ? { in_count: lv.in_count[l.sku] } : {})).concat(newLines) },
+          lv.late_reason ? { late_reason: lv.late_reason } : {}, lv.repeat_ok ? { repeat_ok: true } : {});
+        if (!receipt.lines.length) return fail('Add at least one part.');
         sv.disabled = true;
         try { const r = await api('/webhook/engineering/api/spares/receipt', { method:'POST', body:{ receipt } }); close();
               const linked = receipt.lines.filter(l => l.request_item_id).length;
               toast('Received ' + receipt.lines.length + ' part' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || [r.move]).map(m => m && m.entry).filter(Boolean).join(', ')
                 + (linked ? ' · ' + linked + ' on a request' : '')
-                + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ' given: ' + r.added.map(a => a.sku + ' = ' + a.description).join(', ') + '. Pick ' + (r.added.length === 1 ? 'it' : 'them') + ' by that code next time.' : ''), 'ok', 12000); await spRefresh(); }
-        catch (err) { setErr('rcDate', err.message, w); sv.disabled = false; }
+                + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ' given: ' + r.added.map(a => a.sku + ' = ' + a.description).join(', ') + '. Pick ' + (r.added.length === 1 ? 'it' : 'them') + ' by that code next time.' : '')
+                + (((r.moves || [r.move]).filter(m => m && m.in_count)).length ? ' · already in a count, stock unchanged: ' + (r.moves || [r.move]).filter(m => m && m.in_count).map(m => m.sku).join(', ') : ''), 'ok', 12000); await spRefresh(); }
+        catch (err) { fail(err.message); toast('Not received', err.message, 'err', 10000); sv.disabled = false; }
       };
     },
   });
@@ -1994,7 +2008,7 @@ function spMovesView(kind){
          <td><div class="strong">${esc(m.sku || '(no SKU)')}</div><div class="tiny muted">${esc(m.description || m.note || '')}</div></td>
          <td style="text-align:right">${m.reversal ? '-' : ''}${num(m.qty)} ${esc(m.unit || '')}</td>
          <td class="small">${esc(m.request_ref || '--')}${m.request_po ? `<div class="tiny muted">PO ${esc(m.request_po)}</div>` : ''}</td><td class="small">${esc(m.received_by_name || '')}</td>
-         <td>${stat(m)}${m.reason ? `<div class="tiny muted">${esc(m.reason)}</div>` : ''}</td>
+         <td>${stat(m)}${m.in_count ? ' <span class="badge b-slate" title="Received before the part was counted: that count already has it, so the stock did not change.">In a count</span>' : ''}${m.reason ? `<div class="tiny muted">${esc(m.reason)}</div>` : ''}</td>
          <td style="text-align:right">${canRev(m) ? `<button class="btn btn-ghost btn-sm" onclick="spReverse(${m.id}, 'receipt')">Reverse</button>` : ''}</td></tr>`).join('')
          || `<tr><td colspan="8" class="muted" style="padding:16px">No receipts in this period.</td></tr>`}</tbody>`
     : `<thead><tr><th>Entry</th><th>Date</th><th>Part</th><th style="text-align:right">Qty</th><th>Equipment</th><th>Collected by</th><th>Job</th><th>Status</th><th></th></tr></thead>
@@ -3584,6 +3598,9 @@ const HELP = [
     'Under each part, the open requests it could be for are shown (the same SKU is picked for you). Tap the right one, or <b>No, not on a request</b>; <b>Another request...</b> finds one by number or name.',
     'Less came than asked and nothing more is coming? Tick <b>Nothing more is coming</b>: the request comes off the list. Procurement sees what arrived (Department Receival Status).',
     'A part not in the catalogue: <b>A part not in the catalogue</b>, type its name, type and unit. It gets the next code (e.g. MP 671), shown before you save: pick it by that code next time.',
+    'It arrived a while ago (e.g. written on paper): put the real date it arrived. More than 7 days back, say why (e.g. "Received during the paper period"); more than 60 days back, the Engineering Manager enters it.',
+    'If the part was counted on or after that date, the form asks: <b>was this delivery already on the shelf then?</b> Each answer shows the stock it gives. <b>Yes</b>: the count already has it, the stock stays (the receipt is kept, marked <b>In a count</b>). <b>No</b>: the delivery is added.',
+    'The same part, quantity and day entered twice is stopped. If it really was a second delivery, tick <b>It is a second delivery</b> and save again. When something is not saved, the reason shows in red above the buttons.',
     'Issue for equipment not in the list: tick <b>Other</b> and name it. It gets a code (OTH-004...): pick it from the list next time.',
     'A name like one already there (e.g. "bearings 6205" and "Bearing 6205") is stopped: use the one there, or tick that it is new.',
     'Changing a part\'s unit after it has moved asks you to confirm: the numbers stay, only the unit changes.']],

@@ -424,6 +424,9 @@ const PROD_HELP = [
     'Something not on a request: <b>Not on a request</b>, then one line per material with its quantity. A note is optional.',
     'A material whose stock is not known yet ("Count needed"): count the shelf <b>with the delivery</b> and type it in <b>On the shelf now</b>. That number becomes its stock.',
     'A material not in the store yet: <b>A material not in the store</b>, its name, type and unit. It gets its code (e.g. CF 008) and is received in the same step.',
+    'It arrived a while ago (e.g. written on paper): put the real date it arrived. More than 7 days back, say why (e.g. "Received during the paper period"); more than 60 days back, the Production Manager enters it.',
+    'If the material was counted on or after that date, the form asks: <b>was this delivery already on the shelf then?</b> Each answer shows the stock it gives. <b>Yes</b>: the count already has it, the stock stays (the receipt is kept, marked <b>In a count</b>). <b>No</b>: the delivery is added.',
+    'The same material, quantity and day entered twice is stopped. If it really was a second delivery, tick <b>It is a second delivery</b> and save again. When something is not saved, the reason shows in red above the buttons.',
     '<b>Issue</b>: the printer, line or machine it is for, then one line per material. Stock cannot go below 0: count it first if the shelf has more.',
     'A mistake: <b>Received</b> or <b>Issued</b> tab > <b>Reverse</b>, with the reason. Nothing is deleted.']],
   ['check', 'Store: weekly count', [

@@ -132,7 +132,7 @@ function stRules(){
     lead: 'How many weeks a delivery takes, from the request to the store.\nEmpty means the default, ' + lead + ' weeks.',
     usedOn: 'The printers, lines or machines this material is used on, or Common use.\nEach issue names one, so the use can be seen per line.',
     receipt: 'Record what arrived in the store, so the stock goes up.\n'
-      + 'Under each material, the open requests it could be for are shown: confirm the right one, and Procurement sees it as received.\nA request comes off the list when it has all arrived, or when you tick "Nothing more is coming".',
+      + 'Under each material, confirm the open request it came for, or "No, not on a request".\nArrived over 7 days ago: give the reason (up to 60 days back), and if it was counted since, say whether that count already has it.',
   };
 }
 // how one material's numbers were worked out, step by step (the item page)
@@ -459,6 +459,11 @@ async function stReceive(code){
   const people = (ST.data && ST.data.people) || [], L = [stLnNew(code)], N = [], R = stRules();
   const sug = window.oklReqSuggest({ requests: reqs, what: 'material', lines: () => L.concat(N) });
   const opt = { id: 'rcLines', receipt: true, sug };
+  // 099: entered late (reason), already in a count, a second delivery
+  let win = null;
+  const late = window.oklLateReceipt({ date: () => (win && $('#rcDate', win) ? $('#rcDate', win).value : ''), manager: 'the Production Manager',
+    lines: () => L.map(l => ({ l, it: stByCode(l.code) })).filter(x => x.it && x.it.stock_known).map(({ l, it }) => ({ code: it.code, label: it.code + ' ' + it.name,
+      counted_at: it.last_count_at, stock: it.stock, unit: it.unit, qty: l.qty })) });
   openModal({
     title:'Receive materials', size:'wide', sub:'What arrived in the store: one line per material.',
     body: `<form novalidate><div class="grid g2">
@@ -469,13 +474,17 @@ async function stReceive(code){
       ${sug.count ? `<div class="tiny muted" style="margin-bottom:6px">Under each material, the requests it could be for are shown. Confirm the right one.</div>` : ''}
       ${stLnHtml(L, opt)}
       <div data-nl-rows>${stNlRows(N, sug)}</div>
-      <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A material not in the store</button></div>
+      <button type="button" class="btn btn-ghost btn-sm" data-nl-add style="margin-top:6px">${I.plus} A material not in the store</button>
+      ${late.html}</div>
     <div class="field"><label for="rcNote">Note (optional)</label><input class="inp" id="rcNote" maxlength="300"></div>
     <div class="err-msg hide" data-err="rcDate"></div></form>`,
     footer:`<button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" data-save>${I.check} Receive</button>`,
     onMount: (w, close) => {
+      win = w;
       stLnBind(w, L, opt);
       sug.bind($('form', w));
+      late.bind($('form', w));
+      const fail = msg => { setErr('rcDate', msg, w); late.failed(msg); };
       const nbox = $('[data-nl-rows]', w);
       const wireN = () => {
         $$('[data-nl-name]', w).forEach(el => { el.oninput = () => { const l = N[+el.dataset.nlName]; l.name = el.value; sug.refresh(nbox, l); }; });
@@ -491,27 +500,32 @@ async function stReceive(code){
       sv.onclick = async () => {
         clearErrors(w);
         const chk = stLnCheck(L, Object.assign({}, opt, { optional: true }));
-        if (chk.error) return setErr('rcDate', chk.error, w);
+        if (chk.error) return fail(chk.error);
         const newLines = [];
         for (let i = 0; i < N.length; i++) {
           const l = N[i], n = 'New material ' + (i + 1) + ': ', nm = l.name.trim().replace(/\s+/g, ' ');
           if (!nm && !String(l.qty).trim()) continue;
-          if (nm.length < 2 || stLetters(nm) < 2) return setErr('rcDate', n + 'type its name in words.', w);
-          if (!l.prefix) return setErr('rcDate', n + 'choose its type (it gives the code).', w);
+          if (nm.length < 2 || stLetters(nm) < 2) return fail(n + 'type its name in words.');
+          if (!l.prefix) return fail(n + 'choose its type (it gives the code).');
           const whole = !['m', 'L', 'kg'].includes(l.unit);
-          if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return setErr('rcDate', n + 'enter a quantity above 0' + (whole ? ', in whole ' + l.unit + '.' : '.'), w);
+          if (!(+l.qty > 0) || (whole && +l.qty !== Math.floor(+l.qty))) return fail(n + 'enter a quantity above 0' + (whole ? ', in whole ' + l.unit + '.' : '.'));
           newLines.push(Object.assign({ new: { name: nm, prefix: l.prefix, unit: l.unit, confirm: !!l.confirm }, qty: String(l.qty).trim() }, sug.link(l)));
         }
-        const receipt = { date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim(), lines: chk.lines.concat(newLines) };
-        if (!receipt.lines.length) return setErr('rcDate', 'Add at least one material.', w);
+        const lv = late.values();
+        if (lv.error) return fail(lv.error);
+        const receipt = Object.assign({ date: $('#rcDate', w).value, received_by: $('#rcBy', w).value, note: $('#rcNote', w).value.trim(),
+          lines: chk.lines.map(l => lv.in_count[l.code] !== undefined ? Object.assign({}, l, { in_count: lv.in_count[l.code] }) : l).concat(newLines) },
+          lv.late_reason ? { late_reason: lv.late_reason } : {}, lv.repeat_ok ? { repeat_ok: true } : {});
+        if (!receipt.lines.length) return fail('Add at least one material.');
         sv.disabled = true;
         try { const r = await api('/webhook/production/api/store/receipt', { method:'POST', body:{ receipt } }); close();
               const linked = receipt.lines.filter(l => l.request_item_id).length;
               toast('Received ' + receipt.lines.length + ' material' + (receipt.lines.length === 1 ? '' : 's'), (r.moves || []).map(m => m.entry).join(', ')
                 + (linked ? ' · ' + linked + ' on a request' : '')
                 + ((r.added || []).length ? ' · new code' + (r.added.length === 1 ? '' : 's') + ': ' + r.added.map(a => a.code + ' = ' + a.name).join(', ') : '')
-                + ((r.opened || []).length ? ' · stock now known: ' + r.opened.map(o => o.code + ' ' + stNum(+o.stock)).join(', ') : ''), 'ok', 9000); await stRefresh(); }
-        catch (err) { setErr('rcDate', err.message, w); sv.disabled = false; }
+                + ((r.opened || []).length ? ' · stock now known: ' + r.opened.map(o => o.code + ' ' + stNum(+o.stock)).join(', ') : '')
+                + ((r.moves || []).filter(m => m.in_count).length ? ' · already in a count, stock unchanged: ' + r.moves.filter(m => m.in_count).map(m => m.code).join(', ') : ''), 'ok', 9000); await stRefresh(); }
+        catch (err) { fail(err.message); toast('Not received', err.message, 'err', 10000); sv.disabled = false; }
       };
     },
   });
@@ -585,7 +599,7 @@ function stMovesView(kind){
          <td><div class="strong">${esc(m.code)}</div><div class="tiny muted">${esc(m.name)}</div></td>
          <td style="text-align:right">${m.reversal ? '-' : ''}${stNum(m.qty)} ${esc(m.unit || '')}</td>
          <td class="small">${esc(m.request_ref || '--')}</td><td class="small">${esc(m.received_by_name || '')}</td>
-         <td>${stat(m)}${m.reason || m.note ? `<div class="tiny muted">${esc(m.reason || m.note)}</div>` : ''}</td>
+         <td>${stat(m)}${m.in_count ? ' <span class="badge b-slate" title="Received before the material was counted: that count already has it, so the stock did not change.">In a count</span>' : ''}${m.reason || m.note ? `<div class="tiny muted">${esc(m.reason || m.note)}</div>` : ''}</td>
          <td style="text-align:right">${canRev(m) ? `<button class="btn btn-ghost btn-sm" onclick="stReverse(${m.id}, 'receipt')">Reverse</button>` : ''}</td></tr>`).join('')
          || `<tr><td colspan="8" class="muted" style="padding:16px">Nothing received in this period.</td></tr>`}</tbody>`
     : `<thead><tr><th>Entry</th><th>Date</th><th>Material</th><th style="text-align:right">Qty</th><th>Used on</th><th>Status</th><th></th></tr></thead>
